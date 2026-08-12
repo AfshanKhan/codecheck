@@ -27,7 +27,7 @@ packages = ["src/codecheck"]
 [dependency-groups]
 dev = [
     "pytest>=8.0",
-    "ruff>=0.6",
+    "ruff>=0.16.2",
 ]
 
 [tool.ruff]
