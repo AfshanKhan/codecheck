@@ -33,6 +33,90 @@ def _parse_changed_lines(diff_text: str) -> set[int]:
     return changed
 
 
+_GIT_QUOTE_ESCAPES = {"a": 7, "b": 8, "f": 12, "n": 10, "r": 13, "t": 9, "v": 11, "\\": 92, '"': 34}
+
+
+def _unquote_git_path(raw: str) -> str:
+    """Git wraps a diff-header path in double quotes with C-style escapes
+    (octal-escaped bytes for anything outside plain ASCII, e.g. non-ASCII
+    filenames, or a literal quote/backslash in the name) whenever
+    core.quotePath is on, which is the default. Without reversing this, the
+    raw quoted+escaped header text (e.g. `"caf\303\251.py"`) was being used
+    directly as target.path -- confirmed to cause file reads and linter
+    invocations to silently miss the real file for any such path.
+    """
+    if len(raw) < 2 or raw[0] != '"' or raw[-1] != '"':
+        return raw
+    inner = raw[1:-1]
+    out = bytearray()
+    i = 0
+    while i < len(inner):
+        char = inner[i]
+        if char == "\\" and i + 1 < len(inner):
+            nxt = inner[i + 1]
+            if nxt in _GIT_QUOTE_ESCAPES:
+                out.append(_GIT_QUOTE_ESCAPES[nxt])
+                i += 2
+                continue
+            if nxt.isdigit():
+                octal = inner[i + 1 : i + 4]
+                try:
+                    out.append(int(octal, 8))
+                    i += 4
+                    continue
+                except ValueError:
+                    pass
+        out.extend(char.encode("utf-8"))
+        i += 1
+    try:
+        return out.decode("utf-8")
+    except UnicodeDecodeError:
+        return raw  # malformed escape sequence -- fall back rather than guess
+
+
+def _strip_ab_prefix(path: str) -> str:
+    if path.startswith(("a/", "b/")):
+        return path[2:]
+    return path
+
+
+_QUOTED_SPEC = r'"(?:[^"\\]|\\.)*"'
+# Each side of a `diff --git <old> <new>` header is quoted independently --
+# confirmed against real git output that a rename from an ASCII name to a
+# non-ASCII one (or vice versa) quotes only the side that needs it, not both.
+# Tried most-specific (both quoted) to least (neither), since the unquoted
+# fallback's non-greedy old-path match is otherwise ambiguous against a
+# quoted new-path starting with '"'.
+_DIFF_HEADER_PATTERNS = [
+    re.compile(rf"^diff --git (?P<old>{_QUOTED_SPEC}) (?P<new>{_QUOTED_SPEC})$"),
+    re.compile(rf"^diff --git (?P<old>{_QUOTED_SPEC}) (?P<new>b/.+)$"),
+    re.compile(rf"^diff --git (?P<old>a/.+?) (?P<new>{_QUOTED_SPEC})$"),
+    re.compile(r"^diff --git (?P<old>a/.+?) (?P<new>b/.+)$"),
+]
+
+
+def _parse_diff_header(line: str) -> tuple[str, str] | None:
+    """Splits a `diff --git <old> <new>` header line into (old_path, new_path),
+    with git's per-side quoting/escaping reversed. Returns None if the line
+    isn't a diff --git header at all.
+
+    Previously this used a single unquoted-only regex
+    (`diff --git a/(.+?) b/(.+)`), which simply failed to match -- silently
+    dropping the whole file from the diff -- whenever git quoted the header
+    (non-ASCII filenames, or a literal quote/backslash in the name; this is
+    on by default via core.quotePath). Confirmed via Greptile review and
+    reproduced directly: a changed file with a non-ASCII name was missing
+    from get_diff()'s output entirely, not just mis-pathed.
+    """
+    for pattern in _DIFF_HEADER_PATTERNS:
+        match = pattern.match(line)
+        if match:
+            old = _strip_ab_prefix(_unquote_git_path(match.group("old")))
+            new = _strip_ab_prefix(_unquote_git_path(match.group("new")))
+            return old, new
+    return None
+
+
 def _status_from_diff_item(diff_item) -> str:
     # change_type is unreliable for reversed diffs (e.g. staged new files show
     # change_type=None), so prefer the explicit new_file/deleted_file/renamed_file flags.
@@ -99,10 +183,10 @@ def _parse_raw_diff(raw_diff_text: str) -> list[ReviewTarget]:
         if not block.startswith("diff --git"):
             continue
 
-        header_match = re.match(r"diff --git a/(.+?) b/(.+)", block.splitlines()[0])
-        if not header_match:
+        header = _parse_diff_header(block.splitlines()[0])
+        if header is None:
             continue
-        old_path, new_path = header_match.group(1), header_match.group(2)
+        old_path, new_path = header
 
         if "new file mode" in block:
             status = "added"

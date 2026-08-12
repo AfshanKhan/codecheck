@@ -229,21 +229,39 @@ class OpenAIProtocolReviewer(Reviewer):
         except httpx.HTTPError as e:
             return [], f"API request failed: {format_http_error(e)}"
 
-        data = response.json()
+        try:
+            data = response.json()
+        except json.JSONDecodeError:
+            return [], "response was not valid JSON"
+        if not isinstance(data, dict):
+            return [], "response JSON was not an object"
+
         try:
             message = data["choices"][0]["message"]
-        except (KeyError, IndexError):
+        except (KeyError, IndexError, TypeError):
             return [], "no choices in response"
+        if not isinstance(message, dict):
+            return [], "message in response was not an object"
 
-        for call in message.get("tool_calls") or []:
-            function = call.get("function", {})
-            if function.get("name") != "report_findings":
+        tool_calls = message.get("tool_calls")
+        if not isinstance(tool_calls, list):
+            tool_calls = []
+        for call in tool_calls:
+            if not isinstance(call, dict):
+                continue
+            function = call.get("function")
+            if not isinstance(function, dict) or function.get("name") != "report_findings":
                 continue
             try:
                 args = json.loads(function.get("arguments") or "{}")
             except json.JSONDecodeError:
                 return [], "could not parse tool call arguments as JSON"
-            return args.get("findings", []), None
+            if not isinstance(args, dict):
+                return [], "tool call arguments were not a JSON object"
+            findings = args.get("findings", [])
+            if not isinstance(findings, list):
+                return [], "tool call 'findings' was not a JSON array"
+            return findings, None
 
         # Some OpenAI-compatible servers (observed with Ollama) don't reliably
         # populate tool_calls even with tool_choice="required" -- the model

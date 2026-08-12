@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from codecheck.diff import get_diff, read_file_content
+from codecheck.diff import _parse_diff_header, _unquote_git_path, get_diff, read_file_content
 from codecheck.models import ReviewTarget
 
 
@@ -81,6 +81,88 @@ def test_read_file_content(sandbox_repo: Path):
     b = next(c for c in changed if c.path == "b.py")
     content = read_file_content(sandbox_repo, b)
     assert content == "x = 1\n"
+
+
+def test_unquote_git_path_decodes_octal_escaped_utf8():
+    # git wraps a diff-header path in double quotes with octal-escaped bytes
+    # for non-ASCII filenames when core.quotePath is on (the default) --
+    # "café.py" becomes "caf\303\251.py" in the raw header.
+    assert _unquote_git_path('"caf\\303\\251.py"') == "café.py"
+
+
+def test_unquote_git_path_decodes_literal_quote_and_backslash():
+    assert _unquote_git_path('"weird\\"name\\\\.py"') == 'weird"name\\.py'
+
+
+def test_unquote_git_path_leaves_unquoted_paths_alone():
+    assert _unquote_git_path("plain/path.py") == "plain/path.py"
+
+
+@pytest.mark.parametrize(
+    "header,expected",
+    [
+        # both sides quoted (non-ASCII filename)
+        (
+            'diff --git "a/caf\\303\\251.py" "b/caf\\303\\251.py"',
+            ("café.py", "café.py"),
+        ),
+        # neither side quoted, old path contains a space -- the pre-existing
+        # non-greedy-up-to-" b/" heuristic must keep working
+        ("diff --git a/with space.py b/plain.py", ("with space.py", "plain.py")),
+        # rename FROM plain TO non-ASCII: only the new side is quoted
+        (
+            'diff --git a/plain.py "b/renam\\303\\251.py"',
+            ("plain.py", "renamé.py"),
+        ),
+        # rename FROM non-ASCII TO plain: only the old side is quoted
+        (
+            'diff --git "a/renam\\303\\251.py" b/back_to_plain.py',
+            ("renamé.py", "back_to_plain.py"),
+        ),
+    ],
+)
+def test_parse_diff_header_handles_every_quoting_combination(header: str, expected: tuple[str, str]):
+    # regression: the original single regex (`diff --git a/(.+?) b/(.+)`)
+    # simply failed to match -- silently dropping the file from the diff --
+    # whenever git quoted the header, which it does by default for any
+    # non-ASCII filename (core.quotePath) or a literal quote/backslash in the
+    # name. Confirmed via Greptile review and reproduced directly against
+    # real `git diff` output for all four quoting combinations above.
+    assert _parse_diff_header(header) == expected
+
+
+def test_parse_diff_header_returns_none_for_non_header_line():
+    assert _parse_diff_header("not a diff header") is None
+
+
+def test_base_ref_diff_finds_quoted_unicode_filename(tmp_path: Path):
+    # end-to-end: get_diff() must actually surface a changed file with a
+    # non-ASCII name, not just parse its header correctly in isolation.
+    repo = tmp_path / "unicode_repo"
+    repo.mkdir()
+
+    def run(*args: str) -> None:
+        subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
+
+    run("init", "-q")
+    run("config", "user.email", "test@example.com")
+    run("config", "user.name", "Test")
+    run("config", "core.quotepath", "true")  # explicit -- this is also git's default
+
+    (repo / "a.py").write_text("x = 1\n")
+    run("add", "a.py")
+    run("commit", "-q", "-m", "initial")
+    run("branch", "-m", "main")
+
+    run("checkout", "-q", "-b", "feature")
+    (repo / "café.py").write_text("y = 2\n")
+    run("add", "café.py")
+    run("commit", "-q", "-m", "add unicode file")
+
+    changed = get_diff(repo, base_ref="main", staged=False)
+    paths = {c.path for c in changed}
+    assert "café.py" in paths
+    assert not any("\\3" in p for p in paths)  # no leftover octal-escaped junk
 
 
 def test_read_file_content_refuses_path_that_escapes_repo(tmp_path: Path, sandbox_repo: Path):

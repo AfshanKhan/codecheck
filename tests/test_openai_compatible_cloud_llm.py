@@ -155,6 +155,70 @@ def test_review_handles_missing_tool_call_as_skip(tmp_path: Path, monkeypatch):
     assert reviewer.skipped_files == [("a.py", "no report_findings tool call in response")]
 
 
+def test_review_handles_non_json_response_body_as_skip_not_crash(tmp_path: Path, monkeypatch):
+    # regression: a provider returning HTTP 200 with a non-JSON body (e.g. an
+    # HTML error page from a proxy/gateway in front of the real API) used to
+    # raise an uncaught json.JSONDecodeError out of response.json(), crashing
+    # the whole CLI instead of skipping just that file.
+    monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
+    (tmp_path / "a.py").write_text("x = 1\n")
+    target = ReviewTarget(path="a.py", status="modified", diff_text="", changed_lines={1})
+
+    mock_response = MagicMock()
+    mock_response.raise_for_status = MagicMock()
+    mock_response.json.side_effect = json.JSONDecodeError("bad", "<html>not json</html>", 0)
+    mock_client = MagicMock()
+    mock_client.post.return_value = mock_response
+
+    reviewer = OpenAICompatibleCloudReviewer(CloudConfig(enabled=True, provider="groq"), client=mock_client)
+    findings = reviewer.review([target], tmp_path)
+
+    assert findings == []
+    assert reviewer.skipped_files == [("a.py", "response was not valid JSON")]
+
+
+def test_review_handles_non_object_json_response_as_skip_not_crash(tmp_path: Path, monkeypatch):
+    # regression: valid JSON that isn't an object (e.g. a bare JSON array or
+    # string) used to raise TypeError out of data["choices"], uncaught.
+    monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
+    (tmp_path / "a.py").write_text("x = 1\n")
+    target = ReviewTarget(path="a.py", status="modified", diff_text="", changed_lines={1})
+
+    mock_response = MagicMock()
+    mock_response.raise_for_status = MagicMock()
+    mock_response.json.return_value = ["unexpected", "array"]
+    mock_client = MagicMock()
+    mock_client.post.return_value = mock_response
+
+    reviewer = OpenAICompatibleCloudReviewer(CloudConfig(enabled=True, provider="groq"), client=mock_client)
+    findings = reviewer.review([target], tmp_path)
+
+    assert findings == []
+    assert reviewer.skipped_files == [("a.py", "response JSON was not an object")]
+
+
+def test_review_handles_malformed_tool_call_shapes_as_skip_not_crash(tmp_path: Path, monkeypatch):
+    # regression: a non-dict entry in tool_calls, or a non-dict "function",
+    # used to raise AttributeError (calling .get on a non-dict) uncaught.
+    monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
+    (tmp_path / "a.py").write_text("x = 1\n")
+    target = ReviewTarget(path="a.py", status="modified", diff_text="", changed_lines={1})
+
+    mock_response = MagicMock()
+    mock_response.raise_for_status = MagicMock()
+    mock_response.json.return_value = {
+        "choices": [{"message": {"tool_calls": ["not-a-dict", {"function": "also-not-a-dict"}]}}]
+    }
+    mock_client = MagicMock()
+    mock_client.post.return_value = mock_response
+
+    reviewer = OpenAICompatibleCloudReviewer(CloudConfig(enabled=True, provider="groq"), client=mock_client)
+    findings = reviewer.review([target], tmp_path)
+
+    assert findings == []
+    assert reviewer.skipped_files == [("a.py", "no report_findings tool call in response")]
+
+
 def test_get_client_sends_bearer_auth_header(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("GROQ_API_KEY", "gsk-secret")
     reviewer = OpenAICompatibleCloudReviewer(CloudConfig(enabled=True, provider="groq"))

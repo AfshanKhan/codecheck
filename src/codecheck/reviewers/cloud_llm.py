@@ -131,7 +131,9 @@ class AnthropicCloudReviewer(Reviewer):
                 "anthropic-version": _ANTHROPIC_VERSION,
                 "content-type": "application/json",
             },
-            timeout=60.0,
+            # was hard-coded to 60.0 -- silently ignored cloud.request_timeout_seconds,
+            # so raising the config value past 60s had no effect for this provider.
+            timeout=getattr(self.config, "request_timeout_seconds", 120.0),
         )
 
     def review(self, targets: list[ReviewTarget], repo_path: Path) -> list[Finding]:

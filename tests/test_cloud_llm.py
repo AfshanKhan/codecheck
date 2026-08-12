@@ -127,6 +127,24 @@ def test_exceeds_audit_cap_ignores_deleted_files(tmp_path: Path):
     assert exceeds_audit_cap(targets, config, force=False) is None
 
 
+def test_get_client_respects_configured_timeout(tmp_path: Path, monkeypatch):
+    # regression: the Anthropic client's timeout was hard-coded to 60.0,
+    # silently ignoring cloud.request_timeout_seconds -- raising it in config
+    # had no effect for this provider specifically (the OpenAI-compatible
+    # backends already respected it).
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    reviewer = AnthropicCloudReviewer(CloudConfig(enabled=True, request_timeout_seconds=300.0))
+    client = reviewer._get_client()
+    assert client.timeout.read == 300.0
+
+
+def test_get_client_uses_default_timeout_when_unset(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    reviewer = AnthropicCloudReviewer(CloudConfig(enabled=True))
+    client = reviewer._get_client()
+    assert client.timeout.read == 120.0
+
+
 def test_review_records_api_error_as_skip(tmp_path: Path):
     (tmp_path / "a.py").write_text("x = 1\n")
     changed_file = ReviewTarget(path="a.py", status="modified", diff_text="", changed_lines={1})
