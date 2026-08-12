@@ -18,6 +18,7 @@ Two backends:
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -187,10 +188,27 @@ class AnthropicCloudReviewer(Reviewer):
         except httpx.HTTPError as e:
             return [], f"API request failed: {format_http_error(e)}"
 
-        data = response.json()
-        for block in data.get("content", []):
+        try:
+            data = response.json()
+        except json.JSONDecodeError:
+            return [], "response was not valid JSON"
+        if not isinstance(data, dict):
+            return [], "response JSON was not an object"
+
+        content_blocks = data.get("content")
+        if not isinstance(content_blocks, list):
+            content_blocks = []
+        for block in content_blocks:
+            if not isinstance(block, dict):
+                continue
             if block.get("type") == "tool_use" and block.get("name") == "report_findings":
-                return block.get("input", {}).get("findings", []), None
+                tool_input = block.get("input")
+                if not isinstance(tool_input, dict):
+                    return [], "tool_use block 'input' was not a JSON object"
+                findings = tool_input.get("findings", [])
+                if not isinstance(findings, list):
+                    return [], "tool_use block 'findings' was not a JSON array"
+                return findings, None
         return [], "no tool_use block in response"
 
 

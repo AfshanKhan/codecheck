@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -143,6 +144,72 @@ def test_get_client_uses_default_timeout_when_unset(tmp_path: Path, monkeypatch)
     reviewer = AnthropicCloudReviewer(CloudConfig(enabled=True))
     client = reviewer._get_client()
     assert client.timeout.read == 120.0
+
+
+def test_review_handles_non_json_response_body_as_skip_not_crash(tmp_path: Path, monkeypatch):
+    # regression: the OpenAI-compatible backend was hardened against this
+    # (non-JSON body from a successful HTTP response), but the separate
+    # Anthropic parser was not -- confirmed via a second round of Greptile
+    # review that it still raised uncaught out of response.json().
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    (tmp_path / "a.py").write_text("x = 1\n")
+    target = ReviewTarget(path="a.py", status="modified", diff_text="", changed_lines={1})
+
+    mock_response = MagicMock()
+    mock_response.raise_for_status = MagicMock()
+    mock_response.json.side_effect = json.JSONDecodeError("bad", "<html>not json</html>", 0)
+    mock_client = MagicMock()
+    mock_client.post.return_value = mock_response
+
+    reviewer = AnthropicCloudReviewer(CloudConfig(enabled=True), client=mock_client)
+    findings = reviewer.review([target], tmp_path)
+
+    assert findings == []
+    assert reviewer.skipped_files == [("a.py", "response was not valid JSON")]
+
+
+def test_review_handles_non_object_json_response_as_skip_not_crash(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    (tmp_path / "a.py").write_text("x = 1\n")
+    target = ReviewTarget(path="a.py", status="modified", diff_text="", changed_lines={1})
+
+    mock_response = MagicMock()
+    mock_response.raise_for_status = MagicMock()
+    mock_response.json.return_value = ["unexpected", "array"]
+    mock_client = MagicMock()
+    mock_client.post.return_value = mock_response
+
+    reviewer = AnthropicCloudReviewer(CloudConfig(enabled=True), client=mock_client)
+    findings = reviewer.review([target], tmp_path)
+
+    assert findings == []
+    assert reviewer.skipped_files == [("a.py", "response JSON was not an object")]
+
+
+def test_review_handles_malformed_tool_use_block_as_skip_not_crash(tmp_path: Path, monkeypatch):
+    # regression: a non-dict "content" entry, or a tool_use block whose
+    # "input" isn't an object, used to raise AttributeError uncaught
+    # (calling .get() on something that isn't a dict).
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    (tmp_path / "a.py").write_text("x = 1\n")
+    target = ReviewTarget(path="a.py", status="modified", diff_text="", changed_lines={1})
+
+    mock_response = MagicMock()
+    mock_response.raise_for_status = MagicMock()
+    mock_response.json.return_value = {
+        "content": [
+            "not-a-dict",
+            {"type": "tool_use", "name": "report_findings", "input": "also-not-a-dict"},
+        ]
+    }
+    mock_client = MagicMock()
+    mock_client.post.return_value = mock_response
+
+    reviewer = AnthropicCloudReviewer(CloudConfig(enabled=True), client=mock_client)
+    findings = reviewer.review([target], tmp_path)
+
+    assert findings == []
+    assert reviewer.skipped_files == [("a.py", "tool_use block 'input' was not a JSON object")]
 
 
 def test_review_records_api_error_as_skip(tmp_path: Path):
