@@ -1,0 +1,312 @@
+"""Tier 1: rules engine. Wraps ruff/eslint/semgrep/house-checks as sub-runners and
+normalizes their output into our Finding schema, filtered to lines touched by the
+diff (or unfiltered, in whole-repo audit mode where changed_lines is None).
+"""
+
+from __future__ import annotations
+
+import json
+import shutil
+import subprocess
+from abc import ABC, abstractmethod
+from pathlib import Path
+
+from codecheck.checks.registry import ALL_CHECKS
+from codecheck.config import RulesConfig
+from codecheck.diff import read_file_content
+from codecheck.models import Finding, ReviewTarget, Severity
+from codecheck.reviewers.base import Reviewer
+
+
+def _line_in_scope(target: ReviewTarget, line: int) -> bool:
+    return target.changed_lines is None or line in target.changed_lines
+
+
+class SubRunner(ABC):
+    name: str
+
+    @abstractmethod
+    def is_available(self, repo_path: Path) -> tuple[bool, str | None]:
+        ...
+
+    @abstractmethod
+    def run(self, targets: list[ReviewTarget], repo_path: Path) -> list[Finding]:
+        ...
+
+
+def _filter_targets(targets: list[ReviewTarget], suffixes: tuple[str, ...]) -> list[ReviewTarget]:
+    return [t for t in targets if t.status != "deleted" and t.path.endswith(suffixes)]
+
+
+class RuffRunner(SubRunner):
+    name = "ruff"
+
+    def is_available(self, repo_path: Path) -> tuple[bool, str | None]:
+        if shutil.which("ruff") is None:
+            return False, "ruff not found on PATH"
+        return True, None
+
+    def run(self, targets: list[ReviewTarget], repo_path: Path) -> list[Finding]:
+        py_targets = _filter_targets(targets, (".py",))
+        if not py_targets:
+            return []
+
+        target_by_path = {t.path: t for t in py_targets}
+        result = subprocess.run(
+            ["ruff", "check", "--output-format=json", "--", *target_by_path.keys()],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+        )
+        # ruff exits 1 when it finds lint errors — that's expected, not a failure.
+        if result.returncode not in (0, 1):
+            return []
+
+        try:
+            raw_findings = json.loads(result.stdout or "[]")
+        except json.JSONDecodeError:
+            return []
+
+        findings = []
+        for item in raw_findings:
+            path = item.get("filename", "")
+            rel_path = _relativize(path, repo_path)
+            target = target_by_path.get(rel_path)
+            if target is None:
+                continue
+            line = item["location"]["row"]
+            if not _line_in_scope(target, line):
+                continue
+            findings.append(
+                Finding(
+                    check_id=f"RUFF-{item['code']}",
+                    tier="rules",
+                    source="ruff",
+                    severity=_ruff_severity(item["code"]),
+                    title=item["code"] + ": " + item["message"].split("\n")[0],
+                    explanation=item["message"],
+                    file=rel_path,
+                    line_start=line,
+                    line_end=item.get("end_location", {}).get("row"),
+                    raw=item,
+                )
+            )
+        return findings
+
+
+def _relativize(path: str, repo_path: Path) -> str:
+    try:
+        return str(Path(path).resolve().relative_to(repo_path.resolve()))
+    except ValueError:
+        return path
+
+
+def _ruff_severity(code: str) -> Severity:
+    # Security-relevant rule families get bumped; everything else is style/correctness.
+    if code.startswith("S"):  # flake8-bandit security rules
+        return Severity.HIGH
+    if code.startswith(("E9", "F82")):  # syntax errors, undefined names
+        return Severity.HIGH
+    if code.startswith(("F", "B")):  # pyflakes, bugbear correctness
+        return Severity.MEDIUM
+    return Severity.LOW
+
+
+_ESLINT_CONFIG_NAMES = (
+    "eslint.config.js",
+    "eslint.config.mjs",
+    "eslint.config.cjs",
+    ".eslintrc",
+    ".eslintrc.js",
+    ".eslintrc.cjs",
+    ".eslintrc.json",
+    ".eslintrc.yml",
+    ".eslintrc.yaml",
+)
+
+
+class EslintRunner(SubRunner):
+    name = "eslint"
+
+    def _binary(self, repo_path: Path) -> str | None:
+        # Deliberately PATH-only, never repo_path/node_modules/.bin/eslint: when
+        # auditing an untrusted repo (--repo-url, --pr), that binary is shipped
+        # by whoever wrote the repo, not by the user running codecheck -- running
+        # it would be arbitrary code execution under the attacker's control.
+        return shutil.which("eslint")
+
+    def is_available(self, repo_path: Path) -> tuple[bool, str | None]:
+        if not any((repo_path / name).is_file() for name in _ESLINT_CONFIG_NAMES):
+            return False, "no eslint config found in repo"
+        if self._binary(repo_path) is None:
+            return False, "eslint binary not found on PATH"
+        return True, None
+
+    def run(self, targets: list[ReviewTarget], repo_path: Path) -> list[Finding]:
+        js_targets = _filter_targets(targets, (".js", ".jsx", ".ts", ".tsx"))
+        if not js_targets:
+            return []
+
+        target_by_path = {t.path: t for t in js_targets}
+        binary = self._binary(repo_path)
+        result = subprocess.run(
+            [binary, "--format=json", "--", *target_by_path.keys()],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+        )
+        try:
+            raw_results = json.loads(result.stdout or "[]")
+        except json.JSONDecodeError:
+            return []
+
+        findings = []
+        for file_result in raw_results:
+            rel_path = _relativize(file_result.get("filePath", ""), repo_path)
+            target = target_by_path.get(rel_path)
+            if target is None:
+                continue
+            for msg in file_result.get("messages", []):
+                line = msg.get("line")
+                if line is None or not _line_in_scope(target, line):
+                    continue
+                rule_id = msg.get("ruleId") or "unknown"
+                findings.append(
+                    Finding(
+                        check_id=f"ESLINT-{rule_id}",
+                        tier="rules",
+                        source="eslint",
+                        severity=Severity.MEDIUM if msg.get("severity") == 2 else Severity.LOW,
+                        title=f"{rule_id}: {msg.get('message', '')}",
+                        explanation=msg.get("message", ""),
+                        file=rel_path,
+                        line_start=line,
+                        line_end=msg.get("endLine"),
+                        raw=msg,
+                    )
+                )
+        return findings
+
+
+_SEMGREP_SEVERITY_MAP = {
+    "ERROR": Severity.HIGH,
+    "WARNING": Severity.MEDIUM,
+    "INFO": Severity.LOW,
+}
+
+
+class SemgrepRunner(SubRunner):
+    name = "semgrep"
+
+    def is_available(self, repo_path: Path) -> tuple[bool, str | None]:
+        if shutil.which("semgrep") is None:
+            return False, "semgrep not found on PATH"
+        return True, None
+
+    def run(self, targets: list[ReviewTarget], repo_path: Path) -> list[Finding]:
+        live_targets = [t for t in targets if t.status != "deleted"]
+        if not live_targets:
+            return []
+
+        target_by_path = {t.path: t for t in live_targets}
+        result = subprocess.run(
+            # --metrics=off: --config=auto necessarily reaches semgrep's registry
+            # to download rules (unavoidable if you want its ruleset), but it
+            # also sends anonymous scan telemetry by default -- confirmed to be
+            # a separate, disable-able behavior. Turned off since this tool
+            # documents itself as not sending your code's contents anywhere
+            # without you opting in, and telemetry isn't something users opted
+            # into here.
+            ["semgrep", "--config=auto", "--metrics=off", "--json", "--quiet", "--", *target_by_path.keys()],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+        )
+        try:
+            payload = json.loads(result.stdout or "{}")
+        except json.JSONDecodeError:
+            return []
+
+        findings = []
+        for item in payload.get("results", []):
+            rel_path = _relativize(item.get("path", ""), repo_path)
+            target = target_by_path.get(rel_path)
+            if target is None:
+                continue
+            line = item.get("start", {}).get("line")
+            if line is None or not _line_in_scope(target, line):
+                continue
+            extra = item.get("extra", {})
+            check_id = item.get("check_id", "semgrep-rule").split(".")[-1]
+            findings.append(
+                Finding(
+                    check_id=f"SEMGREP-{check_id}",
+                    tier="rules",
+                    source="semgrep",
+                    severity=_SEMGREP_SEVERITY_MAP.get(extra.get("severity", "WARNING"), Severity.MEDIUM),
+                    title=extra.get("message", check_id).split("\n")[0],
+                    explanation=extra.get("message", ""),
+                    file=rel_path,
+                    line_start=line,
+                    line_end=item.get("end", {}).get("line"),
+                    raw=item,
+                )
+            )
+        return findings
+
+
+class HouseRulesRunner(SubRunner):
+    name = "house_rules"
+
+    def is_available(self, repo_path: Path) -> tuple[bool, str | None]:
+        return True, None
+
+    def run(self, targets: list[ReviewTarget], repo_path: Path) -> list[Finding]:
+        py_targets = _filter_targets(targets, (".py",))
+        findings: list[Finding] = []
+        for target in py_targets:
+            content = read_file_content(repo_path, target)
+            if content is None:
+                continue
+            for check in ALL_CHECKS:
+                findings.extend(check.check_file(target.path, content, target.changed_lines))
+        return findings
+
+
+class RulesEngineReviewer(Reviewer):
+    tier = "rules"
+    name = "rules_engine"
+
+    def __init__(self, config: RulesConfig):
+        self.config = config
+        # Sub-runners that were enabled but couldn't run (tool not installed, no
+        # eslint config, etc.), as (runner_name, reason) pairs. Populated by
+        # review(); surfaced by the CLI so an enabled-but-skipped linter isn't
+        # silently mistaken for "ran and found nothing."
+        self.skipped_runners: list[tuple[str, str]] = []
+        self._runners: list[SubRunner] = []
+        if config.ruff:
+            self._runners.append(RuffRunner())
+        if config.eslint:
+            self._runners.append(EslintRunner())
+        if config.semgrep:
+            self._runners.append(SemgrepRunner())
+        if config.house_rules:
+            self._runners.append(HouseRulesRunner())
+
+    def is_available(self, repo_path: Path) -> tuple[bool, str | None]:
+        if not self.config.enabled or not self._runners:
+            return False, "rules engine disabled or no sub-runners enabled"
+        return True, None
+
+    def review(self, targets: list[ReviewTarget], repo_path: Path) -> list[Finding]:
+        self.skipped_runners = []
+        findings: list[Finding] = []
+        for runner in self._runners:
+            available, reason = runner.is_available(repo_path)
+            if not available:
+                if reason:
+                    self.skipped_runners.append((runner.name, reason))
+                continue
+            findings.extend(runner.run(targets, repo_path))
+        return findings

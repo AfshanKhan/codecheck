@@ -1,0 +1,41 @@
+[project]
+name = "codecheck"
+version = "0.1.0"
+description = "Local, tiered code review tool for a diff or a whole repo: deterministic linters + optional cloud LLM pass."
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.11"
+dependencies = [
+    "typer>=0.12",
+    "rich>=13.7",
+    "httpx>=0.27",
+    "gitpython>=3.1",
+    "pydantic>=2.6",
+    "pyyaml>=6.0",
+]
+
+[project.scripts]
+codecheck = "codecheck.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/codecheck"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+# Pinned so CI lint is deterministic: ruff's default rule set widened in 0.16
+# and now flags intentional patterns (e.g. B008 on typer.Option() defaults).
+# Classic stable default (pycodestyle errors + pyflakes) plus import sorting.
+select = ["E4", "E7", "E9", "F", "I"]
