@@ -143,7 +143,8 @@ def _extract_findings_from_content(content: str | None) -> list[dict] | None:
         return None
 
     if "findings" in parsed and isinstance(parsed["findings"], list):
-        return parsed["findings"]
+        findings = parsed["findings"]
+        return findings if all(isinstance(f, dict) for f in findings) else None
 
     if parsed.get("name") == "report_findings":
         arguments = parsed.get("arguments")
@@ -153,7 +154,8 @@ def _extract_findings_from_content(content: str | None) -> list[dict] | None:
             except json.JSONDecodeError:
                 return None
         if isinstance(arguments, dict) and isinstance(arguments.get("findings"), list):
-            return arguments["findings"]
+            findings = arguments["findings"]
+            return findings if all(isinstance(f, dict) for f in findings) else None
 
     return None
 
@@ -261,6 +263,8 @@ class OpenAIProtocolReviewer(Reviewer):
             findings = args.get("findings", [])
             if not isinstance(findings, list):
                 return [], "tool call 'findings' was not a JSON array"
+            if not all(isinstance(finding, dict) for finding in findings):
+                return [], "tool call 'findings' contained a non-object element"
             return findings, None
 
         # Some OpenAI-compatible servers (observed with Ollama) don't reliably

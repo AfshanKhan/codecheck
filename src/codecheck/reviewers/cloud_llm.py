@@ -208,6 +208,8 @@ class AnthropicCloudReviewer(Reviewer):
                 findings = tool_input.get("findings", [])
                 if not isinstance(findings, list):
                     return [], "tool_use block 'findings' was not a JSON array"
+                if not all(isinstance(finding, dict) for finding in findings):
+                    return [], "tool_use block 'findings' contained a non-object element"
                 return findings, None
         return [], "no tool_use block in response"
 

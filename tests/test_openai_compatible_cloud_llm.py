@@ -219,6 +219,44 @@ def test_review_handles_malformed_tool_call_shapes_as_skip_not_crash(tmp_path: P
     assert reviewer.skipped_files == [("a.py", "no report_findings tool call in response")]
 
 
+def test_review_handles_non_object_finding_element_as_skip_not_crash(tmp_path: Path, monkeypatch):
+    # regression: findings was validated as a list, but not that each element
+    # is an object -- a string/number element reached _finding_from_raw's
+    # raw.get(...) uncaught. Same bug class caught in the Anthropic parser by
+    # a second round of Greptile review; this is the shared OpenAI-compatible
+    # path (used by both the cloud tier and the local LLM tier).
+    monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
+    (tmp_path / "a.py").write_text("x = 1\n")
+    target = ReviewTarget(path="a.py", status="modified", diff_text="", changed_lines={1})
+
+    mock_response = MagicMock()
+    mock_response.raise_for_status = MagicMock()
+    mock_response.json.return_value = {
+        "choices": [
+            {
+                "message": {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "report_findings",
+                                "arguments": json.dumps({"findings": ["not-a-dict-finding"]}),
+                            }
+                        }
+                    ]
+                }
+            }
+        ]
+    }
+    mock_client = MagicMock()
+    mock_client.post.return_value = mock_response
+
+    reviewer = OpenAICompatibleCloudReviewer(CloudConfig(enabled=True, provider="groq"), client=mock_client)
+    findings = reviewer.review([target], tmp_path)
+
+    assert findings == []
+    assert reviewer.skipped_files == [("a.py", "tool call 'findings' contained a non-object element")]
+
+
 def test_get_client_sends_bearer_auth_header(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("GROQ_API_KEY", "gsk-secret")
     reviewer = OpenAICompatibleCloudReviewer(CloudConfig(enabled=True, provider="groq"))

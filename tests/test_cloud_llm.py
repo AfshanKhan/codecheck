@@ -212,6 +212,36 @@ def test_review_handles_malformed_tool_use_block_as_skip_not_crash(tmp_path: Pat
     assert reviewer.skipped_files == [("a.py", "tool_use block 'input' was not a JSON object")]
 
 
+def test_review_handles_non_object_finding_element_as_skip_not_crash(tmp_path: Path, monkeypatch):
+    # regression: findings was validated as a list, but not that each
+    # element is an object -- a non-dict element (e.g. a string) reached
+    # _anthropic_finding_from_raw's raw.get(...) uncaught. Flagged in a third
+    # round of Greptile review after the surrounding checks were added.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    (tmp_path / "a.py").write_text("x = 1\n")
+    target = ReviewTarget(path="a.py", status="modified", diff_text="", changed_lines={1})
+
+    mock_response = MagicMock()
+    mock_response.raise_for_status = MagicMock()
+    mock_response.json.return_value = {
+        "content": [
+            {
+                "type": "tool_use",
+                "name": "report_findings",
+                "input": {"findings": ["not-a-dict-finding"]},
+            }
+        ]
+    }
+    mock_client = MagicMock()
+    mock_client.post.return_value = mock_response
+
+    reviewer = AnthropicCloudReviewer(CloudConfig(enabled=True), client=mock_client)
+    findings = reviewer.review([target], tmp_path)
+
+    assert findings == []
+    assert reviewer.skipped_files == [("a.py", "tool_use block 'findings' contained a non-object element")]
+
+
 def test_review_records_api_error_as_skip(tmp_path: Path):
     (tmp_path / "a.py").write_text("x = 1\n")
     changed_file = ReviewTarget(path="a.py", status="modified", diff_text="", changed_lines={1})

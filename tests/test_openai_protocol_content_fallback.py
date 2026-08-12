@@ -57,6 +57,17 @@ def test_extract_findings_from_content_returns_none_for_wrong_function_name():
     assert _extract_findings_from_content(content) is None
 
 
+def test_extract_findings_from_content_returns_none_for_non_object_finding_element():
+    # same bug class as the tool_calls path: a findings array containing a
+    # non-object element (e.g. a bare string) must not be handed back as if
+    # it were usable -- the caller would crash on raw.get(...) downstream.
+    content = json.dumps({"findings": ["not-a-dict"]})
+    assert _extract_findings_from_content(content) is None
+
+    content = json.dumps({"name": "report_findings", "arguments": {"findings": [123]}})
+    assert _extract_findings_from_content(content) is None
+
+
 def test_review_file_recovers_via_content_fallback_when_tool_calls_empty(tmp_path: Path):
     (tmp_path / "a.py").write_text("x = 1\n")
     target = ReviewTarget(path="a.py", status="modified", diff_text="", changed_lines={1})
