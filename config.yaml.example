@@ -1,0 +1,76 @@
+rules:
+  enabled: true
+  ruff: true
+  eslint: true
+  semgrep: true
+  house_rules: true
+
+cloud:
+  enabled: false          # can be overridden by --cloud
+  provider: anthropic     # anthropic | groq | mistral | cerebras | openrouter | openai_compatible
+  model: "claude-sonnet-4-6"
+  api_key_env: "ANTHROPIC_API_KEY"   # unset (or omit) to use the provider's default env var name
+  max_file_lines: 800      # files larger than this are skipped in the cloud tier
+  audit_file_cap: 50       # `audit --cloud` refuses to run over this many files without --force-cloud
+  request_timeout_seconds: 120   # hosted APIs are fast; rarely needs raising
+
+  # --- Free-tier alternative (no prepaid balance required) ---
+  # Groq, Mistral, Cerebras, and OpenRouter all offer genuinely free API keys on
+  # the same OpenAI-compatible protocol. Each has a sane default base_url and
+  # api_key_env baked in — just set the provider and drop the key in the env.
+  #
+  # provider: groq
+  # model: "llama-3.3-70b-versatile"
+  # # api_key_env defaults to GROQ_API_KEY — export it, no need to set here
+
+  # --- Self-hosted vLLM (or any other self-hosted OpenAI-compatible server) ---
+  # Unlike Groq/Mistral/Cerebras/OpenRouter, self-hosted vLLM has no single
+  # canonical URL -- every deployment lives at whatever address you deployed
+  # it to, so there's deliberately no dedicated preset with a default
+  # base_url. This already works with zero code changes: `provider` is just a
+  # free-form label used for presets and error messages, and an explicit
+  # base_url always wins over any preset lookup regardless of what you name
+  # the provider.
+  #
+  # provider: vllm
+  # base_url: "https://your-vllm-deployment.example.com/v1/chat/completions"
+  # model: "your-model-name"
+  # api_key_env: "VLLM_API_KEY"   # only if your deployment requires auth
+
+# Tier 2 — a local OpenAI-compatible server. No API key, no cost, no network
+# call beyond localhost. Enable with --local or local.enabled.
+local:
+  enabled: false           # can be overridden by --local
+  provider: lm_studio       # lm_studio | ollama | openai_compatible (custom base_url)
+  # base_url: null           # only needed for provider: openai_compatible, or to override a preset
+  model: ""                 # required — whatever model is currently loaded (locally or via LM Link)
+  api_key_env: ""           # only set this if your local server requires auth
+  max_file_lines: 2000
+  request_timeout_seconds: 300   # confirmed real CPU inference needs minutes, not seconds -- raise further for slower hardware
+
+  # --- LM Studio + LM Link (provider: lm_studio only) ---
+  # If you use LM Studio's LM Link to point at a model loaded on another
+  # machine, base_url stays localhost:1234 either way -- codecheck resolves
+  # which device will actually serve `model` before running (via the `lms`
+  # CLI) and, if it would run on THIS machine instead of a confirmed remote,
+  # asks for confirmation (or refuses non-interactively) unless you pass
+  # --force-local. If the same model is loaded on more than one device at
+  # once, that's genuinely ambiguous (LM Studio picks silently) -- pass
+  # --device <name-or-"local"> to choose explicitly. None of this applies to
+  # Ollama or a custom endpoint -- there's no equivalent multi-device concept,
+  # so the local tier just runs directly for those.
+  #
+  # provider: ollama
+  # model: "qwen2.5-coder:7b"   # whatever you've pulled with `ollama pull`
+
+  # llama.cpp's `llama-server` has no dedicated preset -- use openai_compatible
+  # with its default port. Tested for real: forced tool-calling was NOT
+  # reliable here (0/2 real attempts produced a proper tool call, even with a
+  # model that reasoned out the right answer) -- see the README before relying
+  # on this in practice.
+  # provider: openai_compatible
+  # base_url: "http://localhost:8080/v1/chat/completions"
+  # model: "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF:Q4_K_M"
+
+thresholds:
+  fail_on_severity: "high"   # exit code 1 if any finding >= this severity

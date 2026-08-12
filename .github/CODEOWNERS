@@ -1,0 +1,4 @@
+# Default owner for everything in the repo. Replace <your-github-username> with
+# your GitHub handle (or a team like @org/maintainers). Owners are auto-requested
+# for review on PRs that touch matching paths.
+* @AfshanKhan

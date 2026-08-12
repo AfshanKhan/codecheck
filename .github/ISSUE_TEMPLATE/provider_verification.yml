@@ -1,0 +1,61 @@
+name: Provider / model verification report
+description: Report real results from running a Tier 2/3 provider or model, to update the verification tables.
+labels: ["verification"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The docs' verification tables only mark a provider ✅ when it's been run against a
+        real, live instance. Share what you actually observed — good or bad — so the tables
+        in `docs/Verification-Status.md` can be updated. Reliability has turned out to depend
+        on the **server + model combination**, not just the model name, so please be specific.
+  - type: dropdown
+    id: tier
+    attributes:
+      label: Tier
+      options:
+        - Tier 2 — local LLM
+        - Tier 3 — cloud LLM
+    validations:
+      required: true
+  - type: input
+    id: provider
+    attributes:
+      label: Provider
+      placeholder: "groq / mistral / cerebras / openrouter / anthropic / lm_studio / ollama / openai_compatible (vLLM, llama-server, ...)"
+    validations:
+      required: true
+  - type: input
+    id: model
+    attributes:
+      label: Model
+      placeholder: "llama-3.3-70b-versatile"
+    validations:
+      required: true
+  - type: input
+    id: server
+    attributes:
+      label: Server / runtime (for local tiers)
+      placeholder: "LM Studio 0.3.x / Ollama 0.x / llama-server (--jinja) / vLLM"
+  - type: dropdown
+    id: outcome
+    attributes:
+      label: Outcome
+      options:
+        - Worked reliably (produced structured findings via forced tool-calling)
+        - Worked, but unreliable / intermittent
+        - Did not work (no valid tool call / errors)
+    validations:
+      required: true
+  - type: textarea
+    id: details
+    attributes:
+      label: Details
+      description: What you ran, what came back, any error text, number of attempts, forced tool-calling behavior, etc.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: codecheck version
+      description: Output of `codecheck --version`.

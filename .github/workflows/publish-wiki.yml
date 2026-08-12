@@ -1,0 +1,48 @@
+# Mirrors the in-repo docs/ folder to the GitHub Wiki on every push to main that
+# touches docs/. docs/ is the single source of truth; the wiki is generated.
+#
+# One-time setup: the wiki repo doesn't exist until the wiki has at least one
+# page. Create the wiki once via the repo's "Wiki" tab (any page, e.g. "Home"),
+# then this workflow keeps it in sync. No secrets to configure — the built-in
+# GITHUB_TOKEN is used, which is why `permissions: contents: write` is set.
+name: Publish docs to Wiki
+
+on:
+  push:
+    branches: [main]
+    paths: ["docs/**", ".github/scripts/render_wiki.py", ".github/workflows/publish-wiki.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publish-wiki
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Clone the wiki
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git clone "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.wiki.git" wiki
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Render docs/ into wiki pages
+        run: python3 .github/scripts/render_wiki.py
+        env:
+          REPO: ${{ github.repository }}
+
+      - name: Commit and push
+        working-directory: wiki
+        run: |
+          git add -A
+          git diff --quiet --cached || git commit -m "Sync docs/ from ${GITHUB_SHA}"
+          git push

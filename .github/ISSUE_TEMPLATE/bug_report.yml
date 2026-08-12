@@ -1,0 +1,53 @@
+name: Bug report
+description: Something in codecheck behaves incorrectly.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! Please do **not** report security vulnerabilities here — see [SECURITY.md](../blob/main/SECURITY.md).
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you run, what did you expect, and what actually happened?
+      placeholder: |
+        Command: codecheck diff --repo-path . --base-ref main
+        Expected: ...
+        Actual: ...
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: codecheck version
+      description: Output of `codecheck --version`.
+    validations:
+      required: true
+  - type: dropdown
+    id: tier
+    attributes:
+      label: Which tier(s) are involved?
+      multiple: true
+      options:
+        - Tier 1 — rules (ruff / eslint / semgrep / house rules)
+        - Tier 2 — local LLM
+        - Tier 3 — cloud LLM
+        - Not tier-specific / CLI
+  - type: input
+    id: env
+    attributes:
+      label: OS and Python version
+      placeholder: "macOS 15 / Python 3.12"
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant output or report
+      description: Console output, or the contents of reports/report.md. Redact anything sensitive.
+      render: text

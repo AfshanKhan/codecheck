@@ -1,0 +1,44 @@
+# Runs the test suite and linter on every push to main and every PR (including
+# from forks). Least-privilege: read-only token, no secrets — a fork PR can't
+# exfiltrate anything.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+        with:
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+
+      - name: Install dependencies (runtime + dev group)
+        run: uv sync
+
+      # `uv run` puts the project venv on PATH, so the rules-engine tests that
+      # shell out to `ruff` by name resolve it.
+      - name: Lint
+        run: uv run ruff check
+
+      - name: Tests
+        run: uv run pytest
