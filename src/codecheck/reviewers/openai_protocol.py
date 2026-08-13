@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
 from typing import ClassVar
 
@@ -21,6 +22,56 @@ import httpx
 from codecheck.diff import read_file_content
 from codecheck.models import Finding, ReviewTarget, Severity
 from codecheck.reviewers.base import Reviewer
+
+DEFAULT_MAX_RETRIES = 5
+_INITIAL_RETRY_DELAY_SECONDS = 2.0
+_MAX_RETRY_DELAY_SECONDS = 60.0
+
+
+def _parse_retry_after(response: httpx.Response) -> float | None:
+    """The Retry-After header on a 429 is usually a plain integer number of
+    seconds -- confirmed this is what Groq actually sends. The HTTP-date form
+    (RFC 7231's other option) isn't handled; falls back to backoff for that.
+    """
+    value = response.headers.get("retry-after")
+    if value is None:
+        return None
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        return None
+
+
+def post_with_retry(
+    client: httpx.Client, url: str, json_payload: dict, max_retries: int = DEFAULT_MAX_RETRIES
+) -> httpx.Response:
+    """POST with automatic retry-with-backoff on HTTP 429 (rate limited).
+
+    Confirmed necessary against a real rate-limited Groq account (free tier,
+    12k tokens/minute): without this, most of a repo's files were left
+    unreviewed after a single audit pass, and simply re-running the whole
+    command didn't help either -- targets are processed in a fixed order, so
+    a fresh retry just re-hits the same first few files and stalls at the
+    same point every time. This makes a single `codecheck` invocation wait
+    out the rate limit itself and complete unattended, rather than requiring
+    a human to notice the skips and manually re-invoke the command (that
+    cross-invocation case is still covered separately by
+    `codecheck.resume` / `--resume-from`, e.g. if a run is interrupted).
+
+    Honors the server's Retry-After header (seconds) when present. Any
+    non-429 HTTP error is raised immediately without retrying, since
+    retrying a 400/404/etc. would just get the same result again.
+    """
+    delay = _INITIAL_RETRY_DELAY_SECONDS
+    attempt = 0
+    while True:
+        response = client.post(url, json=json_payload)
+        if response.status_code != 429 or attempt >= max_retries:
+            response.raise_for_status()
+            return response
+        time.sleep(_parse_retry_after(response) or delay)
+        delay = min(delay * 2, _MAX_RETRY_DELAY_SECONDS)
+        attempt += 1
 
 SYSTEM_PROMPT = """You are a senior code reviewer. You will be given a file's full \
 content, and possibly a unified diff of a recent change to it. Report findings \
@@ -226,8 +277,7 @@ class OpenAIProtocolReviewer(Reviewer):
         }
 
         try:
-            response = client.post(self._resolved_base_url(), json=payload)
-            response.raise_for_status()
+            response = post_with_retry(client, self._resolved_base_url(), payload)
         except httpx.HTTPError as e:
             return [], f"API request failed: {format_http_error(e)}"
 

@@ -33,6 +33,7 @@ from codecheck.reviewers.openai_protocol import (
     OpenAIProtocolReviewer,
     build_user_message,
     format_http_error,
+    post_with_retry,
     safe_int,
     within_diff_scope,
 )
@@ -183,8 +184,7 @@ class AnthropicCloudReviewer(Reviewer):
         }
 
         try:
-            response = client.post(_ANTHROPIC_API_URL, json=payload)
-            response.raise_for_status()
+            response = post_with_retry(client, _ANTHROPIC_API_URL, payload)
         except httpx.HTTPError as e:
             return [], f"API request failed: {format_http_error(e)}"
 

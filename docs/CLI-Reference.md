@@ -117,24 +117,33 @@ refuse to run if the number of eligible files exceeds `cloud.audit_file_cap`
 making any API calls**. Pass `--force-cloud` to proceed anyway, or lower
 `cloud.audit_file_cap` / point `--repo-path` at a subdirectory to shrink the scope.
 
-**Resuming after a rate limit (`--resume-from`, both modes):** free-tier cloud
+**Rate limits are handled automatically — no flag needed.** Free-tier cloud
 providers (Groq's free tier is the confirmed case: 12,000 tokens/minute) often
-can't cover a whole-repo `audit` in one run — most of the files just get
-skipped with a `429 Too Many Requests`. Since `codecheck` always processes
-files in the same order, simply re-running the same command doesn't help: it
-burns the fresh rate-limit budget on the exact same first few files every
-time and never reaches the rest. `--resume-from <path-to-prior-report.json>`
-fixes this — any file the cloud (or local) tier already got a real result for
-in that prior report is skipped (not re-requested) and its prior result is
-carried into the new report; only files that were actually skipped last time
-get retried. Repeating `--cloud --force-cloud --resume-from reports/report.json`
-a few times in a row (pointing each one at the previous run's own output)
-converges on full coverage instead of stalling. Verified directly against a
-real rate-limited Groq run: a repo where only 5/68 files succeeded on the
-first attempt went to 9/68 cumulative on a resumed retry, correctly skipping
-those first 5 and picking up new ones instead of repeating them. Only applies
-to the LLM tiers — the rules tier is free and fast enough to just re-run in
-full every time.
+can't cover a whole-repo `audit` at full speed — individual requests get a
+`429 Too Many Requests`. When that happens, `codecheck` itself waits (honoring
+the provider's `Retry-After` header when given, exponential backoff otherwise,
+up to 5 attempts per file) and retries that request in place before moving on
+— so a single `codecheck audit --cloud` invocation runs to completion
+unattended instead of leaving most files skipped. This is deliberate: the
+first version of this only skipped rate-limited files and expected you to
+notice and re-run the command, which real testing against Groq showed doesn't
+even work as a manual workaround — `codecheck` always processes files in the
+same order, so a fresh retry just re-hits the same first few files and stalls
+at the same point every single time. Now it just works — kick off `audit
+--cloud --force-cloud` and walk away.
+
+**`--resume-from` (both modes) is the fallback for when a run doesn't finish
+in one invocation** — interrupted (Ctrl-C, machine went to sleep), or a
+provider whose rate limit is so restrictive that even the automatic in-process
+retries don't converge within a single run. Point `--resume-from
+<path-to-prior-report.json>` at a previous run's own output, and any file the
+cloud (or local) tier already got a real result for is skipped (not
+re-requested) — its prior result is carried into the new report — while only
+files that were actually skipped last time get retried. Verified directly
+against a real rate-limited Groq run: a repo where only 5/68 files succeeded
+went to 9/68 cumulative on a resumed retry, correctly skipping those first 5
+instead of repeating them. Only applies to the LLM tiers — the rules tier is
+free and fast enough to just re-run in full every time.
 
 ### Exit codes (both modes)
 
