@@ -96,6 +96,18 @@ helper. In a non-interactive context (CI, cron, a piped command) it never
 prompts — it fails immediately with the same clear error instead of hanging
 forever waiting for input nobody can provide.
 
+**This prompt does not grant access to anything — it only lets you supply
+credentials you already have.** `codecheck` never checks who you are or
+whether you should be able to see the repo; it just hands your token to
+`git`, and GitHub/GitLab's own servers decide whether to allow the
+clone/fetch, exactly as if you'd typed the same credentials into `git`
+directly. If you don't have access to the private repo yourself, entering a
+token — any token — will not make it accessible; you'll still get "repository
+not accessible" after 3 attempts. This is also why a wrong-but-plausible
+token can't be used to probe whether a private repo exists: GitHub/GitLab
+return the identical "not found" error for "doesn't exist" and "exists but
+you can't see it," on purpose.
+
 GitLab isn't supported yet — `--pr` only recognizes GitHub's PR URL shape and
 fetch convention (`refs/pull/<n>/head`); GitLab merge requests use a different
 URL shape and ref (`refs/merge-requests/<n>/head`). `--repo-url` alone (no

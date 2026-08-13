@@ -199,6 +199,14 @@ trust** (e.g. a stranger's fork): the ESLint check runs code from that repo
 [Security notes](docs/Security.md)) before pointing this at code you don't trust — for your
 own team's PRs this isn't a concern.
 
+**Reviewing a private repo?** If your machine already has working git
+credentials for it (an SSH key, `gh auth login`, etc.), it just works — no
+extra setup. If not, `codecheck` will prompt you for a username and token
+right in the terminal (up to 3 tries). That prompt only lets you supply
+credentials you already have — it can't grant you access to a repo you
+don't otherwise have permission to see. See "Private repos" in the
+[CLI Reference](docs/CLI-Reference.md) for the full details.
+
 ---
 
 ## Documentation
