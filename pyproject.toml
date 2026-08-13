@@ -6,10 +6,10 @@ readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.11"
 dependencies = [
-    "typer>=0.12",
+    "typer>=0.27.1",
     "rich>=13.7",
     "httpx>=0.27",
-    "gitpython>=3.1",
+    "gitpython>=3.1.58",
     "pydantic>=2.6",
     "pyyaml>=6.0",
 ]
@@ -27,7 +27,7 @@ packages = ["src/codecheck"]
 [dependency-groups]
 dev = [
     "pytest>=8.0",
-    "ruff>=0.6",
+    "ruff>=0.16.2",
 ]
 
 [tool.ruff]
