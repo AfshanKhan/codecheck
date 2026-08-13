@@ -31,6 +31,10 @@ instance and produced a real result, not just passed a mocked unit test.
 | Ubuntu / Linux (Tier 1, packaging) | ✅ Verified | Real `ubuntu:24.04` Docker container: `uv sync`, the full 107-test suite (1.49s, faster than macOS), `codecheck audit`/`codecheck diff` with real findings, `uv tool install --editable .`, and plain `pip install` from a built wheel — all confirmed working identically to macOS. |
 | Ubuntu / Linux — Tier 2 (local LLM) | ✅ Verified | Real end-to-end: Linux container pointed `local.base_url` at `http://host.docker.internal:11434` (this machine's real, already-running Ollama with a real model) — `codecheck audit` from inside the container produced a real, correct SQL-injection finding, over a real network hop from Linux to the LLM backend. |
 | Ubuntu / Linux — Tier 3 (cloud LLM) | ✅ Verified (network layer) | From the same container: a real HTTPS request to the real Groq API (`httpx.get`, invalid key on purpose) correctly completed the full TLS/DNS/HTTP cycle and got a real `401 Invalid API Key` back — proves the network stack works cleanly on a bare container (missing CA certs is a common Linux-container gotcha; not an issue here). Combined with Tier 2's proof that the exact same request-building/response-parsing code path works on Linux, this covers the tier without needing to spend a real API key on it. |
+| Cloud tier 429 retry-with-backoff (`post_with_retry`) | ✅ Verified | Real rate-limited Groq free-tier account (12k tokens/minute): confirmed via a process stack sample that a long-running `audit --cloud` was genuinely inside a real `time.sleep()` backoff wait (not hung), and that a full run converged from 0 usable files on the very first (pre-retry-logic) attempt to reviewing the majority of a 71-file repo unattended in one invocation. |
+| `--resume-from` | ✅ Verified | Real rate-limited Groq run: pointing a retry at a prior run's own `report.json` correctly skipped the 5 files already reviewed and picked up new ones (5/68 → 9/68 cumulative) instead of re-hitting the same first few files every time, which is what a naive re-run without `--resume-from` was confirmed to do. |
+| Live per-file progress (`on_progress`) | ✅ Verified | Observed real `(N/total) path: outcome` lines during a live local-LLM audit, confirming the callback fires correctly per file rather than only at the end. |
+| Private-repo credential prompt | ⚠️ Partially verified | The "no interactive terminal → fail immediately, never hang" path is verified against a real inaccessible github.com repo in a non-interactive shell. The actual interactive prompt-and-retry flow (asking for a username/token at a real TTY, including the wrong-credentials/3-attempts case) is covered by unit tests with a mocked terminal and a mocked `git` call, not a live end-to-end run against a real private repo with real typed input — that needs a human at an actual terminal to confirm. |
 
 **If you test one of the ⚠️ rows and it works (or doesn't), corrections via a
 PR are genuinely wanted** — update this table with what you found, not just
@@ -40,7 +44,12 @@ just an honest admission nobody has confirmed it yet.
 For Tier 2 (local LLM) specifically, see "Which model to run locally" in
 [Architecture](Architecture.md) for hardware-tiered model suggestions — those are also a
 starting point based on August 2026 benchmarks, not a verified guarantee, and
-the same ask applies: update it with what you actually observed.
+the same ask applies: update it with what you actually observed. That section
+now also includes a real four-model comparison (gemma-4-12b,
+llama-3-groq-8b-tool-use, qwen2.5-7b-instruct, qwen2.5-coder-7b-instruct) run
+against this repo on real hardware via LM Studio, worth reading before picking
+a model by name/marketing alone — the model with the best tool-calling
+reliability had the worst finding quality (real fabrication, not just noise).
 
 ---
 
