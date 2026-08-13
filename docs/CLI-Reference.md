@@ -36,6 +36,7 @@ touched by the diff.
 | `--force-local` | off | Skip the confirmation prompt/refusal when the local tier would run on this machine instead of a confirmed LM Link remote — see LM Link under [Tier 2 in Architecture](Architecture.md). |
 | `--device` | none | Which device to use when `local.model` is loaded on more than one at once (a device name, or `local`). Sets LM Studio's LM Link preferred device — see LM Link under [Tier 2 in Architecture](Architecture.md). |
 | `--output-dir` | `./reports` | Where `report.json` and `report.md` are written. |
+| `--resume-from` | none | Path to a prior run's `report.json` — see "Resuming after a rate limit" below. |
 
 #### Reviewing a GitHub PR (`--pr`)
 
@@ -76,6 +77,43 @@ The PR's base branch is resolved automatically via the `gh` CLI
 passed one, otherwise `main`. Practically: if your PR targets anything other
 than `main` and you don't have `gh` set up, pass `--base-ref` explicitly.
 
+#### Private repos (`--repo-url`, `--pr`)
+
+`codecheck` doesn't handle credentials itself — it just shells out to `git`,
+so whatever already lets `git clone`/`git fetch` work on your machine (an SSH
+key, `gh auth login`, a `.netrc` entry, a credential helper) works identically
+here, for free, with zero setup specific to `codecheck`.
+
+If that fails — e.g. a fresh machine or CI runner with nothing configured yet
+for this particular repo — and you're at an interactive terminal, `codecheck`
+prompts for a username and token and retries, up to 3 attempts, before giving
+up with a clear "repository not accessible" error. The credentials are never
+written to disk, never embedded in the clone URL (that would leak into the
+cloned repo's `.git/config` and into `ps` output for the whole system while
+the clone runs), and never reused beyond that one operation — they're handed
+to git in-memory for that single clone/fetch via a short-lived `GIT_ASKPASS`
+helper. In a non-interactive context (CI, cron, a piped command) it never
+prompts — it fails immediately with the same clear error instead of hanging
+forever waiting for input nobody can provide.
+
+**This prompt does not grant access to anything — it only lets you supply
+credentials you already have.** `codecheck` never checks who you are or
+whether you should be able to see the repo; it just hands your token to
+`git`, and GitHub/GitLab's own servers decide whether to allow the
+clone/fetch, exactly as if you'd typed the same credentials into `git`
+directly. If you don't have access to the private repo yourself, entering a
+token — any token — will not make it accessible; you'll still get "repository
+not accessible" after 3 attempts. This is also why a wrong-but-plausible
+token can't be used to probe whether a private repo exists: GitHub/GitLab
+return the identical "not found" error for "doesn't exist" and "exists but
+you can't see it," on purpose.
+
+GitLab isn't supported yet — `--pr` only recognizes GitHub's PR URL shape and
+fetch convention (`refs/pull/<n>/head`); GitLab merge requests use a different
+URL shape and ref (`refs/merge-requests/<n>/head`). `--repo-url` alone (no
+`--pr`) works against any git host, GitLab included, since that's just a plain
+clone.
+
 ### `codecheck audit` — review a whole repo
 
 ```bash
@@ -104,6 +142,7 @@ every file is in scope, not just changed lines.
 | `--force-local` | off | Skip the confirmation prompt/refusal when the local tier would run on this machine instead of a confirmed LM Link remote — see LM Link under [Tier 2 in Architecture](Architecture.md). |
 | `--device` | none | Which device to use when `local.model` is loaded on more than one at once (a device name, or `local`). Sets LM Studio's LM Link preferred device — see LM Link under [Tier 2 in Architecture](Architecture.md). |
 | `--output-dir` | `./reports` | Where `report.json` and `report.md` are written. |
+| `--resume-from` | none | Path to a prior run's `report.json` — see "Resuming after a rate limit" below. |
 
 **Cloud cost cap (both modes):** the cloud tier makes one API call per file. An
 `audit` can mean one call per file in the *entire repo*, and a `diff` is only
@@ -114,6 +153,34 @@ refuse to run if the number of eligible files exceeds `cloud.audit_file_cap`
 (default `50`) — they print the file count and exit with code `2` **before
 making any API calls**. Pass `--force-cloud` to proceed anyway, or lower
 `cloud.audit_file_cap` / point `--repo-path` at a subdirectory to shrink the scope.
+
+**Rate limits are handled automatically — no flag needed.** Free-tier cloud
+providers (Groq's free tier is the confirmed case: 12,000 tokens/minute) often
+can't cover a whole-repo `audit` at full speed — individual requests get a
+`429 Too Many Requests`. When that happens, `codecheck` itself waits (honoring
+the provider's `Retry-After` header when given, exponential backoff otherwise,
+up to 5 attempts per file) and retries that request in place before moving on
+— so a single `codecheck audit --cloud` invocation runs to completion
+unattended instead of leaving most files skipped. This is deliberate: the
+first version of this only skipped rate-limited files and expected you to
+notice and re-run the command, which real testing against Groq showed doesn't
+even work as a manual workaround — `codecheck` always processes files in the
+same order, so a fresh retry just re-hits the same first few files and stalls
+at the same point every single time. Now it just works — kick off `audit
+--cloud --force-cloud` and walk away.
+
+**`--resume-from` (both modes) is the fallback for when a run doesn't finish
+in one invocation** — interrupted (Ctrl-C, machine went to sleep), or a
+provider whose rate limit is so restrictive that even the automatic in-process
+retries don't converge within a single run. Point `--resume-from
+<path-to-prior-report.json>` at a previous run's own output, and any file the
+cloud (or local) tier already got a real result for is skipped (not
+re-requested) — its prior result is carried into the new report — while only
+files that were actually skipped last time get retried. Verified directly
+against a real rate-limited Groq run: a repo where only 5/68 files succeeded
+went to 9/68 cumulative on a resumed retry, correctly skipping those first 5
+instead of repeating them. Only applies to the LLM tiers — the rules tier is
+free and fast enough to just re-run in full every time.
 
 ### Exit codes (both modes)
 

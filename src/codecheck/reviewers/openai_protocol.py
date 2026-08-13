@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import json
 import os
+import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import ClassVar
 
@@ -21,6 +23,62 @@ import httpx
 from codecheck.diff import read_file_content
 from codecheck.models import Finding, ReviewTarget, Severity
 from codecheck.reviewers.base import Reviewer
+
+DEFAULT_MAX_RETRIES = 5
+_INITIAL_RETRY_DELAY_SECONDS = 2.0
+_MAX_RETRY_DELAY_SECONDS = 60.0
+
+
+def _parse_retry_after(response: httpx.Response) -> float | None:
+    """The Retry-After header on a 429 is usually a plain integer number of
+    seconds -- confirmed this is what Groq actually sends. The HTTP-date form
+    (RFC 7231's other option) isn't handled; falls back to backoff for that.
+    """
+    value = response.headers.get("retry-after")
+    if value is None:
+        return None
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        return None
+
+
+def post_with_retry(
+    client: httpx.Client, url: str, json_payload: dict, max_retries: int = DEFAULT_MAX_RETRIES
+) -> httpx.Response:
+    """POST with automatic retry-with-backoff on HTTP 429 (rate limited).
+
+    Confirmed necessary against a real rate-limited Groq account (free tier,
+    12k tokens/minute): without this, most of a repo's files were left
+    unreviewed after a single audit pass, and simply re-running the whole
+    command didn't help either -- targets are processed in a fixed order, so
+    a fresh retry just re-hits the same first few files and stalls at the
+    same point every time. This makes a single `codecheck` invocation wait
+    out the rate limit itself and complete unattended, rather than requiring
+    a human to notice the skips and manually re-invoke the command (that
+    cross-invocation case is still covered separately by
+    `codecheck.resume` / `--resume-from`, e.g. if a run is interrupted).
+
+    Honors the server's Retry-After header (seconds) when present, but never
+    waits longer than _MAX_RETRY_DELAY_SECONDS regardless -- a malicious or
+    misconfigured server returning an enormous Retry-After (or Retry-After
+    were fed straight to time.sleep uncapped) could otherwise stall the
+    review indefinitely, since only the fallback backoff had the cap applied.
+
+    Any non-429 HTTP error is raised immediately without retrying, since
+    retrying a 400/404/etc. would just get the same result again.
+    """
+    delay = _INITIAL_RETRY_DELAY_SECONDS
+    attempt = 0
+    while True:
+        response = client.post(url, json=json_payload)
+        if response.status_code != 429 or attempt >= max_retries:
+            response.raise_for_status()
+            return response
+        wait = min(_parse_retry_after(response) or delay, _MAX_RETRY_DELAY_SECONDS)
+        time.sleep(wait)
+        delay = min(delay * 2, _MAX_RETRY_DELAY_SECONDS)
+        attempt += 1
 
 SYSTEM_PROMPT = """You are a senior code reviewer. You will be given a file's full \
 content, and possibly a unified diff of a recent change to it. Report findings \
@@ -226,8 +284,7 @@ class OpenAIProtocolReviewer(Reviewer):
         }
 
         try:
-            response = client.post(self._resolved_base_url(), json=payload)
-            response.raise_for_status()
+            response = post_with_retry(client, self._resolved_base_url(), payload)
         except httpx.HTTPError as e:
             return [], f"API request failed: {format_http_error(e)}"
 
@@ -296,7 +353,18 @@ class OpenAIProtocolReviewer(Reviewer):
             raw=raw,
         )
 
-    def review(self, targets: list[ReviewTarget], repo_path: Path) -> list[Finding]:
+    def review(
+        self,
+        targets: list[ReviewTarget],
+        repo_path: Path,
+        on_progress: Callable[[str, str], None] | None = None,
+    ) -> list[Finding]:
+        """on_progress, if given, is called as on_progress(file_path, outcome)
+        right after each file is processed -- lets the caller show live
+        per-file progress instead of a single spinner for the whole tier,
+        which otherwise gives no visibility into a long run (e.g. one that's
+        working through retries -- see post_with_retry) until it's all over.
+        """
         self.skipped_files = []
         client = self._get_client()
         findings: list[Finding] = []
@@ -308,23 +376,33 @@ class OpenAIProtocolReviewer(Reviewer):
             content = read_file_content(repo_path, target)
             if content is None:
                 self.skipped_files.append((target.path, "could not read file content"))
+                if on_progress:
+                    on_progress(target.path, "skipped: could not read file content")
                 continue
             line_count = content.count("\n") + 1
             if line_count > self.config.max_file_lines:
-                self.skipped_files.append(
-                    (target.path, f"file too large ({line_count} lines > {self.config.max_file_lines})")
-                )
+                reason = f"file too large ({line_count} lines > {self.config.max_file_lines})"
+                self.skipped_files.append((target.path, reason))
+                if on_progress:
+                    on_progress(target.path, f"skipped: {reason}")
                 continue
 
             raw_findings, error = self._review_file(client, target, content)
             if error:
                 self.skipped_files.append((target.path, error))
+                if on_progress:
+                    on_progress(target.path, f"skipped: {error}")
                 continue
 
+            file_finding_count = 0
             for raw in raw_findings:
                 finding_counter += 1
                 finding = self._finding_from_raw(raw, target.path, finding_counter)
                 if within_diff_scope(target, finding):
                     findings.append(finding)
+                    file_finding_count += 1
+            if on_progress:
+                noun = "finding" if file_finding_count == 1 else "findings"
+                on_progress(target.path, f"{file_finding_count} {noun}")
 
         return findings

@@ -1,6 +1,5 @@
 blank_issues_enabled: false
 contact_links:
   - name: 🔒 Report a security vulnerability
-    # Replace <owner>/<repo> with the real path once the repo exists.
-    url: https://github.com/<owner>/<repo>/security/policy
+    url: https://github.com/AfshanKhan/codecheck/security/policy
     about: Do NOT open a public issue for security problems. Report privately — see SECURITY.md.

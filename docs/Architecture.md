@@ -115,7 +115,7 @@ general popularity:
 
 | Your hardware | Suggested model | Why |
 |---|---|---|
-| ~8GB RAM/VRAM, CPU-only or entry GPU | `llama3-groq-tool-use:8b`, or Qwen3 8B | Purpose-built/native tool-calling support at a size that still runs acceptably without a GPU. |
+| ~8GB RAM/VRAM, CPU-only or entry GPU | `qwen2.5-7b-instruct` (verified — see results below), or Qwen3 8B | Real testing found the "tool-use-optimized" `llama3-groq-tool-use:8b` calls the tool more reliably but fabricates findings; a general-purpose 7B was more trustworthy despite slightly lower completion rate. See "Real results" below before picking this one on reputation alone. |
 | ~12–16GB VRAM | Qwen3-Coder 30B (Q4), or Qwen3 8B if that's too slow | Code-shaped tool use; still fits comfortably. |
 | ~24GB+ VRAM | Gemma 4 27B, or Command-R 35B for multi-step tool chains | Meaningfully better reasoning at a size most single-GPU rigs can still run. |
 | ~48GB+ VRAM / large unified memory (Apple Silicon 64GB+) | `llama3-groq-tool-use:70b`, or Llama 3.3 70B | Highest measured tool-calling reliability (Berkeley Function Calling Leaderboard), if you have the memory for it. |
@@ -133,6 +133,30 @@ it works well — or doesn't — **please update this table via a PR** with what
 you actually observed, including the provider (LM Studio vs. Ollama) and
 model size, since reliability has turned out to depend on that combination,
 not just the model name.
+
+**Real results, M1 Pro / 16GB unified memory, LM Studio, MLX quantization
+(August 2026)** — a real `codecheck audit --local` of this repo (71 files)
+against four models, measuring both how many files actually got a usable
+response and whether the findings were trustworthy:
+
+| Model | Files succeeded | Findings quality |
+|---|---|---|
+| `google/gemma-4-12b` (4bit) | 19/71 (27%) | Both findings low-value, but no fabrication. |
+| `llama-3-groq-8b-tool-use` (4bit, MLX) | **67/71 (94%)** | **Worst quality of the four** — fabricated content outright: claimed a function (`get_users`) existed and accessed a database in a file that is completely empty. Also reflexively attached "direct DB writes bypassing ORM validation" boilerplate to files with nothing to do with databases, including `CODE_OF_CONDUCT.md`. |
+| `qwen2.5-7b-instruct` (4bit, MLX) | 66/71 (93%) | High reliability, no fabrication found — false positives were misreadings of real content (flagging our own AST-detector logic as if it were the vulnerable pattern it detects, and re-flagging risks we'd already documented intentionally in `docs/Security.md` as if newly discovered), not invented content. |
+| `qwen2.5-coder-7b-instruct` (4bit, MLX) | 40/71 (56%) | Same false-positive pattern as the Instruct model above (flagged its own detector logic). Notably: this exact model failed forced tool-calling 2/2 via `llama-server` (see below) but works fine via LM Studio — confirms that failure was `llama-server`'s harness, not the model. |
+
+**Conclusion: reliable tool-calling and trustworthy output are not the same
+thing, and optimizing for one doesn't get you the other.** The model
+literally named and fine-tuned for "tool use" had the highest call-success
+rate *and* the worst hallucination rate of the four — for a security-review
+tool, a model that reliably calls the function but invents vulnerabilities is
+worse than one that fails to call it at all, since a failure is visibly a
+skip in the report while a fabrication looks like a real finding. Based on
+this, `qwen2.5-7b-instruct` is the better default recommendation for this
+hardware tier over `llama3-groq-tool-use:8b`, despite the latter's higher raw
+completion rate — pending someone else's real results confirming or
+contradicting this on different hardware/repos.
 
 **Verified against a real running Ollama instance**, and this surfaced a real
 protocol gap: Ollama's OpenAI-compat layer doesn't reliably populate
@@ -353,6 +377,32 @@ surfaced in the final report's "Skipped" section, not silently dropped):
   indication of the cause.
 - A response comes back without the expected tool call block (`tool_use` for
   Anthropic, `tool_calls` for OpenAI-compatible) → treated as a skip, not a crash.
+- A response's JSON is malformed, isn't an object, or a `findings` array contains
+  a non-object element → skipped with a specific reason rather than raising —
+  confirmed necessary against real malformed/edge-case responses from both
+  backends; see `post_with_retry()`'s callers in `openai_protocol.py` and
+  `cloud_llm.py` for the exact guard clauses.
+
+**429 (rate limited) is handled differently from other HTTP errors** — it
+doesn't fall straight to a skip. `post_with_retry()` in `openai_protocol.py`
+(shared by both backends) retries the same request in place: honors the
+server's `Retry-After` header when present, exponential backoff otherwise, up
+to 5 attempts, before finally giving up and treating it as an ordinary skip.
+This exists because real testing against a rate-limited Groq free-tier account
+(12k tokens/minute) showed that without it, most of a repo's files were left
+unreviewed after a single `audit --cloud` pass — and simply re-running the
+whole command didn't help either, since targets are processed in a fixed
+order, so a fresh retry just re-hit the same first few files and stalled at
+the same point every time. `--resume-from <prior report.json>` (see
+[CLI Reference](CLI-Reference.md)) is the fallback for a run that still
+doesn't converge in one invocation — it skips any file a tier already
+succeeded on in a prior run and only retries what was actually skipped.
+
+Since a rate-limited run backed by retries can take a long time with nothing
+printed to the console otherwise, `review()` accepts an optional
+`on_progress(path, outcome)` callback (both backends, and the shared Tier 2
+base), called after each file; `cli.py` wires it to print live per-file
+progress instead of leaving a single spinner up for the whole tier.
 
 **Diff-scope enforcement**: the system prompt asks the model to only report
 findings on lines that were actually changed, but that's advisory only —

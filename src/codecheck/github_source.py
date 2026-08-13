@@ -7,14 +7,28 @@ ever touching the caller's current checkout.
   working directory are never switched or disturbed. Cleans up the worktree and
   the temporary refs it created on exit.
 - `cloned_repo` clones a URL to a temp directory and removes it on exit.
+
+Private repos: whatever git credential setup already works on this machine
+(SSH key, `gh auth login`, `.netrc`, a credential helper) is always tried
+first, for free -- codecheck does nothing extra in that case. Only if that
+fails with what looks like an auth error, and we're at an interactive
+terminal, do we prompt for a username/token and retry -- see
+_try_with_credential_retry. The credentials are never written to the URL,
+never land in the cloned repo's .git/config, and are never persisted to
+disk: they're handed to git for that one operation only via a short-lived
+GIT_ASKPASS script + environment variables.
 """
 
 from __future__ import annotations
 
+import getpass
+import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
+from collections.abc import Callable
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
@@ -40,6 +54,128 @@ def parse_pr_url(value: str) -> tuple[str, int] | None:
     return repo_url, int(number)
 
 
+_MAX_CREDENTIAL_PROMPTS = 3
+
+_AUTH_ERROR_MARKERS = (
+    "authentication failed",
+    "could not read username",
+    "could not read password",
+    "terminal prompts disabled",
+    "permission denied (publickey)",
+    "not found",  # git's actual message is "repository '<url>' not found" --
+    # GitHub/GitLab return this for both "doesn't exist" and "private, no
+    # access" deliberately, so a token guess can't be used to enumerate
+    # private repo names. Treated as possibly-auth here.
+    "invalid username or password",
+    "403",
+)
+
+
+def _looks_like_auth_error(stderr: str) -> bool:
+    lowered = stderr.lower()
+    return any(marker in lowered for marker in _AUTH_ERROR_MARKERS)
+
+
+def _prompt_credentials(repo_url: str, attempt_num: int, max_attempts: int) -> tuple[str, str] | None:
+    """Returns None if the user gives up (empty input, Ctrl-C, or EOF e.g. from
+    a script piping /dev/null) -- callers should treat that as "no credentials
+    available" rather than retrying forever.
+    """
+    print(
+        f"Authentication required for {repo_url!r} (attempt {attempt_num}/{max_attempts}).",
+        file=sys.stderr,
+    )
+    try:
+        username = input("  Username: ").strip()
+        token = getpass.getpass("  Token/Password: ")
+    except (EOFError, KeyboardInterrupt):
+        print(file=sys.stderr)  # move off the prompt line
+        return None
+    if not username or not token:
+        return None
+    return username, token
+
+
+@contextmanager
+def _askpass_env(username: str, token: str) -> Iterator[dict[str, str]]:
+    """A GIT_ASKPASS script that hands git the given credentials for exactly
+    one operation. Deliberately not the "https://user:token@host/..." URL
+    form: that leaks the token into `ps` output for every process on the
+    machine while the command runs, and git bakes it into the resulting
+    repo's .git/config on disk. This keeps the token out of argv and out of
+    any file -- it only ever exists in this process's environment and the
+    child git process's, for the duration of this context manager.
+    """
+    fd, path = tempfile.mkstemp(prefix="codecheck-askpass-", suffix=".sh")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(
+                "#!/bin/sh\n"
+                'case "$1" in\n'
+                '  *sername*) printf "%s" "$CODECHECK_GIT_USERNAME" ;;\n'
+                '  *) printf "%s" "$CODECHECK_GIT_TOKEN" ;;\n'
+                "esac\n"
+            )
+        os.chmod(path, 0o700)
+        env = dict(os.environ)
+        env["GIT_ASKPASS"] = path
+        env["GIT_TERMINAL_PROMPT"] = "0"
+        env["CODECHECK_GIT_USERNAME"] = username
+        env["CODECHECK_GIT_TOKEN"] = token
+        yield env
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
+def _try_with_credential_retry(
+    attempt: Callable[[dict[str, str] | None], tuple[bool, str]],
+    repo_url_for_prompt: str,
+) -> None:
+    """attempt(extra_env) should perform one git operation and return
+    (succeeded, stderr). Called first with extra_env=None -- whatever
+    credentials git already has configured (SSH key, `gh auth login`,
+    `.netrc`, a credential helper) are tried for free there, exactly as a
+    plain `git clone`/`git fetch` would behave. Only if that fails with what
+    looks like an auth error do we prompt interactively for a username/token
+    and retry via _askpass_env, up to _MAX_CREDENTIAL_PROMPTS times.
+
+    Never prompts outside an interactive terminal (CI, cron, piped input) --
+    fails immediately with the original error instead of hanging forever
+    waiting for input nobody can provide.
+
+    Raises ValueError with a clear final message if every attempt fails.
+    """
+    ok, stderr = attempt(None)
+    if ok:
+        return
+    if not _looks_like_auth_error(stderr):
+        raise ValueError(stderr)
+    if not sys.stdin.isatty():
+        raise ValueError(
+            f"{stderr}\n(Not prompting for credentials: no interactive terminal. "
+            f"Set up git credentials for {repo_url_for_prompt!r} first -- an SSH key, "
+            f"`gh auth login`, or a credential helper.)"
+        )
+
+    for attempt_num in range(1, _MAX_CREDENTIAL_PROMPTS + 1):
+        creds = _prompt_credentials(repo_url_for_prompt, attempt_num, _MAX_CREDENTIAL_PROMPTS)
+        if creds is None:
+            raise ValueError(f"Repository not accessible: {repo_url_for_prompt!r} (no credentials provided).")
+        username, token = creds
+        with _askpass_env(username, token) as env:
+            ok, stderr = attempt(env)
+        if ok:
+            return
+
+    raise ValueError(
+        f"Repository not accessible: {repo_url_for_prompt!r} "
+        f"(wrong credentials after {_MAX_CREDENTIAL_PROMPTS} attempts)."
+    )
+
+
 def resolve_pr_base_ref(repo_path: Path, pr_number: int) -> str | None:
     """Best-effort: ask the gh CLI what the PR's base branch is. Returns None if
     gh isn't installed, isn't authenticated, or the lookup fails for any reason —
@@ -59,6 +195,28 @@ def resolve_pr_base_ref(repo_path: Path, pr_number: int) -> str | None:
     return base_ref or None
 
 
+def _origin_url_for_prompt(repo: git.Repo) -> str:
+    try:
+        return repo.remotes.origin.url
+    except (AttributeError, ValueError):
+        return "origin"
+
+
+def _fetch_with_credential_retry(repo: git.Repo, refspec: str, repo_url_for_prompt: str) -> None:
+    def _attempt(extra_env: dict[str, str] | None) -> tuple[bool, str]:
+        try:
+            if extra_env is None:
+                repo.git.fetch("--", "origin", refspec)
+            else:
+                with repo.git.custom_environment(**extra_env):
+                    repo.git.fetch("--", "origin", refspec)
+            return True, ""
+        except git.GitCommandError as e:
+            return False, str(e)
+
+    _try_with_credential_retry(_attempt, repo_url_for_prompt)
+
+
 @contextmanager
 def pr_worktree(
     repo_path: Path, pr_number: int, base_ref_override: str | None
@@ -73,15 +231,16 @@ def pr_worktree(
     pr_ref = f"refs/codecheck/pr-{pr_number}"
     base_ref_name = base_ref_override or resolve_pr_base_ref(repo_path, pr_number) or "main"
     base_local_ref = f"refs/codecheck/base-{pr_number}"
+    origin_url = _origin_url_for_prompt(repo)
 
     try:
-        repo.git.fetch("--", "origin", f"pull/{pr_number}/head:{pr_ref}")
-    except git.GitCommandError as e:
+        _fetch_with_credential_retry(repo, f"pull/{pr_number}/head:{pr_ref}", origin_url)
+    except ValueError as e:
         raise ValueError(f"Could not fetch PR #{pr_number} from origin: {e}") from e
 
     try:
-        repo.git.fetch("--", "origin", f"{base_ref_name}:{base_local_ref}")
-    except git.GitCommandError as e:
+        _fetch_with_credential_retry(repo, f"{base_ref_name}:{base_local_ref}", origin_url)
+    except ValueError as e:
         raise ValueError(f"Could not fetch base ref {base_ref_name!r} from origin: {e}") from e
 
     worktree_dir = Path(tempfile.mkdtemp(prefix=f"codecheck-pr-{pr_number}-"))
@@ -152,16 +311,23 @@ def cloned_repo(repo_url: str, branch: str | None = None) -> Iterator[Path]:
     cmd += ["--", repo_url]
 
     tmp_dir = Path(tempfile.mkdtemp(prefix="codecheck-clone-"))
-    try:
-        subprocess.run(
-            [*cmd, str(tmp_dir)],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-    except subprocess.CalledProcessError as e:
+
+    def _attempt(extra_env: dict[str, str] | None) -> tuple[bool, str]:
+        # a retried attempt needs a clean target dir -- a prior failed clone
+        # may have partially written into it, and `git clone` refuses to run
+        # into a non-empty directory.
         shutil.rmtree(tmp_dir, ignore_errors=True)
-        raise ValueError(f"Could not clone {repo_url!r}: {e.stderr}") from e
+        tmp_dir.mkdir(parents=True)
+        result = subprocess.run(
+            [*cmd, str(tmp_dir)], capture_output=True, text=True, env=extra_env
+        )
+        return result.returncode == 0, result.stderr
+
+    try:
+        _try_with_credential_retry(_attempt, repo_url)
+    except ValueError as e:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise ValueError(f"Could not clone {repo_url!r}: {e}") from e
 
     try:
         yield tmp_dir

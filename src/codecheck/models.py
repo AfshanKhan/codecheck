@@ -117,6 +117,10 @@ class ReviewReport:
     files_reviewed: list[str] = field(default_factory=list)
     duration_seconds: float = 0.0
     skipped: list[str] = field(default_factory=list)
+    # sha256 of each reviewed file's content at review time -- lets a later
+    # --resume-from run confirm a file hasn't changed before reusing its
+    # prior result, rather than trusting the path alone. See codecheck.resume.
+    file_hashes: dict[str, str] = field(default_factory=dict)
 
     def findings_at_or_above(self, severity: Severity) -> list[Finding]:
         return [f for f in self.findings if f.severity >= severity]
@@ -144,6 +148,7 @@ class ReviewReport:
             "duration_seconds": self.duration_seconds,
             "files_reviewed": self.files_reviewed,
             "skipped": self.skipped,
+            "file_hashes": self.file_hashes,
             "counts_by_severity": {
                 s.value: c for s, c in self.counts_by_severity().items()
             },

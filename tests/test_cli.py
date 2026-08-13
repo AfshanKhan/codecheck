@@ -6,8 +6,9 @@ from unittest.mock import patch
 import pytest
 from typer.testing import CliRunner
 
-from codecheck.cli import app
+from codecheck.cli import _run_llm_tier, app
 from codecheck.lm_link import DeviceCandidate, ModelLocation
+from codecheck.models import ReviewTarget
 
 runner = CliRunner()
 
@@ -442,6 +443,99 @@ def test_audit_repo_url_clones_and_reviews(fake_origin_and_clone: Path, tmp_path
     assert result.exit_code == 0
     assert "a.py" in result.stdout or "No findings" in result.stdout
     assert (output_dir / "report.json").exists()
+
+
+class _FakeReviewer:
+    """Duck-types the Reviewer interface (.review(), .skipped_files) so
+    _run_llm_tier's resume wiring can be tested without a real HTTP client.
+    """
+
+    def __init__(self):
+        self.skipped_files: list[tuple[str, str]] = []
+        self.received_targets: list[ReviewTarget] | None = None
+
+    def review(self, targets, repo_path, on_progress=None):
+        self.received_targets = targets
+        if on_progress:
+            for t in targets:
+                on_progress(t.path, "0 findings")
+        return []  # no new findings this run -- only resumed ones matter here
+
+
+_HASHES = {"a.py": "hash-a", "b.py": "hash-b"}
+
+
+def test_run_llm_tier_skips_already_succeeded_files_and_reuses_their_findings(tmp_path: Path):
+    prior_report = {
+        "mode": "audit",
+        "tiers_run": ["cloud_llm"],
+        "files_reviewed": ["a.py", "b.py"],
+        "skipped": [],  # neither file was skipped last time -- both succeeded
+        "file_hashes": dict(_HASHES),
+        "findings": [
+            {
+                "check_id": "CLOUD-001",
+                "tier": "cloud_llm",
+                "source": "cloud_llm",
+                "severity": "high",
+                "title": "Prior finding",
+                "explanation": "",
+                "file": "a.py",
+                "line_start": 1,
+            },
+        ],
+    }
+    targets = [
+        ReviewTarget(path="a.py", status="scanned"),
+        ReviewTarget(path="b.py", status="scanned"),
+    ]
+    reviewer = _FakeReviewer()
+
+    findings, skip_entries, resumed = _run_llm_tier(
+        "cloud_llm", reviewer, targets, tmp_path, prior_report, "audit", _HASHES, "status"
+    )
+
+    # both a.py and b.py were already done -- reviewer.review() must not be
+    # asked to process either of them again
+    assert reviewer.received_targets == []
+    assert resumed == 2
+    assert [f.check_id for f in findings] == ["CLOUD-001"]
+
+
+def test_run_llm_tier_retries_only_files_skipped_last_time(tmp_path: Path):
+    prior_report = {
+        "mode": "audit",
+        "tiers_run": ["cloud_llm"],
+        "files_reviewed": ["a.py", "b.py"],
+        "skipped": ["cloud_llm: b.py: API request failed: 429 Too Many Requests"],
+        "file_hashes": dict(_HASHES),
+        "findings": [],
+    }
+    targets = [
+        ReviewTarget(path="a.py", status="scanned"),
+        ReviewTarget(path="b.py", status="scanned"),
+    ]
+    reviewer = _FakeReviewer()
+
+    findings, skip_entries, resumed = _run_llm_tier(
+        "cloud_llm", reviewer, targets, tmp_path, prior_report, "audit", _HASHES, "status"
+    )
+
+    # a.py already succeeded -- only b.py (skipped last time) is re-requested
+    assert [t.path for t in reviewer.received_targets] == ["b.py"]
+    assert resumed == 1
+
+
+def test_run_llm_tier_processes_everything_without_resume(tmp_path: Path):
+    targets = [ReviewTarget(path="a.py", status="scanned")]
+    reviewer = _FakeReviewer()
+
+    findings, skip_entries, resumed = _run_llm_tier(
+        "cloud_llm", reviewer, targets, tmp_path, None, "audit", {"a.py": "hash-a"}, "status"
+    )
+
+    assert [t.path for t in reviewer.received_targets] == ["a.py"]
+    assert resumed == 0
 
 
 def test_version_flag_prints_version_and_exits():

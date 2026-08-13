@@ -135,6 +135,32 @@ def test_review_parses_openai_style_tool_call(tmp_path: Path, monkeypatch):
     assert "eval(user_input)" in payload["messages"][1]["content"]
 
 
+def test_review_calls_on_progress_per_file(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
+    (tmp_path / "a.py").write_text("x = 1\n")
+    (tmp_path / "b.py").write_text("y = 2\n")
+    targets = [
+        ReviewTarget(path="a.py", status="modified", diff_text="", changed_lines={1}),
+        ReviewTarget(path="b.py", status="modified", diff_text="", changed_lines={1}),
+    ]
+
+    ok_response = MagicMock()
+    ok_response.raise_for_status = MagicMock()
+    ok_response.json.return_value = {
+        "choices": [{"message": {"tool_calls": [{
+            "function": {"name": "report_findings", "arguments": json.dumps({"findings": []})}
+        }]}}]
+    }
+    mock_client = MagicMock()
+    mock_client.post.return_value = ok_response
+
+    reviewer = OpenAICompatibleCloudReviewer(CloudConfig(enabled=True, provider="groq"), client=mock_client)
+    calls = []
+    reviewer.review(targets, tmp_path, on_progress=lambda path, outcome: calls.append((path, outcome)))
+
+    assert calls == [("a.py", "0 findings"), ("b.py", "0 findings")]
+
+
 def test_review_handles_missing_tool_call_as_skip(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
     (tmp_path / "a.py").write_text("x = 1\n")

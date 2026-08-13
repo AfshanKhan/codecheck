@@ -15,11 +15,17 @@
   model (`llama3.2:1b`) sometimes produced malformed JSON there too, which is
   not recoverable without loosening the "never regex-scrape" rule, so it's left
   as a per-file skip rather than guessed at.
-- `--pr` requires the repo's `origin` remote to already have working credentials
-  for `git fetch` (SSH key, credential helper, etc.) — `codecheck` doesn't manage
-  GitHub auth itself. Base-branch auto-resolution additionally depends on the
-  `gh` CLI being installed and authenticated; without it, pass `--base-ref`
-  explicitly or it defaults to `main`.
+- `--pr`/`--repo-url` try the repo's existing git credential setup first (SSH
+  key, `gh auth login`, `.netrc`, a credential helper) — `codecheck` doesn't
+  manage GitHub auth itself. If that fails, it prompts for a username/token at
+  an interactive terminal (3 attempts, never persisted — see "Private repos"
+  in [CLI Reference](CLI-Reference.md)), but in a non-interactive context (CI,
+  cron) it still just fails with a clear error rather than prompting. Base-branch
+  auto-resolution additionally depends on the `gh` CLI being installed and
+  authenticated; without it, pass `--base-ref` explicitly or it defaults to `main`.
+- GitLab isn't supported for `--pr` — only GitHub's PR URL shape and
+  `refs/pull/<n>/head` fetch convention are recognized. `--repo-url` alone
+  (no `--pr`) works against any git host, GitLab included.
 - No support for posting results back to GitHub (a PR comment, a check run) —
   this is one-directional: read from GitHub, review locally, report locally.
 - Cloud tier makes one API call per target file, no batching; large runs mean
