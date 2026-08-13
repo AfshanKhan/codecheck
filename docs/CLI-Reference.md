@@ -77,6 +77,31 @@ The PR's base branch is resolved automatically via the `gh` CLI
 passed one, otherwise `main`. Practically: if your PR targets anything other
 than `main` and you don't have `gh` set up, pass `--base-ref` explicitly.
 
+#### Private repos (`--repo-url`, `--pr`)
+
+`codecheck` doesn't handle credentials itself — it just shells out to `git`,
+so whatever already lets `git clone`/`git fetch` work on your machine (an SSH
+key, `gh auth login`, a `.netrc` entry, a credential helper) works identically
+here, for free, with zero setup specific to `codecheck`.
+
+If that fails — e.g. a fresh machine or CI runner with nothing configured yet
+for this particular repo — and you're at an interactive terminal, `codecheck`
+prompts for a username and token and retries, up to 3 attempts, before giving
+up with a clear "repository not accessible" error. The credentials are never
+written to disk, never embedded in the clone URL (that would leak into the
+cloned repo's `.git/config` and into `ps` output for the whole system while
+the clone runs), and never reused beyond that one operation — they're handed
+to git in-memory for that single clone/fetch via a short-lived `GIT_ASKPASS`
+helper. In a non-interactive context (CI, cron, a piped command) it never
+prompts — it fails immediately with the same clear error instead of hanging
+forever waiting for input nobody can provide.
+
+GitLab isn't supported yet — `--pr` only recognizes GitHub's PR URL shape and
+fetch convention (`refs/pull/<n>/head`); GitLab merge requests use a different
+URL shape and ref (`refs/merge-requests/<n>/head`). `--repo-url` alone (no
+`--pr`) works against any git host, GitLab included, since that's just a plain
+clone.
+
 ### `codecheck audit` — review a whole repo
 
 ```bash
