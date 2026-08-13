@@ -187,8 +187,16 @@ def _run_llm_tier(
         already_done = already_succeeded_paths(prior_report, tier) & target_paths
 
     remaining_targets = [t for t in targets if t.path not in already_done]
+    total = len(remaining_targets)
+    completed = 0
+
+    def _on_progress(path: str, outcome: str) -> None:
+        nonlocal completed
+        completed += 1
+        console.print(f"[dim]  ({completed}/{total}) {path}: {outcome}[/dim]")
+
     with console.status(f"[bold]{status_message}"):
-        new_findings = reviewer.review(remaining_targets, repo_path)
+        new_findings = reviewer.review(remaining_targets, repo_path, on_progress=_on_progress)
 
     reused_findings = (
         prior_findings_for_paths(prior_report, tier, already_done) if already_done else []

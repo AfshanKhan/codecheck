@@ -71,6 +71,29 @@ def test_review_parses_tool_use_findings(tmp_path: Path):
     assert "eval(user_input)" in payload["messages"][0]["content"]
 
 
+def test_review_calls_on_progress_per_file(tmp_path: Path):
+    (tmp_path / "a.py").write_text("x = 1\n")
+    (tmp_path / "big.py").write_text("\n".join(f"x = {i}" for i in range(50)))
+    targets = [
+        ReviewTarget(path="a.py", status="modified", diff_text="", changed_lines={1}),
+        ReviewTarget(path="big.py", status="modified", diff_text="", changed_lines={1}),
+    ]
+
+    ok_response = MagicMock()
+    ok_response.raise_for_status = MagicMock()
+    ok_response.json.return_value = {
+        "content": [{"type": "tool_use", "name": "report_findings", "input": {"findings": []}}]
+    }
+    mock_client = MagicMock()
+    mock_client.post.return_value = ok_response
+
+    reviewer = AnthropicCloudReviewer(CloudConfig(enabled=True, max_file_lines=10), client=mock_client)
+    calls = []
+    reviewer.review(targets, tmp_path, on_progress=lambda path, outcome: calls.append((path, outcome)))
+
+    assert calls == [("a.py", "0 findings"), ("big.py", "skipped: file too large (50 lines > 10)")]
+
+
 def test_review_skips_oversized_files(tmp_path: Path):
     big_content = "\n".join(f"x = {i}" for i in range(50))
     (tmp_path / "big.py").write_text(big_content)

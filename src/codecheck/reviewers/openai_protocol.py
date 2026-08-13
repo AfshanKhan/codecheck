@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import ClassVar
 
@@ -346,7 +347,18 @@ class OpenAIProtocolReviewer(Reviewer):
             raw=raw,
         )
 
-    def review(self, targets: list[ReviewTarget], repo_path: Path) -> list[Finding]:
+    def review(
+        self,
+        targets: list[ReviewTarget],
+        repo_path: Path,
+        on_progress: Callable[[str, str], None] | None = None,
+    ) -> list[Finding]:
+        """on_progress, if given, is called as on_progress(file_path, outcome)
+        right after each file is processed -- lets the caller show live
+        per-file progress instead of a single spinner for the whole tier,
+        which otherwise gives no visibility into a long run (e.g. one that's
+        working through retries -- see post_with_retry) until it's all over.
+        """
         self.skipped_files = []
         client = self._get_client()
         findings: list[Finding] = []
@@ -358,23 +370,33 @@ class OpenAIProtocolReviewer(Reviewer):
             content = read_file_content(repo_path, target)
             if content is None:
                 self.skipped_files.append((target.path, "could not read file content"))
+                if on_progress:
+                    on_progress(target.path, "skipped: could not read file content")
                 continue
             line_count = content.count("\n") + 1
             if line_count > self.config.max_file_lines:
-                self.skipped_files.append(
-                    (target.path, f"file too large ({line_count} lines > {self.config.max_file_lines})")
-                )
+                reason = f"file too large ({line_count} lines > {self.config.max_file_lines})"
+                self.skipped_files.append((target.path, reason))
+                if on_progress:
+                    on_progress(target.path, f"skipped: {reason}")
                 continue
 
             raw_findings, error = self._review_file(client, target, content)
             if error:
                 self.skipped_files.append((target.path, error))
+                if on_progress:
+                    on_progress(target.path, f"skipped: {error}")
                 continue
 
+            file_finding_count = 0
             for raw in raw_findings:
                 finding_counter += 1
                 finding = self._finding_from_raw(raw, target.path, finding_counter)
                 if within_diff_scope(target, finding):
                     findings.append(finding)
+                    file_finding_count += 1
+            if on_progress:
+                noun = "finding" if file_finding_count == 1 else "findings"
+                on_progress(target.path, f"{file_finding_count} {noun}")
 
         return findings

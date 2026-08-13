@@ -454,8 +454,11 @@ class _FakeReviewer:
         self.skipped_files: list[tuple[str, str]] = []
         self.received_targets: list[ReviewTarget] | None = None
 
-    def review(self, targets, repo_path):
+    def review(self, targets, repo_path, on_progress=None):
         self.received_targets = targets
+        if on_progress:
+            for t in targets:
+                on_progress(t.path, "0 findings")
         return []  # no new findings this run -- only resumed ones matter here
 
 
