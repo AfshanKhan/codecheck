@@ -36,6 +36,7 @@ touched by the diff.
 | `--force-local` | off | Skip the confirmation prompt/refusal when the local tier would run on this machine instead of a confirmed LM Link remote — see LM Link under [Tier 2 in Architecture](Architecture.md). |
 | `--device` | none | Which device to use when `local.model` is loaded on more than one at once (a device name, or `local`). Sets LM Studio's LM Link preferred device — see LM Link under [Tier 2 in Architecture](Architecture.md). |
 | `--output-dir` | `./reports` | Where `report.json` and `report.md` are written. |
+| `--resume-from` | none | Path to a prior run's `report.json` — see "Resuming after a rate limit" below. |
 
 #### Reviewing a GitHub PR (`--pr`)
 
@@ -104,6 +105,7 @@ every file is in scope, not just changed lines.
 | `--force-local` | off | Skip the confirmation prompt/refusal when the local tier would run on this machine instead of a confirmed LM Link remote — see LM Link under [Tier 2 in Architecture](Architecture.md). |
 | `--device` | none | Which device to use when `local.model` is loaded on more than one at once (a device name, or `local`). Sets LM Studio's LM Link preferred device — see LM Link under [Tier 2 in Architecture](Architecture.md). |
 | `--output-dir` | `./reports` | Where `report.json` and `report.md` are written. |
+| `--resume-from` | none | Path to a prior run's `report.json` — see "Resuming after a rate limit" below. |
 
 **Cloud cost cap (both modes):** the cloud tier makes one API call per file. An
 `audit` can mean one call per file in the *entire repo*, and a `diff` is only
@@ -114,6 +116,25 @@ refuse to run if the number of eligible files exceeds `cloud.audit_file_cap`
 (default `50`) — they print the file count and exit with code `2` **before
 making any API calls**. Pass `--force-cloud` to proceed anyway, or lower
 `cloud.audit_file_cap` / point `--repo-path` at a subdirectory to shrink the scope.
+
+**Resuming after a rate limit (`--resume-from`, both modes):** free-tier cloud
+providers (Groq's free tier is the confirmed case: 12,000 tokens/minute) often
+can't cover a whole-repo `audit` in one run — most of the files just get
+skipped with a `429 Too Many Requests`. Since `codecheck` always processes
+files in the same order, simply re-running the same command doesn't help: it
+burns the fresh rate-limit budget on the exact same first few files every
+time and never reaches the rest. `--resume-from <path-to-prior-report.json>`
+fixes this — any file the cloud (or local) tier already got a real result for
+in that prior report is skipped (not re-requested) and its prior result is
+carried into the new report; only files that were actually skipped last time
+get retried. Repeating `--cloud --force-cloud --resume-from reports/report.json`
+a few times in a row (pointing each one at the previous run's own output)
+converges on full coverage instead of stalling. Verified directly against a
+real rate-limited Groq run: a repo where only 5/68 files succeeded on the
+first attempt went to 9/68 cumulative on a resumed retry, correctly skipping
+those first 5 and picking up new ones instead of repeating them. Only applies
+to the LLM tiers — the rules tier is free and fast enough to just re-run in
+full every time.
 
 ### Exit codes (both modes)
 

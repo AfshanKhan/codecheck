@@ -22,6 +22,7 @@ from codecheck.repo_scan import get_repo_files
 from codecheck.reporters.console import print_report
 from codecheck.reporters.json_report import write_json_report
 from codecheck.reporters.markdown_report import write_markdown_report
+from codecheck.resume import already_succeeded_paths, load_prior_report, prior_findings_for_paths
 from codecheck.reviewers.cloud_llm import build_cloud_reviewer, exceeds_audit_cap
 from codecheck.reviewers.local_llm import LocalLLMReviewer
 from codecheck.reviewers.rules_engine import RulesEngineReviewer
@@ -167,19 +168,62 @@ def _confirm_local_execution(
     return False
 
 
+def _run_llm_tier(
+    tier: str,
+    reviewer,
+    targets: list[ReviewTarget],
+    repo_path: Path,
+    prior_report: dict | None,
+    status_message: str,
+) -> tuple[list, list[str], int]:
+    """Runs one LLM tier's review(), skipping any target this tier already
+    succeeded on in prior_report (--resume-from) and merging that prior run's
+    findings back in for those files. Returns (findings, skip_entries,
+    resumed_count).
+    """
+    already_done: set[str] = set()
+    if prior_report is not None:
+        target_paths = {t.path for t in targets}
+        already_done = already_succeeded_paths(prior_report, tier) & target_paths
+
+    remaining_targets = [t for t in targets if t.path not in already_done]
+    with console.status(f"[bold]{status_message}"):
+        new_findings = reviewer.review(remaining_targets, repo_path)
+
+    reused_findings = (
+        prior_findings_for_paths(prior_report, tier, already_done) if already_done else []
+    )
+    skip_entries = [f"{tier}: {path}: {reason}" for path, reason in reviewer.skipped_files]
+    return reused_findings + new_findings, skip_entries, len(already_done)
+
+
 def _run_tiers(
     targets: list[ReviewTarget],
     repo_path: Path,
     cfg: Config,
     force_local: bool = False,
     device: str | None = None,
+    resume_from: Path | None = None,
 ) -> tuple[dict[str, list], list[str], list[str]]:
     """Runs the rules tier and (if available) the local and cloud LLM tiers over
     the given targets. Returns (results_by_tier, tiers_run, skip_reasons).
+
+    resume_from, if given, points at a prior run's report.json: any file an
+    LLM tier already got a real (non-skipped) result for there is skipped
+    this run too, and that prior result is carried into the new report --
+    only files that were skipped last time (rate limit, transient error, ...)
+    get re-requested. The rules tier always re-runs in full regardless, since
+    it's free and fast.
     """
     results: dict[str, list] = {}
     tiers_run: list[str] = []
     skipped: list[str] = []
+
+    prior_report: dict | None = None
+    if resume_from is not None:
+        prior_report = load_prior_report(resume_from)
+        if prior_report is None:
+            skipped.append(f"--resume-from: could not read or parse {resume_from}")
 
     rules_reviewer = RulesEngineReviewer(cfg.rules)
     available, reason = rules_reviewer.is_available(repo_path)
@@ -194,20 +238,28 @@ def _run_tiers(
     local_reviewer = LocalLLMReviewer(cfg.local)
     available, reason = local_reviewer.is_available(repo_path)
     if available and _confirm_local_execution(cfg, force_local, device, skipped):
-        with console.status("[bold]Running local LLM review..."):
-            results["local_llm"] = local_reviewer.review(targets, repo_path)
+        findings, skip_entries, resumed = _run_llm_tier(
+            "local_llm", local_reviewer, targets, repo_path, prior_report, "Running local LLM review..."
+        )
+        results["local_llm"] = findings
         tiers_run.append("local_llm")
-        skipped.extend(f"local_llm: {path}: {reason}" for path, reason in local_reviewer.skipped_files)
+        skipped.extend(skip_entries)
+        if resumed:
+            console.print(f"[dim]Resumed: {resumed} file(s) already reviewed by local_llm, not re-requested.[/dim]")
     elif cfg.local.enabled and reason:
         skipped.append(f"local tier: {reason}")
 
     cloud_reviewer = build_cloud_reviewer(cfg.cloud)
     available, reason = cloud_reviewer.is_available(repo_path)
     if available:
-        with console.status("[bold]Running cloud LLM review..."):
-            results["cloud_llm"] = cloud_reviewer.review(targets, repo_path)
+        findings, skip_entries, resumed = _run_llm_tier(
+            "cloud_llm", cloud_reviewer, targets, repo_path, prior_report, "Running cloud LLM review..."
+        )
+        results["cloud_llm"] = findings
         tiers_run.append("cloud_llm")
-        skipped.extend(f"cloud_llm: {path}: {reason}" for path, reason in cloud_reviewer.skipped_files)
+        skipped.extend(skip_entries)
+        if resumed:
+            console.print(f"[dim]Resumed: {resumed} file(s) already reviewed by cloud_llm, not re-requested.[/dim]")
     elif cfg.cloud.enabled and reason:
         skipped.append(f"cloud tier: {reason}")
 
@@ -273,6 +325,18 @@ def diff(
         help="Which device to use when local.model is loaded on more than one (e.g. 'local' or a device name from `lms link status`). Sets LM Studio's LM Link preferred device.",
     ),
     output_dir: Path = typer.Option(Path("./reports"), "--output-dir", help="Where JSON/markdown reports land."),
+    resume_from: Optional[Path] = typer.Option(
+        None,
+        "--resume-from",
+        help=(
+            "Path to a prior run's report.json. Files the cloud/local LLM tier already "
+            "got a real result for there are skipped (not re-requested) and that prior "
+            "result is reused — only files skipped last time (rate limit, transient "
+            "error) get retried. Use this to make repeated retries against a rate-limited "
+            "provider actually converge instead of re-hitting the same first few files "
+            "every time."
+        ),
+    ),
 ):
     """Review a git diff: staged changes, a base-ref...HEAD diff, or a GitHub PR
     (by full URL, or by number against --repo-path's existing 'origin')."""
@@ -357,7 +421,7 @@ def diff(
                 raise typer.Exit(code=2)
 
         results, tiers_run, skipped = _run_tiers(
-            targets, review_repo_path, cfg, force_local=force_local, device=device
+            targets, review_repo_path, cfg, force_local=force_local, device=device, resume_from=resume_from
         )
         findings = aggregate(results)
 
@@ -404,6 +468,18 @@ def audit(
         help="Which device to use when local.model is loaded on more than one (e.g. 'local' or a device name from `lms link status`). Sets LM Studio's LM Link preferred device.",
     ),
     output_dir: Path = typer.Option(Path("./reports"), "--output-dir", help="Where JSON/markdown reports land."),
+    resume_from: Optional[Path] = typer.Option(
+        None,
+        "--resume-from",
+        help=(
+            "Path to a prior run's report.json. Files the cloud/local LLM tier already "
+            "got a real result for there are skipped (not re-requested) and that prior "
+            "result is reused — only files skipped last time (rate limit, transient "
+            "error) get retried. Use this to make repeated retries against a rate-limited "
+            "provider actually converge instead of re-hitting the same first few files "
+            "every time."
+        ),
+    ),
 ):
     """Audit the whole repo (every tracked file, plus untracked-but-not-ignored
     files) instead of just a diff."""
@@ -443,7 +519,7 @@ def audit(
         console.print(f"[dim]Auditing {len(targets)} file(s) in {effective_repo_path}[/dim]")
 
         results, tiers_run, skipped = _run_tiers(
-            targets, effective_repo_path, cfg, force_local=force_local, device=device
+            targets, effective_repo_path, cfg, force_local=force_local, device=device, resume_from=resume_from
         )
         findings = aggregate(results)
 
