@@ -56,6 +56,24 @@ outside `codecheck`.
   are read from environment variables only — never written into `config.yaml`
   or logs.
 
+**Private repos and credentials (`--repo-url`, `--pr`):** `codecheck` doesn't
+handle credentials itself — it shells out to `git`, so whatever git credential
+setup already works on your machine (SSH key, `gh auth login`, `.netrc`, a
+credential helper) is tried first, for free. Only if that fails with an
+auth-shaped error, and only at an interactive terminal, does `codecheck`
+prompt for a username/token — up to 3 attempts before giving a clear
+"repository not accessible" error, and it never prompts in a non-interactive
+context (CI, cron) since there'd be nobody to answer. The credentials you
+enter are never written to disk, never embedded in the clone URL (that would
+leak into the cloned repo's `.git/config` and into `ps` output for the whole
+system while the clone runs), and never reused beyond that one operation —
+they're handed to `git` in-memory via a short-lived `GIT_ASKPASS` script. This
+prompt also can't be used to gain access you don't already have: `codecheck`
+never checks who you are, it just relays your credentials to GitHub/GitLab's
+own servers, which decide whether to allow the clone/fetch — same as if you'd
+typed the same credentials into `git` directly. Full details in the "Private
+repos" section of [CLI Reference](CLI-Reference.md).
+
 **What isn't sandboxed, by design in v1:** none of the above changes the fact
 that `codecheck` runs real, unsandboxed tools (ruff, ESLint, semgrep) against
 files from the target repo, on whatever machine you run it on. There's no
