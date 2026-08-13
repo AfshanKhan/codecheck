@@ -42,6 +42,19 @@ def test_post_with_retry_retries_on_429_then_succeeds():
     mock_sleep.assert_called_once_with(1.0)  # honored the Retry-After header exactly
 
 
+def test_post_with_retry_caps_an_excessive_retry_after_value():
+    # regression: a malicious or misconfigured server returning a huge
+    # Retry-After (e.g. 999999s) was passed straight to time.sleep uncapped
+    # -- only the fallback backoff had _MAX_RETRY_DELAY_SECONDS applied.
+    client = MagicMock()
+    client.post.side_effect = [_response(429, {"retry-after": "999999"}), _response(200)]
+
+    with patch("codecheck.reviewers.openai_protocol.time.sleep") as mock_sleep:
+        post_with_retry(client, "https://example.test", {})
+
+    mock_sleep.assert_called_once_with(60.0)  # capped, not the raw 999999
+
+
 def test_post_with_retry_falls_back_to_exponential_backoff_without_retry_after_header():
     client = MagicMock()
     client.post.side_effect = [_response(429), _response(429), _response(200)]

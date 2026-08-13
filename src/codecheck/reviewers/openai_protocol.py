@@ -59,8 +59,13 @@ def post_with_retry(
     cross-invocation case is still covered separately by
     `codecheck.resume` / `--resume-from`, e.g. if a run is interrupted).
 
-    Honors the server's Retry-After header (seconds) when present. Any
-    non-429 HTTP error is raised immediately without retrying, since
+    Honors the server's Retry-After header (seconds) when present, but never
+    waits longer than _MAX_RETRY_DELAY_SECONDS regardless -- a malicious or
+    misconfigured server returning an enormous Retry-After (or Retry-After
+    were fed straight to time.sleep uncapped) could otherwise stall the
+    review indefinitely, since only the fallback backoff had the cap applied.
+
+    Any non-429 HTTP error is raised immediately without retrying, since
     retrying a 400/404/etc. would just get the same result again.
     """
     delay = _INITIAL_RETRY_DELAY_SECONDS
@@ -70,7 +75,8 @@ def post_with_retry(
         if response.status_code != 429 or attempt >= max_retries:
             response.raise_for_status()
             return response
-        time.sleep(_parse_retry_after(response) or delay)
+        wait = min(_parse_retry_after(response) or delay, _MAX_RETRY_DELAY_SECONDS)
+        time.sleep(wait)
         delay = min(delay * 2, _MAX_RETRY_DELAY_SECONDS)
         attempt += 1
 

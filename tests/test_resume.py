@@ -1,7 +1,14 @@
 import json
 from pathlib import Path
 
-from codecheck.resume import already_succeeded_paths, load_prior_report, prior_findings_for_paths
+from codecheck.resume import (
+    already_succeeded_paths,
+    compute_file_hash,
+    load_prior_report,
+    prior_findings_for_paths,
+)
+
+_CURRENT_HASHES = {"a.py": "hash-a", "b.py": "hash-b", "c.py": "hash-c"}
 
 
 def _write_report(tmp_path: Path, data: dict) -> Path:
@@ -12,12 +19,14 @@ def _write_report(tmp_path: Path, data: dict) -> Path:
 
 def _sample_report() -> dict:
     return {
+        "mode": "audit",
         "tiers_run": ["rules", "cloud_llm"],
         "files_reviewed": ["a.py", "b.py", "c.py"],
         "skipped": [
             "rules: eslint: no eslint config found in repo",
             "cloud_llm: c.py: API request failed: 429 Too Many Requests",
         ],
+        "file_hashes": dict(_CURRENT_HASHES),  # content unchanged since this report, by default
         "findings": [
             {
                 "check_id": "CLOUD-001",
@@ -51,25 +60,58 @@ def test_load_prior_report_parses_valid_json(tmp_path: Path):
     assert load_prior_report(path)["tiers_run"] == ["rules", "cloud_llm"]
 
 
+def test_compute_file_hash_is_stable_and_content_sensitive():
+    assert compute_file_hash("x = 1\n") == compute_file_hash("x = 1\n")
+    assert compute_file_hash("x = 1\n") != compute_file_hash("x = 2\n")
+
+
 def test_already_succeeded_paths_excludes_files_skipped_by_that_tier():
     report = _sample_report()
     # a.py and b.py succeeded (no cloud_llm skip entry for them); c.py was
     # rate-limited last time and should be retried, not treated as done.
-    assert already_succeeded_paths(report, "cloud_llm") == {"a.py", "b.py"}
+    assert already_succeeded_paths(report, "cloud_llm", "audit", _CURRENT_HASHES) == {"a.py", "b.py"}
 
 
 def test_already_succeeded_paths_empty_when_tier_never_ran():
     report = _sample_report()
-    assert already_succeeded_paths(report, "local_llm") == set()
+    assert already_succeeded_paths(report, "local_llm", "audit", _CURRENT_HASHES) == set()
+
+
+def test_already_succeeded_paths_empty_when_mode_differs():
+    # regression (Greptile): a prior diff-mode report only ever asked the
+    # model about changed-lines context; reusing its result for an
+    # audit-mode run (whole-file review) would answer a different question
+    # than what was actually asked, even for byte-identical file content.
+    report = _sample_report()  # mode="audit"
+    assert already_succeeded_paths(report, "cloud_llm", "diff", _CURRENT_HASHES) == set()
+
+
+def test_already_succeeded_paths_excludes_files_whose_content_changed():
+    # regression (Greptile): path alone isn't enough -- if the file's
+    # content has changed since the prior report (edited working tree,
+    # different commit in scope, etc.), its prior result must not be reused.
+    report = _sample_report()
+    current_hashes = dict(_CURRENT_HASHES)
+    current_hashes["a.py"] = "a-different-hash-now"  # a.py changed since the prior run
+    assert already_succeeded_paths(report, "cloud_llm", "audit", current_hashes) == {"b.py"}
+
+
+def test_already_succeeded_paths_empty_when_prior_report_predates_file_hashes():
+    # an older report.json (before file_hashes existed) must fail closed --
+    # never treat a hash-less prior result as still trustworthy.
+    report = _sample_report()
+    del report["file_hashes"]
+    assert already_succeeded_paths(report, "cloud_llm", "audit", _CURRENT_HASHES) == set()
 
 
 def test_already_succeeded_paths_handles_malformed_report_gracefully():
     # regression: a hand-edited or corrupted --resume-from file must not crash
     # the CLI -- fail closed (treat as "nothing resumable") instead.
-    assert already_succeeded_paths({}, "cloud_llm") == set()
-    assert already_succeeded_paths({"tiers_run": "not-a-list"}, "cloud_llm") == set()
+    assert already_succeeded_paths({}, "cloud_llm", "audit", _CURRENT_HASHES) == set()
+    assert already_succeeded_paths({"tiers_run": "not-a-list"}, "cloud_llm", "audit", _CURRENT_HASHES) == set()
     assert already_succeeded_paths(
-        {"tiers_run": ["cloud_llm"], "files_reviewed": "not-a-list", "skipped": []}, "cloud_llm"
+        {"mode": "audit", "tiers_run": ["cloud_llm"], "files_reviewed": "not-a-list", "skipped": [], "file_hashes": {}},
+        "cloud_llm", "audit", _CURRENT_HASHES,
     ) == set()
 
 

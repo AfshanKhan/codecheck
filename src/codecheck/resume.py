@@ -12,6 +12,7 @@ just re-run in full every time.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -29,26 +30,62 @@ def load_prior_report(path: Path) -> dict | None:
         return None
 
 
-def already_succeeded_paths(prior: dict, tier: str) -> set[str]:
+def compute_file_hash(content: str) -> str:
+    return hashlib.sha256(content.encode("utf-8", errors="replace")).hexdigest()
+
+
+def already_succeeded_paths(
+    prior: dict, tier: str, current_mode: str, current_file_hashes: dict[str, str]
+) -> set[str]:
     """Files `tier` already produced a real (non-skipped) result for in the
-    prior run -- safe to skip re-requesting these. Empty if the tier wasn't
-    even run in the prior report.
+    prior run -- safe to skip re-requesting these.
+
+    Path alone isn't enough to trust a prior result: the prior report could
+    be from a different review mode (a diff-mode review only ever saw the
+    changed-lines context, an audit-mode review saw the whole file -- these
+    aren't the same question even for an identical file) or the file's
+    content could simply have changed since that report was generated (the
+    working tree was edited, a different commit/PR is now in scope, etc.).
+    Confirmed as a real risk via Greptile review: reusing findings in either
+    case would either mismatch what was actually asked, or silently mask a
+    real change in the file with a stale result. So this requires *both*:
+    the prior report's mode matches the current run's mode, and the file's
+    content hash is identical between the two runs -- not just the path.
+
+    (repo_path is deliberately NOT checked here: a --repo-url run clones to
+    a fresh temp directory every single invocation, so requiring repo_path
+    equality would make --resume-from useless for exactly the case it exists
+    for. Byte-identical content at the same path, in the same review mode,
+    is what actually makes a prior result valid to reuse -- not which
+    directory it happened to sit in.)
     """
     tiers_run = prior.get("tiers_run")
     if not isinstance(tiers_run, list) or tier not in tiers_run:
         return set()
+    if prior.get("mode") != current_mode:
+        return set()
     prior_files = prior.get("files_reviewed")
     prior_skipped = prior.get("skipped")
+    prior_hashes = prior.get("file_hashes")
     if not isinstance(prior_files, list) or not isinstance(prior_skipped, list):
         return set()
-    return {
-        path
-        for path in prior_files
-        if isinstance(path, str)
-        and not any(
+    if not isinstance(prior_hashes, dict):
+        return set()  # older report predating file_hashes -- fail closed, not stale-trusting
+
+    result = set()
+    for path in prior_files:
+        if not isinstance(path, str):
+            continue
+        prior_hash = prior_hashes.get(path)
+        current_hash = current_file_hashes.get(path)
+        if not prior_hash or not current_hash or prior_hash != current_hash:
+            continue  # content changed (or unknown) -- must be re-reviewed
+        if any(
             isinstance(entry, str) and entry.startswith(f"{tier}: {path}: ") for entry in prior_skipped
-        )
-    }
+        ):
+            continue
+        result.add(path)
+    return result
 
 
 def prior_findings_for_paths(prior: dict, tier: str, paths: set[str]) -> list[Finding]:

@@ -462,11 +462,16 @@ class _FakeReviewer:
         return []  # no new findings this run -- only resumed ones matter here
 
 
+_HASHES = {"a.py": "hash-a", "b.py": "hash-b"}
+
+
 def test_run_llm_tier_skips_already_succeeded_files_and_reuses_their_findings(tmp_path: Path):
     prior_report = {
+        "mode": "audit",
         "tiers_run": ["cloud_llm"],
         "files_reviewed": ["a.py", "b.py"],
         "skipped": [],  # neither file was skipped last time -- both succeeded
+        "file_hashes": dict(_HASHES),
         "findings": [
             {
                 "check_id": "CLOUD-001",
@@ -487,7 +492,7 @@ def test_run_llm_tier_skips_already_succeeded_files_and_reuses_their_findings(tm
     reviewer = _FakeReviewer()
 
     findings, skip_entries, resumed = _run_llm_tier(
-        "cloud_llm", reviewer, targets, tmp_path, prior_report, "status"
+        "cloud_llm", reviewer, targets, tmp_path, prior_report, "audit", _HASHES, "status"
     )
 
     # both a.py and b.py were already done -- reviewer.review() must not be
@@ -499,9 +504,11 @@ def test_run_llm_tier_skips_already_succeeded_files_and_reuses_their_findings(tm
 
 def test_run_llm_tier_retries_only_files_skipped_last_time(tmp_path: Path):
     prior_report = {
+        "mode": "audit",
         "tiers_run": ["cloud_llm"],
         "files_reviewed": ["a.py", "b.py"],
         "skipped": ["cloud_llm: b.py: API request failed: 429 Too Many Requests"],
+        "file_hashes": dict(_HASHES),
         "findings": [],
     }
     targets = [
@@ -511,7 +518,7 @@ def test_run_llm_tier_retries_only_files_skipped_last_time(tmp_path: Path):
     reviewer = _FakeReviewer()
 
     findings, skip_entries, resumed = _run_llm_tier(
-        "cloud_llm", reviewer, targets, tmp_path, prior_report, "status"
+        "cloud_llm", reviewer, targets, tmp_path, prior_report, "audit", _HASHES, "status"
     )
 
     # a.py already succeeded -- only b.py (skipped last time) is re-requested
@@ -524,7 +531,7 @@ def test_run_llm_tier_processes_everything_without_resume(tmp_path: Path):
     reviewer = _FakeReviewer()
 
     findings, skip_entries, resumed = _run_llm_tier(
-        "cloud_llm", reviewer, targets, tmp_path, None, "status"
+        "cloud_llm", reviewer, targets, tmp_path, None, "audit", {"a.py": "hash-a"}, "status"
     )
 
     assert [t.path for t in reviewer.received_targets] == ["a.py"]
