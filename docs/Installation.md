@@ -92,8 +92,13 @@ isolation.
 `eslint` can't be bundled at all regardless of install path — it's an npm
 package, not a Python one, so there's no way to declare it as a Python
 dependency. Install it separately (`npm install -g eslint`, or per-project)
-if you want that sub-runner. Any of these that are still missing are skipped
-gracefully (not an error) — see the rules engine in [Architecture](Architecture.md).
+if you want that sub-runner. If you manage Node versions with `nvm`: a global
+npm install is tied to whichever Node version was active at install time —
+switching versions later means `eslint` won't be on `PATH` until you reinstall
+it under the new one (confirmed directly: `which eslint` resolved into the
+active `nvm` version's own bin directory, not a version-independent location).
+Any of these that are still missing are skipped gracefully (not an error) —
+see the rules engine in [Architecture](Architecture.md).
 
 ### Option C — build a real wheel, install with plain `pip` (no `uv` at all)
 
