@@ -199,9 +199,11 @@ pass the exact filename to `--resume-from` when you want to continue one.
 The timestamp only has second resolution, so if a second run for the same
 repo/PR/mode finishes within the same second, `-2`, `-3`, ... is appended to
 keep it unique rather than overwriting the earlier run's files. That name is
-claimed atomically (an exclusive file-create on the `.json` path, not a
-check-then-write) so two `codecheck` processes finishing in the same second
-against the same repo/PR/mode can't both win the same filename either.
+claimed atomically — an exclusive file-create (not a check-then-write) on
+*all three* extensions, not just `.json`, so two `codecheck` processes
+finishing in the same second against the same repo/PR/mode can't both win the
+same filename, and a leftover `.md`/`.docx` from an earlier interrupted run
+(with no matching `.json`) can't get silently overwritten either.
 
 ### Exit codes (both modes)
 

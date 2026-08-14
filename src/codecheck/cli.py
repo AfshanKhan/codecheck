@@ -342,24 +342,39 @@ def _report_basename(repo_label: str, pr_number: int | None, mode: str, generate
     return f"{repo_label}_{suffix}_{timestamp}"
 
 
+_REPORT_EXTENSIONS = (".json", ".md", ".docx")
+
+
 def _claim_unique_basename(output_dir: Path, basename: str) -> str:
     """The timestamp in `basename` only has second resolution, so two runs for
     the same repo/PR/mode finishing within the same second would otherwise
-    collide and silently overwrite each other's reports. Reserves `<candidate>.json`
-    with an atomic exclusive-create (O_CREAT | O_EXCL) rather than check-then-write
-    -- an exists() check followed by a later write has a TOCTOU gap two concurrent
-    codecheck processes could both pass, still overwriting the same output_path.
-    A separate process can only win a *different* candidate, since claiming the
-    first one fails outright rather than racing to overwrite it.
+    collide and silently overwrite each other's reports. Reserves all three
+    `<candidate>.{json,md,docx}` paths with an atomic exclusive-create
+    (O_CREAT | O_EXCL) each, not a check-then-write -- an exists() check
+    followed by a later write has a TOCTOU gap two concurrent codecheck
+    processes could both pass, still overwriting the same paths. Claiming
+    only the `.json` path isn't enough either: a partial leftover (e.g. an
+    interrupted prior run, or the `.json` deleted by hand) could leave `.md`/
+    `.docx` behind with no matching `.json`, and a claim scoped to `.json`
+    alone would then silently overwrite them. If any one of the three is
+    already taken, whatever this candidate did manage to claim is rolled back
+    before moving on to the next suffix, so a candidate is only ever
+    considered "won" once all three are actually free.
     """
     candidate = basename
     suffix = 2
     while True:
+        claimed: list[Path] = []
         try:
-            fd = os.open(str(output_dir / f"{candidate}.json"), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            os.close(fd)
+            for ext in _REPORT_EXTENSIONS:
+                path = output_dir / f"{candidate}{ext}"
+                fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                os.close(fd)
+                claimed.append(path)
             return candidate
         except FileExistsError:
+            for path in claimed:
+                path.unlink(missing_ok=True)
             candidate = f"{basename}-{suffix}"
             suffix += 1
 

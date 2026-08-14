@@ -110,6 +110,26 @@ def test_claim_unique_basename_is_atomic_not_toctou(tmp_path: Path):
     assert first != second
 
 
+def test_claim_unique_basename_partial_leftover_md_not_overwritten(tmp_path: Path):
+    # regression (Greptile): a claim scoped to only the .json path would let
+    # this candidate through even though its .md already exists (e.g. a prior
+    # interrupted run, or the .json deleted by hand) -- silently overwriting it.
+    (tmp_path / "myrepo_audit_20260814_161000.md").write_text("existing report, don't touch")
+    basename = _claim_unique_basename(tmp_path, "myrepo_audit_20260814_161000")
+    assert basename == "myrepo_audit_20260814_161000-2"
+    assert (tmp_path / "myrepo_audit_20260814_161000.md").read_text() == "existing report, don't touch"
+    # nothing was left half-claimed under the rejected candidate
+    assert not (tmp_path / "myrepo_audit_20260814_161000.json").exists()
+    assert not (tmp_path / "myrepo_audit_20260814_161000.docx").exists()
+
+
+def test_claim_unique_basename_partial_leftover_docx_not_overwritten(tmp_path: Path):
+    (tmp_path / "myrepo_audit_20260814_161000.docx").write_bytes(b"existing docx")
+    basename = _claim_unique_basename(tmp_path, "myrepo_audit_20260814_161000")
+    assert basename == "myrepo_audit_20260814_161000-2"
+    assert (tmp_path / "myrepo_audit_20260814_161000.docx").read_bytes() == b"existing docx"
+
+
 def test_audit_finds_house_rule_violations(sandbox_repo: Path, tmp_path: Path):
     output_dir = tmp_path / "reports"
     result = runner.invoke(
