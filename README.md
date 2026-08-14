@@ -68,6 +68,23 @@ codecheck --help
 
 If you see a list of commands, it worked.
 
+**One more thing before you run it for real:** the free checks in step 2/3
+below (Tier 1) are powered by three separate tools — `ruff`, `eslint`, and
+`semgrep` — that `codecheck` doesn't bundle itself. Without them, `codecheck`
+still runs, but silently checks less than it could. Install what you need:
+
+```bash
+uv tool install ruff       # Python checks
+uv tool install semgrep    # security patterns, most languages
+npm install -g eslint      # JavaScript/TypeScript checks — only if you use npm/Node
+```
+
+Any of these you skip just gets noted under "Skipped:" in the report, not
+treated as an error — so it's safe to skip `eslint` if your project has no
+JavaScript, for example. (If you use `nvm` to manage Node versions: this
+`eslint` install is tied to whichever Node version is currently active — if
+you switch versions later, reinstall it under the new one.)
+
 ### 2. Review a change before merging it (most common use)
 
 Go into the project folder you want to check (the one with the code you
@@ -168,24 +185,16 @@ nothing.
 | `RULE-001` (house rule) | Bare `except:` blocks, which silently swallow errors including ones you'd want to know about |
 | `RULE-002` (house rule) | Building a database query by directly inserting a variable into the text (SQL injection risk), instead of using safe parameters |
 
-`ruff` and `semgrep` need to actually be installed and on your `PATH` to run —
-`codecheck` doesn't bundle them by default. If you installed with `uv tool
-install` (the Quick Start above), the easiest fix is installing them the same
-way, as their own tools:
-
-```bash
-uv tool install ruff
-uv tool install semgrep
-```
-
-(Installing `codecheck[rules]` via `uv tool install` does **not** work — `uv
-tool install`'s isolated-environment model only exposes the tool you named,
-not an extra's dependencies. The `[rules]` extra is for the dev/wheel install
-paths — see [Installation](docs/Installation.md) if that's you.)
-
-`eslint` always needs a separate install (`npm install -g eslint`) since it
-isn't a Python package. Any of these that are missing are just skipped, not
-an error — you'll see it called out under "Skipped:" in the report.
+`ruff`, `eslint`, and `semgrep` all need to actually be installed — see step 1
+above if you haven't yet. Any of these that are missing are just skipped, not
+an error — you'll see it called out under "Skipped:" in the report. One
+detail worth knowing if you installed via `uv tool install`: installing
+`codecheck[rules]` does **not** get you `ruff`/`semgrep` — `uv tool install`'s
+isolated-environment model only exposes the tool you named, not an extra's
+dependencies, which is exactly why step 1 has you install `ruff`/`semgrep` as
+their own separate tools instead. (The `[rules]` extra is real, just meant for
+the dev/wheel install paths — see [Installation](docs/Installation.md) if
+that's you.)
 
 **Tier 2 / Tier 3 — AI review (opt-in)**
 
