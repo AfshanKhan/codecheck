@@ -196,6 +196,9 @@ randomly-named temp directory, so the directory name itself isn't useful),
 otherwise it's `--repo-path`'s own directory name. Each run gets its own
 timestamp, so re-running never silently overwrites a previous run's report —
 pass the exact filename to `--resume-from` when you want to continue one.
+The timestamp only has second resolution, so if a second run for the same
+repo/PR/mode finishes within the same second, `-2`, `-3`, ... is appended to
+keep it unique rather than overwriting the earlier run's files.
 
 ### Exit codes (both modes)
 

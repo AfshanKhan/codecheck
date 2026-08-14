@@ -76,6 +76,17 @@ def test_small_change_not_flagged(sandbox_repo: Path):
     assert not any(f.check_id == "RULE-017" for f in findings)
 
 
+def test_flags_substantial_tsx_change_with_no_test_touch():
+    # regression (Greptile): _APP_EXTENSIONS originally omitted .jsx/.ts/.tsx,
+    # even though the eslint sub-runner already supports them.
+    diff_text = "\n".join(f"+function Helper{i}() {{ return {i}; }}" for i in range(10))
+    targets = [
+        ReviewTarget(path="component.tsx", status="modified", diff_text=diff_text, changed_lines={1}),
+    ]
+    findings = TestCoverageRunner().run(targets, Path("."))
+    assert any(f.check_id == "RULE-017" for f in findings)
+
+
 def test_audit_mode_is_a_no_op():
     targets = [
         ReviewTarget(path="app.py", status="scanned", diff_text="", changed_lines=None),

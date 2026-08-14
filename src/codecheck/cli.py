@@ -341,12 +341,26 @@ def _report_basename(repo_label: str, pr_number: int | None, mode: str, generate
     return f"{repo_label}_{suffix}_{timestamp}"
 
 
+def _unique_basename(output_dir: Path, basename: str) -> str:
+    """The timestamp in `basename` only has second resolution, so two runs for
+    the same repo/PR/mode finishing within the same second would otherwise
+    collide and silently overwrite each other's reports. Append -2, -3, ...
+    until none of the three extensions already exist.
+    """
+    candidate = basename
+    suffix = 2
+    while any((output_dir / f"{candidate}{ext}").exists() for ext in (".json", ".md", ".docx")):
+        candidate = f"{basename}-{suffix}"
+        suffix += 1
+    return candidate
+
+
 def _finish(report: ReviewReport, output_dir: Path, cfg: Config, repo_label: str, pr_number: int | None = None) -> None:
     console.print()
     print_report(report, console)
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    basename = _report_basename(repo_label, pr_number, report.mode, report.generated_at)
+    basename = _unique_basename(output_dir, _report_basename(repo_label, pr_number, report.mode, report.generated_at))
     json_path = output_dir / f"{basename}.json"
     md_path = output_dir / f"{basename}.md"
     docx_path = output_dir / f"{basename}.docx"

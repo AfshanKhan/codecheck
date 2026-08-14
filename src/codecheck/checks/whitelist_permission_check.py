@@ -36,8 +36,22 @@ def _allows_guest(dec: ast.expr) -> bool:
     return False
 
 
+_NESTED_SCOPE_TYPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
+
+
+def _iter_own_scope(node: ast.AST):
+    """Like ast.walk(), but doesn't descend into a nested function/lambda's
+    body -- a permission check inside a nested helper that's never called
+    shouldn't count as protecting the outer whitelisted endpoint.
+    """
+    for child in ast.iter_child_nodes(node):
+        yield child
+        if not isinstance(child, _NESTED_SCOPE_TYPES):
+            yield from _iter_own_scope(child)
+
+
 def _has_permission_check(func: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
-    for node in ast.walk(func):
+    for node in _iter_own_scope(func):
         if isinstance(node, ast.Call):
             target = node.func
             name = target.attr if isinstance(target, ast.Attribute) else (

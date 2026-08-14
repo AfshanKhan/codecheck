@@ -7,7 +7,7 @@ from unittest.mock import patch
 import pytest
 from typer.testing import CliRunner
 
-from codecheck.cli import _repo_label, _report_basename, _run_llm_tier, app
+from codecheck.cli import _repo_label, _report_basename, _run_llm_tier, _unique_basename, app
 from codecheck.lm_link import DeviceCandidate, ModelLocation
 from codecheck.models import ReviewTarget
 
@@ -82,6 +82,20 @@ def test_report_basename_uses_pr_number_when_present():
 def test_report_basename_uses_mode_when_no_pr():
     generated_at = datetime(2026, 8, 14, 16, 10, 0, tzinfo=timezone.utc)
     assert _report_basename("myrepo", None, "audit", generated_at) == "myrepo_audit_20260814_161000"
+
+
+def test_unique_basename_no_collision_returns_as_is(tmp_path: Path):
+    assert _unique_basename(tmp_path, "myrepo_audit_20260814_161000") == "myrepo_audit_20260814_161000"
+
+
+def test_unique_basename_appends_suffix_on_collision(tmp_path: Path):
+    # regression (Greptile): two runs finishing within the same second must not
+    # silently overwrite each other's reports.
+    (tmp_path / "myrepo_audit_20260814_161000.json").write_text("{}")
+    assert _unique_basename(tmp_path, "myrepo_audit_20260814_161000") == "myrepo_audit_20260814_161000-2"
+
+    (tmp_path / "myrepo_audit_20260814_161000-2.md").write_text("x")
+    assert _unique_basename(tmp_path, "myrepo_audit_20260814_161000") == "myrepo_audit_20260814_161000-3"
 
 
 def test_audit_finds_house_rule_violations(sandbox_repo: Path, tmp_path: Path):

@@ -275,7 +275,7 @@ class HouseRulesRunner(SubRunner):
         return findings
 
 
-_APP_EXTENSIONS = (".py", ".js")
+_APP_EXTENSIONS = (".py", ".js", ".jsx", ".ts", ".tsx")
 _TEST_MARKERS = ("def test_", "test(", "it(", "describe(")
 
 

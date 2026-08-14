@@ -79,7 +79,11 @@ internally, so `check_file()` is a no-op on a file type it doesn't handle.
 - **`RULE-003`** — `@frappe.whitelist()` method whose body never calls
   something matching `has_permission`/`check_permission` or raises a
   `Permission*` exception (`checks/whitelist_permission_check.py`), severity
-  `HIGH`. Skips `allow_guest=True` endpoints.
+  `HIGH`. Skips `allow_guest=True` endpoints. Only looks at the function's own
+  scope — a permission check inside a *nested* function/lambda doesn't count
+  unless that nested function is actually called (Greptile caught a bug here:
+  the original version used a plain `ast.walk()`, which also matched an
+  unused, never-invoked nested helper).
 - **`RULE-004`** — a Frappe DB/document-fetch call (`get_doc`, `get_all`,
   `db.sql`, etc.) made inside a loop body (`checks/n_plus_one_query.py`),
   severity `MEDIUM`.
@@ -144,10 +148,12 @@ compliance tool, not a code reviewer — but its `PRAnalyzer.check_tests()`
 heuristic for "does this PR look like it added a real test" turned out to be
 exactly as useful for a single diff):
 
-1. Collect changed `.py`/`.js` files that aren't themselves test files
-   (path doesn't contain `"test"`) and aren't deleted. If none, or their
-   combined added-line count is under 5, skip — too small to reasonably
-   expect a test.
+1. Collect changed `.py`/`.js`/`.jsx`/`.ts`/`.tsx` files that aren't
+   themselves test files (path doesn't contain `"test"`) and aren't deleted.
+   If none, or their combined added-line count is under 5, skip — too small
+   to reasonably expect a test. (`.jsx`/`.ts`/`.tsx` were added after Greptile
+   pointed out the original extension list silently excluded them, even
+   though the eslint sub-runner already covers them.)
 2. Collect changed files whose path *does* contain `"test"`. A test file only
    counts as real coverage if its diff contains an actual test declaration
    (`def test_`, `test(`, `it(`, `describe(`); a `pass`-only stub under 15
