@@ -12,6 +12,7 @@ dependencies = [
     "gitpython>=3.1.58",
     "pydantic>=2.6",
     "pyyaml>=6.0",
+    "python-docx>=1.1",
 ]
 
 [project.optional-dependencies]

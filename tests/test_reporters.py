@@ -6,6 +6,7 @@ from rich.console import Console
 
 from codecheck.models import Finding, ReviewReport, Severity
 from codecheck.reporters.console import print_report
+from codecheck.reporters.docx_report import render_docx, write_docx_report
 from codecheck.reporters.json_report import write_json_report
 from codecheck.reporters.markdown_report import render_markdown, write_markdown_report
 
@@ -98,6 +99,40 @@ def test_write_markdown_report(tmp_path: Path):
     write_markdown_report(make_report(), output_path)
     assert output_path.exists()
     assert "app/api.py" in output_path.read_text()
+
+
+def _docx_text(doc) -> str:
+    parts = [p.text for p in doc.paragraphs]
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                parts.append(cell.text)
+    return "\n".join(parts)
+
+
+def test_docx_report_contains_findings_and_summary():
+    doc = render_docx(make_report())
+    text = _docx_text(doc)
+    assert "app/api.py" in text
+    assert "RULE-002" in text
+    assert "big_file.py" in text  # skipped section
+    assert "1" in text  # high-severity count
+
+
+def test_docx_report_no_findings():
+    empty = ReviewReport(
+        repo_path="/repo", mode="diff", base_ref="main", head_ref=None,
+        generated_at=datetime(2026, 7, 30, tzinfo=timezone.utc), tiers_run=["rules"],
+    )
+    text = _docx_text(render_docx(empty))
+    assert "No findings" in text
+
+
+def test_write_docx_report(tmp_path: Path):
+    output_path = tmp_path / "report.docx"
+    write_docx_report(make_report(), output_path)
+    assert output_path.exists()
+    assert output_path.stat().st_size > 0
 
 
 def _injection_report() -> ReviewReport:

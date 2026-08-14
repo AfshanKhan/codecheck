@@ -35,7 +35,7 @@ touched by the diff.
 | `--force-cloud` | off | Bypasses the cloud-tier file-count cap (`cloud.audit_file_cap`) for a large diff/PR — see the cost cap note under `audit`. |
 | `--force-local` | off | Skip the confirmation prompt/refusal when the local tier would run on this machine instead of a confirmed LM Link remote — see LM Link under [Tier 2 in Architecture](Architecture.md). |
 | `--device` | none | Which device to use when `local.model` is loaded on more than one at once (a device name, or `local`). Sets LM Studio's LM Link preferred device — see LM Link under [Tier 2 in Architecture](Architecture.md). |
-| `--output-dir` | `./reports` | Where `report.json` and `report.md` are written. |
+| `--output-dir` | `./reports` | Where the JSON/markdown/docx reports land. Each run gets a timestamped filename — see "Report filenames" below. |
 | `--resume-from` | none | Path to a prior run's `report.json` — see "Resuming after a rate limit" below. |
 
 #### Reviewing a GitHub PR (`--pr`)
@@ -141,7 +141,7 @@ every file is in scope, not just changed lines.
 | `--force-cloud` | off | Bypasses the cloud-tier file-count safety cap (`cloud.audit_file_cap`). Required if the repo has more eligible files than the cap. |
 | `--force-local` | off | Skip the confirmation prompt/refusal when the local tier would run on this machine instead of a confirmed LM Link remote — see LM Link under [Tier 2 in Architecture](Architecture.md). |
 | `--device` | none | Which device to use when `local.model` is loaded on more than one at once (a device name, or `local`). Sets LM Studio's LM Link preferred device — see LM Link under [Tier 2 in Architecture](Architecture.md). |
-| `--output-dir` | `./reports` | Where `report.json` and `report.md` are written. |
+| `--output-dir` | `./reports` | Where the JSON/markdown/docx reports land. Each run gets a timestamped filename — see "Report filenames" below. |
 | `--resume-from` | none | Path to a prior run's `report.json` — see "Resuming after a rate limit" below. |
 
 **Cloud cost cap (both modes):** the cloud tier makes one API call per file. An
@@ -173,14 +173,29 @@ at the same point every single time. Now it just works — kick off `audit
 in one invocation** — interrupted (Ctrl-C, machine went to sleep), or a
 provider whose rate limit is so restrictive that even the automatic in-process
 retries don't converge within a single run. Point `--resume-from
-<path-to-prior-report.json>` at a previous run's own output, and any file the
-cloud (or local) tier already got a real result for is skipped (not
+<path-to-prior-run's-.json-report>` at a previous run's own JSON output (see
+"Report filenames" below for what that file is actually called), and any file
+the cloud (or local) tier already got a real result for is skipped (not
 re-requested) — its prior result is carried into the new report — while only
 files that were actually skipped last time get retried. Verified directly
 against a real rate-limited Groq run: a repo where only 5/68 files succeeded
 went to 9/68 cumulative on a resumed retry, correctly skipping those first 5
 instead of repeating them. Only applies to the LLM tiers — the rules tier is
 free and fast enough to just re-run in full every time.
+
+### Report filenames
+
+Every run (`diff` or `audit`) writes three files into `--output-dir` (default
+`./reports`): a `.json`, a `.md`, and a `.docx` — same content, three formats.
+The filename follows `<repo>[_pr<N>]_<mode>_<timestamp>`, e.g.
+`codecheck_pr12_diff_20260814_161000.json` for a `--pr 12` review, or
+`codecheck_audit_20260814_161230.md` for a plain `audit` run (no PR number, so
+the mode — `diff` or `audit` — is used instead). `<repo>` is parsed from
+`--repo-url`/the PR's URL when one is given (a cloned repo lands in a
+randomly-named temp directory, so the directory name itself isn't useful),
+otherwise it's `--repo-path`'s own directory name. Each run gets its own
+timestamp, so re-running never silently overwrites a previous run's report —
+pass the exact filename to `--resume-from` when you want to continue one.
 
 ### Exit codes (both modes)
 

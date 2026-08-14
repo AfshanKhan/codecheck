@@ -14,6 +14,7 @@ class RulesConfig(BaseModel):
     eslint: bool = True
     semgrep: bool = True
     house_rules: bool = True
+    test_coverage: bool = True
 
 
 class CloudConfig(BaseModel):
