@@ -24,6 +24,13 @@ jobs:
             echo "::error::tag v$TAG does not match pyproject version $VER — bump 'version' in pyproject.toml first"
             exit 1
           fi
+          # PEP 440 pre-release suffix (a1, b1, rc1, .dev1) -> publish as a
+          # GitHub pre-release, not the repo's "Latest release".
+          if [[ "$VER" =~ (a|b|rc)[0-9]+$ || "$VER" =~ \.dev[0-9]+$ ]]; then
+            echo "IS_PRERELEASE=--prerelease" >> "$GITHUB_ENV"
+          else
+            echo "IS_PRERELEASE=" >> "$GITHUB_ENV"
+          fi
 
       - name: Install uv
         uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
@@ -34,4 +41,4 @@ jobs:
       - name: Publish GitHub release with artifacts
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${GITHUB_REF_NAME}" dist/* --verify-tag --generate-notes
+        run: gh release create "${GITHUB_REF_NAME}" dist/* --verify-tag --generate-notes $IS_PRERELEASE
