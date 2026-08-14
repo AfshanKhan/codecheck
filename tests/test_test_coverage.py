@@ -6,7 +6,7 @@ import pytest
 from codecheck.config import RulesConfig
 from codecheck.diff import get_diff
 from codecheck.models import ReviewTarget
-from codecheck.reviewers.rules_engine import RulesEngineReviewer, TestCoverageRunner
+from codecheck.reviewers.rules_engine import RulesEngineReviewer, TestCoverageRunner, _is_test_path
 
 
 def _run(repo: Path, *args: str) -> None:
@@ -85,6 +85,39 @@ def test_flags_substantial_tsx_change_with_no_test_touch():
     ]
     findings = TestCoverageRunner().run(targets, Path("."))
     assert any(f.check_id == "RULE-017" for f in findings)
+
+
+def test_flags_substantial_change_when_touched_file_only_contains_test_substring():
+    # regression (Greptile): a plain "test" in path substring match wrongly
+    # classified ordinary application files like contest.tsx/latest.ts as
+    # tests, hiding a real missing-test finding.
+    diff_text = "\n".join(f"+function Helper{i}() {{ return {i}; }}" for i in range(10))
+    targets = [
+        ReviewTarget(path="contest.tsx", status="modified", diff_text=diff_text, changed_lines={1}),
+    ]
+    findings = TestCoverageRunner().run(targets, Path("."))
+    assert any(f.check_id == "RULE-017" for f in findings)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "test_app.py",
+        "app_test.py",
+        "src/app/test_app.py",
+        "component.test.tsx",
+        "component.spec.ts",
+        "tests/app.py",
+        "__tests__/component.jsx",
+    ],
+)
+def test_is_test_path_matches_real_test_conventions(path: str):
+    assert _is_test_path(path)
+
+
+@pytest.mark.parametrize("path", ["contest.tsx", "latest.ts", "attestation.py", "testament.js"])
+def test_is_test_path_does_not_match_ordinary_app_files(path: str):
+    assert not _is_test_path(path)
 
 
 def test_audit_mode_is_a_no_op():

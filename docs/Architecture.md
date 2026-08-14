@@ -76,14 +76,22 @@ internally, so `check_file()` is a no-op on a file type it doesn't handle.
   (`checks/no_sql_string_format.py`), severity `HIGH`, downgraded to `MEDIUM`
   if `frappe.db.escape()` appears anywhere in the call. Parameterized calls
   (`frappe.db.sql(query, params)`) are not flagged.
-- **`RULE-003`** — `@frappe.whitelist()` method whose body never calls
-  something matching `has_permission`/`check_permission` or raises a
+- **`RULE-003`** — `@frappe.whitelist()` method whose body never (transitively)
+  calls something matching `has_permission`/`check_permission` or raises a
   `Permission*` exception (`checks/whitelist_permission_check.py`), severity
-  `HIGH`. Skips `allow_guest=True` endpoints. Only looks at the function's own
-  scope — a permission check inside a *nested* function/lambda doesn't count
-  unless that nested function is actually called (Greptile caught a bug here:
-  the original version used a plain `ast.walk()`, which also matched an
-  unused, never-invoked nested helper).
+  `HIGH`. Skips `allow_guest=True` endpoints. Resolution is call-graph-aware,
+  not a flat `ast.walk()` of the whole function: a permission check inside a
+  nested helper only counts if that helper is actually reachable by a call
+  from the whitelisted function (directly, or transitively through other
+  nested helpers) — an unused, never-invoked nested helper doesn't count.
+  Greptile caught two bugs getting here: first a plain `ast.walk()` matched
+  even a dead/uncalled nested helper; the naive fix for that (stop descending
+  into any nested scope) then broke the opposite, valid case — a permission
+  check in a helper that IS called. The current version builds a flat,
+  depth-independent map of every nested function in the whitelisted method
+  (since a sibling helper is callable via closure from another nested helper,
+  not just from its own immediate parent) and walks the actual call graph
+  from the outer function.
 - **`RULE-004`** — a Frappe DB/document-fetch call (`get_doc`, `get_all`,
   `db.sql`, etc.) made inside a loop body (`checks/n_plus_one_query.py`),
   severity `MEDIUM`.
@@ -149,17 +157,22 @@ heuristic for "does this PR look like it added a real test" turned out to be
 exactly as useful for a single diff):
 
 1. Collect changed `.py`/`.js`/`.jsx`/`.ts`/`.tsx` files that aren't
-   themselves test files (path doesn't contain `"test"`) and aren't deleted.
-   If none, or their combined added-line count is under 5, skip — too small
-   to reasonably expect a test. (`.jsx`/`.ts`/`.tsx` were added after Greptile
-   pointed out the original extension list silently excluded them, even
-   though the eslint sub-runner already covers them.)
-2. Collect changed files whose path *does* contain `"test"`. A test file only
-   counts as real coverage if its diff contains an actual test declaration
-   (`def test_`, `test(`, `it(`, `describe(`); a `pass`-only stub under 15
-   added lines is filtered out as boilerplate, same as the source heuristic.
-   Falling back to "more than 15 added lines" or "an existing test file was
-   modified" if there's no clearer signal.
+   themselves test files and aren't deleted. If none, or their combined
+   added-line count is under 5, skip — too small to reasonably expect a test.
+   (`.jsx`/`.ts`/`.tsx` were added after Greptile pointed out the original
+   extension list silently excluded them, even though the eslint sub-runner
+   already covers them.)
+2. "Is a test file" (`_is_test_path`) matches real test-file conventions, not
+   a bare `"test" in path` substring — that substring check originally
+   misclassified ordinary application files like `contest.tsx`/`latest.ts` as
+   tests (another real Greptile catch). It matches: a `test_*.py`/`*_test.py`
+   module, a `.test.`/`.spec.` JS/TS file, or any path under a
+   `tests/`/`__tests__/` directory. A matched test file only counts as real
+   coverage if its diff contains an actual test declaration (`def test_`,
+   `test(`, `it(`, `describe(`); a `pass`-only stub under 15 added lines is
+   filtered out as boilerplate, same as the source heuristic. Falling back to
+   "more than 15 added lines" or "an existing test file was modified" if
+   there's no clearer signal.
 3. If app code changed substantially and no test file passes that bar, emit
    one `RULE-017` finding (severity `LOW`) anchored on the largest changed
    app file — not one finding per file, since this is a single judgment about

@@ -198,7 +198,10 @@ timestamp, so re-running never silently overwrites a previous run's report —
 pass the exact filename to `--resume-from` when you want to continue one.
 The timestamp only has second resolution, so if a second run for the same
 repo/PR/mode finishes within the same second, `-2`, `-3`, ... is appended to
-keep it unique rather than overwriting the earlier run's files.
+keep it unique rather than overwriting the earlier run's files. That name is
+claimed atomically (an exclusive file-create on the `.json` path, not a
+check-then-write) so two `codecheck` processes finishing in the same second
+against the same repo/PR/mode can't both win the same filename either.
 
 ### Exit codes (both modes)
 

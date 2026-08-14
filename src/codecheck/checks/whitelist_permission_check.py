@@ -2,11 +2,17 @@
 (check_permission()/has_permission()) or raise PermissionError anywhere in their
 body. Skips allow_guest=True endpoints, which are deliberately public.
 
-Ported from frappe-pr-reviewer's python_analyzer.py, with one fix: the original
-only matched the substring "has_permission", missing the equally-valid
+Ported from frappe-pr-reviewer's python_analyzer.py, with two fixes: the
+original only matched the substring "has_permission", missing the equally-valid
 check_permission() pattern (a Document instance method) -- confirmed via a real
 false positive on indictranstech/casale_erp#89, where check_permission() was
-present but unrecognized.
+present but unrecognized. It also used a plain ast.walk() over the whole
+function, which both false-negatived (a permission check inside a nested
+helper that's never called shouldn't count) and, once that was naively fixed
+by not descending into any nested scope, false-positived the opposite way (a
+permission check inside a nested helper that IS called should still count).
+_has_permission_check() below resolves both: it only descends into a nested
+function's body if that function is actually invoked from the outer scope.
 """
 
 from __future__ import annotations
@@ -50,25 +56,72 @@ def _iter_own_scope(node: ast.AST):
             yield from _iter_own_scope(child)
 
 
-def _has_permission_check(func: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
-    for node in _iter_own_scope(func):
-        if isinstance(node, ast.Call):
-            target = node.func
-            name = target.attr if isinstance(target, ast.Attribute) else (
-                target.id if isinstance(target, ast.Name) else ""
-            )
-            if "has_permission" in name or "check_permission" in name:
-                return True
-        if isinstance(node, ast.Raise) and node.exc is not None:
-            exc = node.exc
-            if isinstance(exc, ast.Call):
-                exc = exc.func
-            exc_name = exc.attr if isinstance(exc, ast.Attribute) else (
-                exc.id if isinstance(exc, ast.Name) else ""
-            )
-            if "Permission" in exc_name:
-                return True
+def _permission_signal(node: ast.AST) -> bool:
+    if isinstance(node, ast.Call):
+        target = node.func
+        name = target.attr if isinstance(target, ast.Attribute) else (
+            target.id if isinstance(target, ast.Name) else ""
+        )
+        if "has_permission" in name or "check_permission" in name:
+            return True
+    if isinstance(node, ast.Raise) and node.exc is not None:
+        exc = node.exc
+        if isinstance(exc, ast.Call):
+            exc = exc.func
+        exc_name = exc.attr if isinstance(exc, ast.Attribute) else (
+            exc.id if isinstance(exc, ast.Name) else ""
+        )
+        if "Permission" in exc_name:
+            return True
     return False
+
+
+def _all_nested_function_defs(func: ast.AST) -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:
+    """Every nested function/async-function defined anywhere within func, at
+    any depth, keyed by name (lambdas can't be called by name, so they're
+    excluded). Flat by design, not scoped to each definition's immediate
+    parent: a helper defined as a *sibling* of another nested function (both
+    directly inside the outer whitelisted function) is still callable from
+    that sibling via a normal Python closure, so scoping the lookup to each
+    node's own immediate children would miss that -- confirmed by a real
+    regression here (an `_outer` helper calling a sibling `_inner` helper
+    that held the actual permission check).
+    """
+    return {
+        node.name: node
+        for node in ast.walk(func)
+        if node is not func and isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+
+def _called_names(node: ast.AST) -> set[str]:
+    return {
+        call.func.id
+        for call in _iter_own_scope(node)
+        if isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+    }
+
+
+def _has_permission_check(func: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    """True if func's own body has a permission signal, or if (transitively)
+    it calls a nested helper that does. A nested helper that's defined but
+    never actually reachable by a call from func doesn't count, since dead
+    code can't be protecting anything.
+    """
+    all_nested = _all_nested_function_defs(func)
+    visited: set[int] = set()
+
+    def resolves(node: ast.AST) -> bool:
+        if id(node) in visited:
+            return False  # guards against mutual/self recursion
+        visited.add(id(node))
+        if any(_permission_signal(n) for n in _iter_own_scope(node)):
+            return True
+        return any(
+            resolves(all_nested[name]) for name in _called_names(node) if name in all_nested
+        )
+
+    return resolves(func)
 
 
 class WhitelistPermissionCheck(HouseCheck):

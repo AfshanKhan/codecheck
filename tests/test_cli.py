@@ -7,7 +7,7 @@ from unittest.mock import patch
 import pytest
 from typer.testing import CliRunner
 
-from codecheck.cli import _repo_label, _report_basename, _run_llm_tier, _unique_basename, app
+from codecheck.cli import _claim_unique_basename, _repo_label, _report_basename, _run_llm_tier, app
 from codecheck.lm_link import DeviceCandidate, ModelLocation
 from codecheck.models import ReviewTarget
 
@@ -84,18 +84,30 @@ def test_report_basename_uses_mode_when_no_pr():
     assert _report_basename("myrepo", None, "audit", generated_at) == "myrepo_audit_20260814_161000"
 
 
-def test_unique_basename_no_collision_returns_as_is(tmp_path: Path):
-    assert _unique_basename(tmp_path, "myrepo_audit_20260814_161000") == "myrepo_audit_20260814_161000"
+def test_claim_unique_basename_no_collision_claims_as_is(tmp_path: Path):
+    basename = _claim_unique_basename(tmp_path, "myrepo_audit_20260814_161000")
+    assert basename == "myrepo_audit_20260814_161000"
+    assert (tmp_path / "myrepo_audit_20260814_161000.json").exists()  # claimed as a side effect
 
 
-def test_unique_basename_appends_suffix_on_collision(tmp_path: Path):
+def test_claim_unique_basename_appends_suffix_on_collision(tmp_path: Path):
     # regression (Greptile): two runs finishing within the same second must not
     # silently overwrite each other's reports.
     (tmp_path / "myrepo_audit_20260814_161000.json").write_text("{}")
-    assert _unique_basename(tmp_path, "myrepo_audit_20260814_161000") == "myrepo_audit_20260814_161000-2"
+    assert _claim_unique_basename(tmp_path, "myrepo_audit_20260814_161000") == "myrepo_audit_20260814_161000-2"
 
     (tmp_path / "myrepo_audit_20260814_161000-2.md").write_text("x")
-    assert _unique_basename(tmp_path, "myrepo_audit_20260814_161000") == "myrepo_audit_20260814_161000-3"
+    assert _claim_unique_basename(tmp_path, "myrepo_audit_20260814_161000") == "myrepo_audit_20260814_161000-3"
+
+
+def test_claim_unique_basename_is_atomic_not_toctou(tmp_path: Path):
+    # regression (Greptile): two "concurrent" claims for the same basename must
+    # never both succeed with the same name -- simulated here by claiming twice
+    # in a row without an intervening write, which a check-then-write
+    # implementation would incorrectly allow.
+    first = _claim_unique_basename(tmp_path, "myrepo_audit_20260814_161000")
+    second = _claim_unique_basename(tmp_path, "myrepo_audit_20260814_161000")
+    assert first != second
 
 
 def test_audit_finds_house_rule_violations(sandbox_repo: Path, tmp_path: Path):

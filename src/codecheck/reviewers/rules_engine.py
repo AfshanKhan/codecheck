@@ -6,6 +6,7 @@ diff (or unfiltered, in whole-repo audit mode where changed_lines is None).
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 from abc import ABC, abstractmethod
@@ -278,10 +279,24 @@ class HouseRulesRunner(SubRunner):
 _APP_EXTENSIONS = (".py", ".js", ".jsx", ".ts", ".tsx")
 _TEST_MARKERS = ("def test_", "test(", "it(", "describe(")
 
+# A plain `"test" in path` substring match also fires on ordinary application
+# filenames like contest.tsx or latest.ts -- match test-file *conventions*
+# instead: a test_/​_test.py module, a .test./.spec. JS/TS file, or a path
+# inside a tests/__tests__ directory.
+_PY_TEST_PATH_RE = re.compile(r"(^|/)(test_[^/]+\.py|[^/]+_test\.py)$")
+_JS_TEST_PATH_RE = re.compile(r"(^|/)[^/]+\.(test|spec)\.(js|jsx|ts|tsx)$")
+_TEST_DIR_RE = re.compile(r"(^|/)(tests?|__tests__)/")
+
 
 def _is_test_path(path: str) -> bool:
     lowered = path.lower()
-    return "test" in lowered and lowered.endswith(_APP_EXTENSIONS)
+    if not lowered.endswith(_APP_EXTENSIONS):
+        return False
+    return bool(
+        _PY_TEST_PATH_RE.search(lowered)
+        or _JS_TEST_PATH_RE.search(lowered)
+        or _TEST_DIR_RE.search(lowered)
+    )
 
 
 def _added_line_count(diff_text: str) -> int:

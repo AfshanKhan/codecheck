@@ -122,6 +122,39 @@ def test_whitelist_permission_check_via_called_helper_still_not_flagged():
     assert findings == []
 
 
+def test_whitelist_permission_check_in_called_nested_helper_not_flagged():
+    # regression (Greptile): a permission check inside a nested helper that IS
+    # invoked must still count as protecting the outer whitelisted endpoint --
+    # the fix for the "uncalled helper" false negative above must not
+    # overcorrect into ignoring every nested helper regardless of whether it's
+    # actually called.
+    content = (
+        "@frappe.whitelist()\n"
+        "def do_thing(name):\n"
+        "    def _check():\n"
+        "        frappe.get_doc('Blanket Order', name).check_permission('write')\n"
+        "    _check()\n"
+        "    return 1\n"
+    )
+    findings = WhitelistPermissionCheck().check_file("a.py", content, changed_lines=None)
+    assert findings == []
+
+
+def test_whitelist_permission_check_in_transitively_called_helper_not_flagged():
+    content = (
+        "@frappe.whitelist()\n"
+        "def do_thing(name):\n"
+        "    def _inner():\n"
+        "        frappe.get_doc('Blanket Order', name).check_permission('write')\n"
+        "    def _outer():\n"
+        "        _inner()\n"
+        "    _outer()\n"
+        "    return 1\n"
+    )
+    findings = WhitelistPermissionCheck().check_file("a.py", content, changed_lines=None)
+    assert findings == []
+
+
 def test_n_plus_one_query_flagged_inside_loop():
     content = (
         "for name in names:\n"

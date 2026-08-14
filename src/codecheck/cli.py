@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 import sys
 import time
@@ -341,18 +342,26 @@ def _report_basename(repo_label: str, pr_number: int | None, mode: str, generate
     return f"{repo_label}_{suffix}_{timestamp}"
 
 
-def _unique_basename(output_dir: Path, basename: str) -> str:
+def _claim_unique_basename(output_dir: Path, basename: str) -> str:
     """The timestamp in `basename` only has second resolution, so two runs for
     the same repo/PR/mode finishing within the same second would otherwise
-    collide and silently overwrite each other's reports. Append -2, -3, ...
-    until none of the three extensions already exist.
+    collide and silently overwrite each other's reports. Reserves `<candidate>.json`
+    with an atomic exclusive-create (O_CREAT | O_EXCL) rather than check-then-write
+    -- an exists() check followed by a later write has a TOCTOU gap two concurrent
+    codecheck processes could both pass, still overwriting the same output_path.
+    A separate process can only win a *different* candidate, since claiming the
+    first one fails outright rather than racing to overwrite it.
     """
     candidate = basename
     suffix = 2
-    while any((output_dir / f"{candidate}{ext}").exists() for ext in (".json", ".md", ".docx")):
-        candidate = f"{basename}-{suffix}"
-        suffix += 1
-    return candidate
+    while True:
+        try:
+            fd = os.open(str(output_dir / f"{candidate}.json"), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.close(fd)
+            return candidate
+        except FileExistsError:
+            candidate = f"{basename}-{suffix}"
+            suffix += 1
 
 
 def _finish(report: ReviewReport, output_dir: Path, cfg: Config, repo_label: str, pr_number: int | None = None) -> None:
@@ -360,7 +369,9 @@ def _finish(report: ReviewReport, output_dir: Path, cfg: Config, repo_label: str
     print_report(report, console)
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    basename = _unique_basename(output_dir, _report_basename(repo_label, pr_number, report.mode, report.generated_at))
+    basename = _claim_unique_basename(
+        output_dir, _report_basename(repo_label, pr_number, report.mode, report.generated_at)
+    )
     json_path = output_dir / f"{basename}.json"
     md_path = output_dir / f"{basename}.md"
     docx_path = output_dir / f"{basename}.docx"
