@@ -281,10 +281,13 @@ _TEST_MARKERS = ("def test_", "test(", "it(", "describe(")
 
 # A plain `"test" in path` substring match also fires on ordinary application
 # filenames like contest.tsx or latest.ts -- match test-file *conventions*
-# instead: a test_/​_test.py module, a .test./.spec. JS/TS file, or a path
-# inside a tests/__tests__ directory.
-_PY_TEST_PATH_RE = re.compile(r"(^|/)(test_[^/]+\.py|[^/]+_test\.py)$")
-_JS_TEST_PATH_RE = re.compile(r"(^|/)[^/]+\.(test|spec)\.(js|jsx|ts|tsx)$")
+# instead: a bare test.py / test_*.py / *_test.py module, a bare test.<ext> /
+# .test./.spec. / *_test.<ext> JS/TS file, or a path inside a
+# tests/__tests__ directory. (The bare "test.ext" and JS/TS "*_test.ext" forms
+# were added after Greptile caught the first version rejecting them --
+# test.py, test.tsx, and foo_test.js all being real, common test filenames.)
+_PY_TEST_PATH_RE = re.compile(r"(^|/)(test(_[^/]+)?|[^/]+_test)\.py$")
+_JS_TEST_PATH_RE = re.compile(r"(^|/)(test|[^/]+\.(test|spec)|[^/]+_test)\.(js|jsx|ts|tsx)$")
 _TEST_DIR_RE = re.compile(r"(^|/)(tests?|__tests__)/")
 
 

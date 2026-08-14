@@ -170,10 +170,14 @@ exactly as useful for a single diff):
 2. "Is a test file" (`_is_test_path`) matches real test-file conventions, not
    a bare `"test" in path` substring — that substring check originally
    misclassified ordinary application files like `contest.tsx`/`latest.ts` as
-   tests (another real Greptile catch). It matches: a `test_*.py`/`*_test.py`
-   module, a `.test.`/`.spec.` JS/TS file, or any path under a
-   `tests/`/`__tests__/` directory. A matched test file only counts as real
-   coverage if its diff contains an actual test declaration (`def test_`,
+   tests (a real Greptile catch). It matches: a bare `test.py`, a
+   `test_*.py`/`*_test.py` module, a bare `test.<ext>`, a `.test.`/`.spec.`
+   JS/TS file, a `*_test.<ext>` JS/TS file, or any path under a
+   `tests/`/`__tests__/` directory. (The bare `test.<ext>` and JS/TS
+   `*_test.<ext>` forms were a second, later Greptile catch — the first regex
+   version rejected `test.py`/`test.tsx`/`foo_test.js` outright, even though
+   they're common real test filenames.) A matched test file only counts as
+   real coverage if its diff contains an actual test declaration (`def test_`,
    `test(`, `it(`, `describe(`); a `pass`-only stub under 15 added lines is
    filtered out as boilerplate, same as the source heuristic. Falling back to
    "more than 15 added lines" or "an existing test file was modified" if

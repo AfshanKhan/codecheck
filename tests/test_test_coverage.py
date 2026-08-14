@@ -109,6 +109,12 @@ def test_flags_substantial_change_when_touched_file_only_contains_test_substring
         "component.spec.ts",
         "tests/app.py",
         "__tests__/component.jsx",
+        # regression (Greptile): a bare "test.<ext>" and JS/TS's "*_test.<ext>"
+        # convention (mirroring Python's) were originally rejected outright.
+        "test.py",
+        "test.tsx",
+        "foo_test.js",
+        "src/test.ts",
     ],
 )
 def test_is_test_path_matches_real_test_conventions(path: str):
