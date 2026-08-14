@@ -14,6 +14,22 @@ dependencies = [
     "pyyaml>=6.0",
 ]
 
+[project.optional-dependencies]
+# Tier 1's ruff/semgrep sub-runners are "bring your own tool" by design --
+# codecheck runs whatever version you already have configured for your
+# project, rather than forcing a specific pinned version as a hard runtime
+# dependency (which could conflict with a project's own pinned ruff/semgrep).
+# This extra is just a convenience for getting a reasonable default install
+# of both in one command if you don't already have them.
+#
+# eslint can't be included here at all -- it's an npm package, not a Python
+# one, so there's no way to declare it as a Python dependency. Install it
+# separately (e.g. `npm install -g eslint`) if you want that sub-runner.
+rules = [
+    "ruff>=0.16.2",
+    "semgrep>=1.0",
+]
+
 [project.scripts]
 codecheck = "codecheck.cli:app"
 

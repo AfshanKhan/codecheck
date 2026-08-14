@@ -51,11 +51,24 @@ again with zero reinstall in between, and the change was already there.
   want silently tracking repo edits): plain `uv tool install .`, then
   `uv tool install --force .` to update it after changes.
 
-Either way, `ruff`/`eslint`/`semgrep` are **not** bundled — `uv tool install`
-only pulls in `codecheck`'s own runtime dependencies (typer, rich, httpx,
-gitpython, pydantic, pyyaml). The rules engine's sub-runners for those three
-still need to be installed separately and on `PATH`; they're skipped
-gracefully (not an error) if missing — see the rules engine in [Architecture](Architecture.md).
+Either way, `ruff`/`eslint`/`semgrep` are **not** bundled by default — a plain
+`uv tool install` only pulls in `codecheck`'s own runtime dependencies (typer,
+rich, httpx, gitpython, pydantic, pyyaml). This is deliberate: `codecheck`'s
+rules-engine sub-runners are "bring your own tool" — it runs whatever
+`ruff`/`semgrep` version you already have configured for your project, rather
+than forcing a specific pinned version as a hard dependency that could
+conflict with your project's own. If you don't already have them, install the
+optional `rules` extra to get a reasonable default of both in one command:
+
+```bash
+uv tool install --editable ".[rules]"    # or: pip install "codecheck[rules]"
+```
+
+`eslint` can't be included this way at all — it's an npm package, not a
+Python one, so there's no way to declare it as a Python dependency. Install it
+separately (`npm install -g eslint`, or per-project) if you want that
+sub-runner. Any of these that are still missing are skipped gracefully (not an
+error) — see the rules engine in [Architecture](Architecture.md).
 
 ### Option C — build a real wheel, install with plain `pip` (no `uv` at all)
 
