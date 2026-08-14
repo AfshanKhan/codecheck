@@ -30,10 +30,18 @@ jobs:
           # Use the actual packaging library rather than a hand-rolled regex --
           # PEP 440 accepts many pre-release spellings (b1, -beta1, B1, rc1,
           # .dev1, ...) and a regex was confirmed to miss some of them.
+          #
+          # VER is passed as a CLI argument (sys.argv), never interpolated
+          # into the -c source string: this job holds a write-capable
+          # GITHUB_TOKEN, and a version string crafted to contain Python
+          # syntax would otherwise execute as code -- confirmed as a real
+          # injection risk via Greptile review of the previous version of
+          # this fix, which did interpolate it directly into the source.
           IS_PRERELEASE=$(uv run --with packaging python3 -c "
+          import sys
           from packaging.version import Version
-          print('--prerelease' if Version('$VER').is_prerelease else '')
-          ")
+          print('--prerelease' if Version(sys.argv[1]).is_prerelease else '')
+          " "$VER")
           echo "IS_PRERELEASE=$IS_PRERELEASE" >> "$GITHUB_ENV"
 
       - name: Build wheel + sdist
