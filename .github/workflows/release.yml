@@ -16,6 +16,9 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+
       - name: Verify tag matches pyproject version
         run: |
           TAG="${GITHUB_REF_NAME#v}"
@@ -24,9 +27,22 @@ jobs:
             echo "::error::tag v$TAG does not match pyproject version $VER — bump 'version' in pyproject.toml first"
             exit 1
           fi
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+          # Use the actual packaging library rather than a hand-rolled regex --
+          # PEP 440 accepts many pre-release spellings (b1, -beta1, B1, rc1,
+          # .dev1, ...) and a regex was confirmed to miss some of them.
+          #
+          # VER is passed as a CLI argument (sys.argv), never interpolated
+          # into the -c source string: this job holds a write-capable
+          # GITHUB_TOKEN, and a version string crafted to contain Python
+          # syntax would otherwise execute as code -- confirmed as a real
+          # injection risk via Greptile review of the previous version of
+          # this fix, which did interpolate it directly into the source.
+          IS_PRERELEASE=$(uv run --with packaging python3 -c "
+          import sys
+          from packaging.version import Version
+          print('--prerelease' if Version(sys.argv[1]).is_prerelease else '')
+          " "$VER")
+          echo "IS_PRERELEASE=$IS_PRERELEASE" >> "$GITHUB_ENV"
 
       - name: Build wheel + sdist
         run: uv build
@@ -34,4 +50,4 @@ jobs:
       - name: Publish GitHub release with artifacts
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${GITHUB_REF_NAME}" dist/* --verify-tag --generate-notes
+        run: gh release create "${GITHUB_REF_NAME}" dist/* --verify-tag --generate-notes $IS_PRERELEASE
