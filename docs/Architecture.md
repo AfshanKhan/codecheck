@@ -84,14 +84,19 @@ internally, so `check_file()` is a no-op on a file type it doesn't handle.
   nested helper only counts if that helper is actually reachable by a call
   from the whitelisted function (directly, or transitively through other
   nested helpers) — an unused, never-invoked nested helper doesn't count.
-  Greptile caught two bugs getting here: first a plain `ast.walk()` matched
-  even a dead/uncalled nested helper; the naive fix for that (stop descending
-  into any nested scope) then broke the opposite, valid case — a permission
-  check in a helper that IS called. The current version builds a flat,
-  depth-independent map of every nested function in the whitelisted method
-  (since a sibling helper is callable via closure from another nested helper,
-  not just from its own immediate parent) and walks the actual call graph
-  from the outer function.
+  Greptile caught three bugs getting here: first a plain `ast.walk()` matched
+  even a dead/uncalled nested helper; the fix for that (stop descending into
+  any nested scope) then broke the opposite, valid case — a permission check
+  in a helper that IS called; fixing *that* with a flat, depth-independent
+  name→def map then got name resolution wrong when two helpers share a name
+  at different nesting depths (whichever definition appeared last in
+  traversal order won, not necessarily the one actually reachable from a
+  given call site). The current version resolves both correctly: reachability
+  via the real call graph (which helper is actually invoked, directly or
+  transitively), and each call's target via the real lexical scope chain
+  (walking outward from the call site's own scope, same as a Python closure
+  would) — so a shadowed name resolves to the nearest enclosing definition,
+  not an arbitrary same-named one elsewhere in the method.
 - **`RULE-004`** — a Frappe DB/document-fetch call (`get_doc`, `get_all`,
   `db.sql`, etc.) made inside a loop body (`checks/n_plus_one_query.py`),
   severity `MEDIUM`.

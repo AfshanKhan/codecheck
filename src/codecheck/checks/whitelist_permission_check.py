@@ -2,17 +2,21 @@
 (check_permission()/has_permission()) or raise PermissionError anywhere in their
 body. Skips allow_guest=True endpoints, which are deliberately public.
 
-Ported from frappe-pr-reviewer's python_analyzer.py, with two fixes: the
-original only matched the substring "has_permission", missing the equally-valid
-check_permission() pattern (a Document instance method) -- confirmed via a real
-false positive on indictranstech/casale_erp#89, where check_permission() was
-present but unrecognized. It also used a plain ast.walk() over the whole
-function, which both false-negatived (a permission check inside a nested
-helper that's never called shouldn't count) and, once that was naively fixed
-by not descending into any nested scope, false-positived the opposite way (a
-permission check inside a nested helper that IS called should still count).
-_has_permission_check() below resolves both: it only descends into a nested
-function's body if that function is actually invoked from the outer scope.
+Ported from frappe-pr-reviewer's python_analyzer.py, with fixes across a few
+rounds: the original only matched the substring "has_permission", missing the
+equally-valid check_permission() pattern (a Document instance method) --
+confirmed via a real false positive on indictranstech/casale_erp#89, where
+check_permission() was present but unrecognized. It also used a plain
+ast.walk() over the whole function, which both false-negatived (a permission
+check inside a nested helper that's never called shouldn't count) and, once
+naively fixed by not descending into any nested scope, false-positived the
+opposite way (a check inside a helper that IS called should still count). A
+flat, depth-independent name->def map fixed the reachability question but
+introduced a new bug on top: two same-named helpers at different nesting
+depths would resolve to whichever one happened to appear last in traversal
+order, not the one Python's own lexical scoping would actually pick.
+_has_permission_check() below resolves all of it together: reachability via
+the real call graph, name resolution via the real lexical scope chain.
 """
 
 from __future__ import annotations
@@ -76,22 +80,36 @@ def _permission_signal(node: ast.AST) -> bool:
     return False
 
 
-def _all_nested_function_defs(func: ast.AST) -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:
-    """Every nested function/async-function defined anywhere within func, at
-    any depth, keyed by name (lambdas can't be called by name, so they're
-    excluded). Flat by design, not scoped to each definition's immediate
-    parent: a helper defined as a *sibling* of another nested function (both
-    directly inside the outer whitelisted function) is still callable from
-    that sibling via a normal Python closure, so scoping the lookup to each
-    node's own immediate children would miss that -- confirmed by a real
-    regression here (an `_outer` helper calling a sibling `_inner` helper
-    that held the actual permission check).
+def _build_scope_info(
+    func: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> tuple[dict[int, dict[str, ast.AST]], dict[int, ast.AST]]:
+    """Maps each nested scope (func itself, plus every nested function/
+    async-function within it) to its own directly-nested defs by name, and to
+    its immediately enclosing scope. Needed for correct name resolution: a
+    single flat name->def map picks whichever same-named definition happens
+    to appear last in traversal order, not the one Python's actual lexical
+    scoping would resolve to -- if two helpers share a name at different
+    nesting depths, that flat map can pick the wrong one in either direction
+    (an unprotected dead shadow masking a real check, or a protected shadow
+    hiding an actually-unprotected call site).
     """
-    return {
-        node.name: node
-        for node in ast.walk(func)
-        if node is not func and isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-    }
+    scope_own_defs: dict[int, dict[str, ast.AST]] = {id(func): {}}
+    scope_parent: dict[int, ast.AST] = {}
+
+    def walk(node: ast.AST, scope: ast.AST) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                scope_own_defs[id(scope)][child.name] = child
+                scope_parent[id(child)] = scope
+                scope_own_defs[id(child)] = {}
+                walk(child, child)
+            elif isinstance(child, ast.Lambda):
+                pass  # a lambda body is a single expression -- it can't contain a def
+            else:
+                walk(child, scope)
+
+    walk(func, func)
+    return scope_own_defs, scope_parent
 
 
 def _called_names(node: ast.AST) -> set[str]:
@@ -106,10 +124,23 @@ def _has_permission_check(func: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
     """True if func's own body has a permission signal, or if (transitively)
     it calls a nested helper that does. A nested helper that's defined but
     never actually reachable by a call from func doesn't count, since dead
-    code can't be protecting anything.
+    code can't be protecting anything. Name resolution walks the lexical
+    scope chain outward from each call site, same as Python's own closures --
+    not a flat lookup -- so a shadowed helper name resolves to the nearest
+    enclosing definition, not an arbitrary same-named one elsewhere.
     """
-    all_nested = _all_nested_function_defs(func)
+    scope_own_defs, scope_parent = _build_scope_info(func)
     visited: set[int] = set()
+
+    def resolve_name(name: str, scope: ast.AST) -> ast.AST | None:
+        current = scope
+        while True:
+            target = scope_own_defs.get(id(current), {}).get(name)
+            if target is not None:
+                return target
+            if current is func:
+                return None
+            current = scope_parent[id(current)]
 
     def resolves(node: ast.AST) -> bool:
         if id(node) in visited:
@@ -117,9 +148,11 @@ def _has_permission_check(func: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
         visited.add(id(node))
         if any(_permission_signal(n) for n in _iter_own_scope(node)):
             return True
-        return any(
-            resolves(all_nested[name]) for name in _called_names(node) if name in all_nested
-        )
+        for name in _called_names(node):
+            target = resolve_name(name, node)
+            if target is not None and resolves(target):
+                return True
+        return False
 
     return resolves(func)
 

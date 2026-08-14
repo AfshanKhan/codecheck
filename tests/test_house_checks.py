@@ -155,6 +155,50 @@ def test_whitelist_permission_check_in_transitively_called_helper_not_flagged():
     assert findings == []
 
 
+def test_whitelist_permission_check_shadowed_name_resolves_to_nearest_scope_protected():
+    # regression (Greptile): two helpers share the name "_check" at different
+    # nesting depths. The call site is inside do_thing's own scope, so it must
+    # resolve to do_thing's own (protected) "_check", not the deeper, unused,
+    # unprotected "_check" nested inside _outer -- a flat name->def map that
+    # lets the deeper definition overwrite the shallower one gets this wrong.
+    content = (
+        "@frappe.whitelist()\n"
+        "def do_thing(name):\n"
+        "    def _check():\n"
+        "        frappe.get_doc('Blanket Order', name).check_permission('write')\n"
+        "    def _outer():\n"
+        "        def _check():\n"
+        "            pass\n"
+        "        _unrelated_call()\n"
+        "    _check()\n"
+        "    _outer()\n"
+        "    return 1\n"
+    )
+    findings = WhitelistPermissionCheck().check_file("a.py", content, changed_lines=None)
+    assert findings == []
+
+
+def test_whitelist_permission_check_shadowed_name_resolves_to_nearest_scope_unprotected():
+    # inverse of the above: the call site is inside _outer's own scope, so it
+    # must resolve to _outer's own (unprotected) "_check", not do_thing's
+    # protected one -- do_thing's "_check" is never actually called.
+    content = (
+        "@frappe.whitelist()\n"
+        "def do_thing(name):\n"
+        "    def _check():\n"
+        "        frappe.get_doc('Blanket Order', name).check_permission('write')\n"
+        "    def _outer():\n"
+        "        def _check():\n"
+        "            pass\n"
+        "        _check()\n"
+        "    _outer()\n"
+        "    return 1\n"
+    )
+    findings = WhitelistPermissionCheck().check_file("a.py", content, changed_lines=None)
+    assert len(findings) == 1
+    assert findings[0].check_id == "RULE-003"
+
+
 def test_n_plus_one_query_flagged_inside_loop():
     content = (
         "for name in names:\n"
