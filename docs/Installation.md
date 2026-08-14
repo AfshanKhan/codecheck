@@ -62,7 +62,7 @@ again with zero reinstall in between, and the change was already there.
 
 Either way, `ruff`/`eslint`/`semgrep` are **not** bundled by default — a plain
 `uv tool install` only pulls in `codecheck`'s own runtime dependencies (typer,
-rich, httpx, gitpython, pydantic, pyyaml). This is deliberate: `codecheck`'s
+rich, httpx, gitpython, pydantic, pyyaml, python-docx). This is deliberate: `codecheck`'s
 rules-engine sub-runners are "bring your own tool" — it runs whatever
 `ruff`/`semgrep` version you already have configured for your project, rather
 than forcing a specific pinned version as a hard dependency that could

@@ -1,16 +1,44 @@
 import json
+import os
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 from typer.testing import CliRunner
 
-from codecheck.cli import _run_llm_tier, app
+from codecheck.cli import (
+    _claim_unique_basename,
+    _finish,
+    _repo_label,
+    _report_basename,
+    _run_llm_tier,
+    app,
+)
+from codecheck.config import Config
 from codecheck.lm_link import DeviceCandidate, ModelLocation
-from codecheck.models import ReviewTarget
+from codecheck.models import ReviewReport, ReviewTarget
 
 runner = CliRunner()
+
+
+def _report_json_path(output_dir: Path) -> Path:
+    matches = list(output_dir.glob("*.json"))
+    assert len(matches) == 1, f"expected exactly one .json report, found {matches}"
+    return matches[0]
+
+
+def _report_md_path(output_dir: Path) -> Path:
+    matches = list(output_dir.glob("*.md"))
+    assert len(matches) == 1, f"expected exactly one .md report, found {matches}"
+    return matches[0]
+
+
+def _report_docx_path(output_dir: Path) -> Path:
+    matches = list(output_dir.glob("*.docx"))
+    assert len(matches) == 1, f"expected exactly one .docx report, found {matches}"
+    return matches[0]
 
 
 def _git(repo: Path, *args: str) -> None:
@@ -39,6 +67,130 @@ def sandbox_repo(tmp_path: Path) -> Path:
     return repo
 
 
+def test_repo_label_from_repo_url_https():
+    assert _repo_label(Path("."), "https://github.com/AfshanKhan/codecheck") == "AfshanKhan_codecheck"
+
+
+def test_repo_label_from_repo_url_with_git_suffix():
+    assert _repo_label(Path("."), "https://github.com/org/repo.git") == "org_repo"
+
+
+def test_repo_label_from_repo_url_ssh():
+    assert _repo_label(Path("."), "git@github.com:org/repo.git") == "org_repo"
+
+
+def test_repo_label_falls_back_to_local_dir_name(sandbox_repo: Path):
+    assert _repo_label(sandbox_repo, None) == "sandbox"
+
+
+def test_report_basename_uses_pr_number_when_present():
+    generated_at = datetime(2026, 8, 14, 16, 10, 0, tzinfo=timezone.utc)
+    assert _report_basename("org_repo", 12, "diff", generated_at) == "org_repo_pr12_20260814_161000"
+
+
+def test_report_basename_uses_mode_when_no_pr():
+    generated_at = datetime(2026, 8, 14, 16, 10, 0, tzinfo=timezone.utc)
+    assert _report_basename("myrepo", None, "audit", generated_at) == "myrepo_audit_20260814_161000"
+
+
+def test_claim_unique_basename_no_collision_claims_as_is(tmp_path: Path):
+    basename = _claim_unique_basename(tmp_path, "myrepo_audit_20260814_161000")
+    assert basename == "myrepo_audit_20260814_161000"
+    assert (tmp_path / "myrepo_audit_20260814_161000.json").exists()  # claimed as a side effect
+
+
+def test_claim_unique_basename_appends_suffix_on_collision(tmp_path: Path):
+    # regression (Greptile): two runs finishing within the same second must not
+    # silently overwrite each other's reports.
+    (tmp_path / "myrepo_audit_20260814_161000.json").write_text("{}")
+    assert _claim_unique_basename(tmp_path, "myrepo_audit_20260814_161000") == "myrepo_audit_20260814_161000-2"
+
+    (tmp_path / "myrepo_audit_20260814_161000-2.md").write_text("x")
+    assert _claim_unique_basename(tmp_path, "myrepo_audit_20260814_161000") == "myrepo_audit_20260814_161000-3"
+
+
+def test_claim_unique_basename_is_atomic_not_toctou(tmp_path: Path):
+    # regression (Greptile): two "concurrent" claims for the same basename must
+    # never both succeed with the same name -- simulated here by claiming twice
+    # in a row without an intervening write, which a check-then-write
+    # implementation would incorrectly allow.
+    first = _claim_unique_basename(tmp_path, "myrepo_audit_20260814_161000")
+    second = _claim_unique_basename(tmp_path, "myrepo_audit_20260814_161000")
+    assert first != second
+
+
+def test_claim_unique_basename_partial_leftover_md_not_overwritten(tmp_path: Path):
+    # regression (Greptile): a claim scoped to only the .json path would let
+    # this candidate through even though its .md already exists (e.g. a prior
+    # interrupted run, or the .json deleted by hand) -- silently overwriting it.
+    (tmp_path / "myrepo_audit_20260814_161000.md").write_text("existing report, don't touch")
+    basename = _claim_unique_basename(tmp_path, "myrepo_audit_20260814_161000")
+    assert basename == "myrepo_audit_20260814_161000-2"
+    assert (tmp_path / "myrepo_audit_20260814_161000.md").read_text() == "existing report, don't touch"
+    # nothing was left half-claimed under the rejected candidate
+    assert not (tmp_path / "myrepo_audit_20260814_161000.json").exists()
+    assert not (tmp_path / "myrepo_audit_20260814_161000.docx").exists()
+
+
+def test_claim_unique_basename_partial_leftover_docx_not_overwritten(tmp_path: Path):
+    (tmp_path / "myrepo_audit_20260814_161000.docx").write_bytes(b"existing docx")
+    basename = _claim_unique_basename(tmp_path, "myrepo_audit_20260814_161000")
+    assert basename == "myrepo_audit_20260814_161000-2"
+    assert (tmp_path / "myrepo_audit_20260814_161000.docx").read_bytes() == b"existing docx"
+
+
+def test_claim_unique_basename_rolls_back_and_reraises_on_non_collision_os_error(
+    tmp_path: Path, monkeypatch
+):
+    # regression (Greptile): a non-FileExistsError OSError (permission denied,
+    # disk full, ...) claiming the 2nd/3rd extension used to leave the 1st
+    # extension's already-claimed empty file behind forever, with no rollback
+    # and no useful retry (the same error would likely recur on every suffix).
+    real_open = os.open
+    call_count = 0
+
+    def flaky_open(path, flags):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 2:  # fails claiming .md, right after .json succeeded
+            raise PermissionError("simulated I/O error")
+        return real_open(path, flags)
+
+    monkeypatch.setattr("codecheck.cli.os.open", flaky_open)
+
+    with pytest.raises(PermissionError):
+        _claim_unique_basename(tmp_path, "myrepo_audit_20260814_161000")
+
+    remaining = list(tmp_path.iterdir())
+    assert remaining == [], f"expected the claimed .json to be rolled back, found {remaining}"
+
+
+def test_finish_cleans_up_claimed_files_when_a_reporter_raises(tmp_path: Path, monkeypatch):
+    # regression (Greptile): a reporter raising after the basename was claimed
+    # would otherwise leave that basename permanently poisoned by empty/partial
+    # files -- no future run could ever reuse it, and it'd look like a real
+    # (but empty) report to anyone who opened it.
+    def _boom(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr("codecheck.cli.write_markdown_report", _boom)
+
+    report = ReviewReport(
+        repo_path="/repo",
+        mode="audit",
+        base_ref=None,
+        head_ref=None,
+        generated_at=datetime(2026, 8, 14, 16, 10, 0, tzinfo=timezone.utc),
+        tiers_run=["rules"],
+    )
+
+    with pytest.raises(RuntimeError, match="boom"):
+        _finish(report, tmp_path, Config(), "myrepo")
+
+    remaining = list(tmp_path.iterdir())
+    assert remaining == [], f"expected no leftover files, found {remaining}"
+
+
 def test_audit_finds_house_rule_violations(sandbox_repo: Path, tmp_path: Path):
     output_dir = tmp_path / "reports"
     result = runner.invoke(
@@ -47,8 +199,11 @@ def test_audit_finds_house_rule_violations(sandbox_repo: Path, tmp_path: Path):
 
     assert result.exit_code == 1  # RULE-002 is HIGH, hits the default fail_on_severity
     assert "RULE-002" in result.stdout
-    assert (output_dir / "report.json").exists()
-    assert (output_dir / "report.md").exists()
+    json_path = _report_json_path(output_dir)
+    assert json_path.exists()
+    assert json_path.name.startswith("sandbox_audit_")
+    assert _report_md_path(output_dir).exists()
+    assert _report_docx_path(output_dir).exists()
 
 
 def test_audit_local_without_model_configured_skips_gracefully(sandbox_repo: Path, tmp_path: Path):
@@ -61,7 +216,7 @@ def test_audit_local_without_model_configured_skips_gracefully(sandbox_repo: Pat
     assert "local.model not set" in result.stdout
     assert "LOCAL-" not in result.stdout
 
-    report = json.loads((output_dir / "report.json").read_text())
+    report = json.loads(_report_json_path(output_dir).read_text())
     assert "local_llm" not in report["tiers_run"]
 
 
@@ -89,7 +244,7 @@ def test_audit_local_ollama_skips_lm_link_gate_entirely(sandbox_repo: Path, tmp_
     mock_resolve.assert_not_called()
     assert "Local LLM tier:" not in result.stdout
     assert result.exit_code == 0
-    report = json.loads((output_dir / "report.json").read_text())
+    report = json.loads(_report_json_path(output_dir).read_text())
     assert "local_llm" in report["tiers_run"]
     assert any("API request failed" in s for s in report["skipped"])
 
@@ -123,7 +278,7 @@ def test_diff_local_undetermined_device_skips_without_force_local(sandbox_repo: 
     # the local tier must be skipped before any HTTP call is attempted, not crash
     assert result.exit_code == 0
     assert "pass --force-local" in result.stdout
-    report = json.loads((output_dir / "report.json").read_text())
+    report = json.loads(_report_json_path(output_dir).read_text())
     assert "local_llm" not in report["tiers_run"]
 
 
@@ -160,12 +315,12 @@ def test_diff_local_confirmed_remote_device_proceeds_without_force_local(
         )
 
     assert result.exit_code == 0
-    report = json.loads((output_dir / "report.json").read_text())
+    report = json.loads(_report_json_path(output_dir).read_text())
     # confirmed remote -> tier actually ran (and then failed per-file on the
     # unreachable port, which is a skip-not-crash, not a tier-level skip)
     assert "local_llm" in report["tiers_run"]
     assert any("API request failed" in s for s in report["skipped"])
-    assert (output_dir / "report.json").exists()
+    assert _report_json_path(output_dir).exists()
 
 
 def _ambiguous_location() -> ModelLocation:
@@ -198,7 +353,7 @@ def test_audit_ambiguous_device_without_flag_skips_non_interactively(
 
     assert result.exit_code == 0
     assert "pass --device" in result.stdout
-    report = json.loads((output_dir / "report.json").read_text())
+    report = json.loads(_report_json_path(output_dir).read_text())
     assert "local_llm" not in report["tiers_run"]
 
 
@@ -225,7 +380,7 @@ def test_audit_ambiguous_device_with_matching_device_flag_sets_preference(
 
     mock_set.assert_called_once_with("remote-id")
     assert result.exit_code == 0
-    report = json.loads((output_dir / "report.json").read_text())
+    report = json.loads(_report_json_path(output_dir).read_text())
     # the tier actually ran (proceeded past the ambiguity gate), then failed
     # per-file on the unreachable port -- proving it wasn't skipped by the gate
     assert "local_llm" in report["tiers_run"]
@@ -248,7 +403,7 @@ def test_audit_ambiguous_device_with_unmatched_device_flag_skips(sandbox_repo: P
 
     assert result.exit_code == 0
     assert "does not match any candidate" in result.stdout
-    report = json.loads((output_dir / "report.json").read_text())
+    report = json.loads(_report_json_path(output_dir).read_text())
     assert "local_llm" not in report["tiers_run"]
 
 
@@ -275,7 +430,7 @@ def test_audit_ambiguous_device_with_force_local_no_device_proceeds_unset(
 
     mock_set.assert_not_called()
     assert result.exit_code == 0
-    report = json.loads((output_dir / "report.json").read_text())
+    report = json.loads(_report_json_path(output_dir).read_text())
     assert "local_llm" in report["tiers_run"]
 
 
@@ -403,7 +558,9 @@ def test_diff_pr_reviews_fetched_pr_and_leaves_repo_on_main(fake_origin_and_clon
 
     assert result.exit_code == 1  # RULE-002 is HIGH
     assert "RULE-002" in result.stdout
-    assert (output_dir / "report.json").exists()
+    json_path = _report_json_path(output_dir)
+    assert json_path.exists()
+    assert "_pr7_" in json_path.name  # naming convention: <repo>_pr<N>_<timestamp>.json
 
     # the user's own clone must never be switched off its current branch
     branch = subprocess.run(
@@ -442,7 +599,7 @@ def test_audit_repo_url_clones_and_reviews(fake_origin_and_clone: Path, tmp_path
 
     assert result.exit_code == 0
     assert "a.py" in result.stdout or "No findings" in result.stdout
-    assert (output_dir / "report.json").exists()
+    assert _report_json_path(output_dir).exists()
 
 
 class _FakeReviewer:

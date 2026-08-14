@@ -22,6 +22,18 @@ def _is_frappe_db_sql_call(node: ast.Call) -> bool:
     )
 
 
+def _uses_escape(node: ast.Call) -> bool:
+    """True if any name/attribute containing "escape" appears anywhere in the
+    call (e.g. frappe.db.escape(value) used to sanitize an interpolated value).
+    """
+    for sub in ast.walk(node):
+        if isinstance(sub, ast.Attribute) and "escape" in sub.attr.lower():
+            return True
+        if isinstance(sub, ast.Name) and "escape" in sub.id.lower():
+            return True
+    return False
+
+
 def _query_arg_is_unsafe(query_arg: ast.expr) -> bool:
     if isinstance(query_arg, ast.JoinedStr):  # f-string
         return True
@@ -61,17 +73,27 @@ class NoSqlStringFormatCheck(HouseCheck):
                 continue
             if not _query_arg_is_unsafe(node.args[0]):
                 continue
+            escaped = _uses_escape(node)
             findings.append(
                 Finding(
                     check_id=self.check_id,
                     tier="rules",
                     source="house",
-                    severity=self.severity,
+                    severity=Severity.MEDIUM if escaped else self.severity,
                     title=self.title,
                     explanation=(
-                        "frappe.db.sql() query is built with string formatting "
-                        "(f-string, %, .format(), or +), which risks SQL injection. "
-                        "Use parameterized queries: frappe.db.sql(query, params)."
+                        (
+                            "frappe.db.sql() query is built with string formatting, but "
+                            "frappe.db.escape() is used on the interpolated value(s) -- lower "
+                            "risk than an unsanitized value, but still prefer parameterized "
+                            "queries: frappe.db.sql(query, params)."
+                        )
+                        if escaped
+                        else (
+                            "frappe.db.sql() query is built with string formatting "
+                            "(f-string, %, .format(), or +), which risks SQL injection. "
+                            "Use parameterized queries: frappe.db.sql(query, params)."
+                        )
                     ),
                     file=file_path,
                     line_start=node.lineno,

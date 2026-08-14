@@ -48,9 +48,12 @@ outside `codecheck`.
   file from outside the repo.
 - Untrusted text that flows into the reports — attacker-controlled file names,
   linter messages, LLM-generated titles — is escaped before rendering (Markdown
-  special characters in `report.md`, rich console markup in the terminal), so a
-  crafted repo can't inject clickable links, fake severity styling, or broken
-  tables into a report you might paste into a PR or Slack.
+  special characters in the `.md` report, rich console markup in the terminal),
+  so a crafted repo can't inject clickable links, fake severity styling, or
+  broken tables into a report you might paste into a PR or Slack. The `.docx`
+  report needs no equivalent escaping — `python-docx` writes run text as plain
+  XML text content, not through any markup interpreter, so there's no syntax
+  for untrusted text to break out of.
 - No `eval`/`exec`/`pickle`, no `shell=True`, all subprocess calls use list
   form (not a shell string), TLS verification is never disabled, and API keys
   are read from environment variables only — never written into `config.yaml`

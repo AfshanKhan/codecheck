@@ -62,20 +62,130 @@ repo's entire pre-existing lint debt instead of just what changed.
 
 ### House rules (`checks/`)
 
-Two checks registered in [`checks/registry.py`](../src/codecheck/checks/registry.py),
-both AST-based (not regex) against the current file content, both accepting
-`changed_lines: set[int] | None` with the same None-means-everything semantics:
+16 checks registered in [`checks/registry.py`](../src/codecheck/checks/registry.py),
+all accepting `changed_lines: set[int] | None` with the same
+None-means-everything semantics. `HouseRulesRunner` (`reviewers/rules_engine.py`)
+passes both `.py` and `.js` targets — each check filters to its own extension
+internally, so `check_file()` is a no-op on a file type it doesn't handle.
+
+**Python checks (AST-based, via the `ast` module) — `RULE-001` through `RULE-009`:**
 
 - **`RULE-001`** — bare `except:` clause (`checks/no_bare_except.py`), severity `MEDIUM`.
 - **`RULE-002`** — `frappe.db.sql(...)` called with an f-string, `%`-formatting,
   string `+` concatenation, or `.format()` as the query argument
-  (`checks/no_sql_string_format.py`), severity `HIGH`. Parameterized calls
+  (`checks/no_sql_string_format.py`), severity `HIGH`, downgraded to `MEDIUM`
+  if `frappe.db.escape()` appears anywhere in the call. Parameterized calls
   (`frappe.db.sql(query, params)`) are not flagged.
+- **`RULE-003`** — `@frappe.whitelist()` method whose body never (transitively)
+  calls something matching `has_permission`/`check_permission` or raises a
+  `Permission*` exception (`checks/whitelist_permission_check.py`), severity
+  `HIGH`. Skips `allow_guest=True` endpoints. Resolution is call-graph-aware,
+  not a flat `ast.walk()` of the whole function: a permission check inside a
+  nested helper only counts if that helper is actually reachable by a call
+  from the whitelisted function (directly, or transitively through other
+  nested helpers) — an unused, never-invoked nested helper doesn't count.
+  Greptile caught three bugs getting here: first a plain `ast.walk()` matched
+  even a dead/uncalled nested helper; the fix for that (stop descending into
+  any nested scope) then broke the opposite, valid case — a permission check
+  in a helper that IS called; fixing *that* with a flat, depth-independent
+  name→def map then got name resolution wrong when two helpers share a name
+  at different nesting depths (whichever definition appeared last in
+  traversal order won, not necessarily the one actually reachable from a
+  given call site). The current version resolves both correctly: reachability
+  via the real call graph (which helper is actually invoked, directly or
+  transitively), and each call's target via the real lexical scope chain
+  (walking outward from the call site's own scope, same as a Python closure
+  would) — so a shadowed name resolves to the nearest enclosing definition,
+  not an arbitrary same-named one elsewhere in the method.
+- **`RULE-004`** — a Frappe DB/document-fetch call (`get_doc`, `get_all`,
+  `db.sql`, etc.) made inside a loop body (`checks/n_plus_one_query.py`),
+  severity `MEDIUM`.
+- **`RULE-005`** — a manual `frappe.db.commit()`/`db.commit()` call
+  (`checks/no_manual_commit.py`), severity `MEDIUM`.
+- **`RULE-006`** — `frappe.throw()`/`msgprint()` with a raw (non-`_()`-wrapped)
+  message (`checks/missing_translation.py`), severity `LOW`.
+- **`RULE-007`** — a leftover `print()` call (`checks/leftover_print.py`),
+  severity `LOW`.
+- **`RULE-008`** — a typed `except SomeError:` whose body is just `pass` (or a
+  docstring stub) (`checks/silent_exception.py`), severity `MEDIUM`. Distinct
+  from `RULE-001`, which only matches a fully bare `except:`.
+- **`RULE-009`** — a variable named like a secret (password/token/key/etc.)
+  assigned a non-placeholder string literal (`checks/hardcoded_credential.py`),
+  severity `HIGH`.
+
+**JS checks (regex/line-based, no JS AST parser dependency) — `RULE-010` through `RULE-016`:**
+
+- **`RULE-010`** — hardcoded `<input>`/`<button>` HTML in a client script
+  (`checks/js_hardcoded_html.py`), severity `MEDIUM`.
+- **`RULE-011`** — an inline `style=` attribute (`checks/js_inline_style.py`),
+  severity `LOW`.
+- **`RULE-012`** — a leftover `console.log()`/`console.debug()`
+  (`checks/js_console_debugger.py`), severity `LOW`.
+- **`RULE-013`** — a leftover `debugger;` statement
+  (`checks/js_console_debugger.py`), severity `HIGH`.
+- **`RULE-014`** — raw jQuery DOM manipulation (`$(...)`/`jQuery(...)`),
+  excluding `$wrapper`/`frm.fields_dict` (`checks/js_jquery_dom.py`), severity
+  `LOW`.
+- **`RULE-015`** — a `frappe.call()` with no `error:`/`callback:`/`.catch()`/
+  `freeze: true` signal within the following ~12 lines
+  (`checks/js_frappe_call_error_handling.py`), severity `LOW`.
+- **`RULE-016`** — a JS variable named like a secret assigned a hardcoded
+  string (`checks/js_hardcoded_credential.py`), severity `HIGH`.
+
+`RULE-003` through `RULE-016` were ported from a sibling project
+(`frappe-pr-reviewer`)'s deterministic Python/JS analyzers, with one fix along
+the way: its permission check only matched the substring `has_permission`,
+missing the equally-valid `check_permission()` pattern — confirmed as a real
+false positive against a live PR. `RULE-003` here matches both.
 
 Adding a new house rule: subclass `HouseCheck` in `checks/base.py`, implement
 `check_file(file_path, content, changed_lines) -> list[Finding]` (handling
-`changed_lines is None` yourself), add an instance to `ALL_CHECKS` in
-`registry.py`. No wiring needed elsewhere.
+`changed_lines is None` yourself, and filtering to your own file extension(s)),
+add an instance to `ALL_CHECKS` in `registry.py`. If it's a new extension not
+already passed to `HouseRulesRunner`, extend the suffix tuple in
+`HouseRulesRunner.run()` (`reviewers/rules_engine.py`). No wiring needed
+elsewhere.
+
+### Test-coverage check (`TestCoverageRunner`, `RULE-017`)
+
+A different shape from the rest of Tier 1: every other sub-runner judges one
+file at a time, but "did this change add a test" is a judgment about the
+*whole diff* — so `TestCoverageRunner` (`reviewers/rules_engine.py`) is a
+`SubRunner`, not a `HouseCheck`, and looks at the full `targets` list at once.
+It's a no-op in `audit` mode (`changed_lines is None` for every target there —
+there's no single "this change" to judge test coverage against, only a whole
+repo, which is a different and much noisier claim).
+
+Logic, ported from a sibling project (`pr_probe`, an org-wide PR-metrics/
+compliance tool, not a code reviewer — but its `PRAnalyzer.check_tests()`
+heuristic for "does this PR look like it added a real test" turned out to be
+exactly as useful for a single diff):
+
+1. Collect changed `.py`/`.js`/`.jsx`/`.ts`/`.tsx` files that aren't
+   themselves test files and aren't deleted. If none, or their combined
+   added-line count is under 5, skip — too small to reasonably expect a test.
+   (`.jsx`/`.ts`/`.tsx` were added after Greptile pointed out the original
+   extension list silently excluded them, even though the eslint sub-runner
+   already covers them.)
+2. "Is a test file" (`_is_test_path`) matches real test-file conventions, not
+   a bare `"test" in path` substring — that substring check originally
+   misclassified ordinary application files like `contest.tsx`/`latest.ts` as
+   tests (a real Greptile catch). It matches: a bare `test.py`, a
+   `test_*.py`/`*_test.py` module, a bare `test.<ext>`, a `.test.`/`.spec.`
+   JS/TS file, a `*_test.<ext>` JS/TS file, or any path under a
+   `tests/`/`__tests__/` directory. (The bare `test.<ext>` and JS/TS
+   `*_test.<ext>` forms were a second, later Greptile catch — the first regex
+   version rejected `test.py`/`test.tsx`/`foo_test.js` outright, even though
+   they're common real test filenames.) A matched test file only counts as
+   real coverage if its diff contains an actual test declaration (`def test_`,
+   `test(`, `it(`, `describe(`); a `pass`-only stub under 15 added lines is
+   filtered out as boilerplate, same as the source heuristic. Falling back to
+   "more than 15 added lines" or "an existing test file was modified" if
+   there's no clearer signal.
+3. If app code changed substantially and no test file passes that bar, emit
+   one `RULE-017` finding (severity `LOW`) anchored on the largest changed
+   app file — not one finding per file, since this is a single judgment about
+   the whole diff.
 
 ### Tier 2 — Local LLM (opt-in, `--local`)
 
@@ -464,9 +574,20 @@ threshold) and both show up in the report.
 - [`reporters/markdown_report.py`](../src/codecheck/reporters/markdown_report.py) —
   one `##` heading + table per file, severity shown as emoji, meant for pasting
   into a PR description or Slack.
+- [`reporters/docx_report.py`](../src/codecheck/reporters/docx_report.py) —
+  same content as the markdown reporter (summary table + one findings table
+  per file + skipped section), rendered as a Word document via `python-docx`
+  (a core dependency, not optional — pure-Python/lxml, no BYO-tool story like
+  ruff/eslint/semgrep) for sharing with someone who'd rather open Word than a
+  `.md` file.
 
-Both file reporters are always written on every run — there's no flag to
-suppress them.
+All three file reporters are always written on every run — there's no flag to
+suppress them. `cli._finish()` builds a shared basename for all three via
+`_report_basename()` — see "Report filenames" in [CLI Reference](CLI-Reference.md)
+for the exact naming convention (`<repo>[_pr<N>]_<mode>_<timestamp>`, ported
+from a sibling project's PR-review-report naming, since the previous static
+`report.json`/`report.md` silently overwrote the prior run's report on every
+invocation).
 
 ## Project layout
 
@@ -482,7 +603,7 @@ src/codecheck/
 ├── aggregator.py              # cross-tier merge + dedupe
 ├── reviewers/
 │   ├── base.py                # Reviewer ABC (is_available / review)
-│   ├── rules_engine.py        # Tier 1: SubRunner ABC + Ruff/Eslint/Semgrep/HouseRules runners
+│   ├── rules_engine.py        # Tier 1: SubRunner ABC + Ruff/Eslint/Semgrep/HouseRules/TestCoverage runners
 │   ├── openai_protocol.py     # shared OpenAI chat-completions request/parsing/loop, used by Tiers 2 and 3
 │   ├── local_llm.py           # Tier 2: local OpenAI-compatible server (LM Studio, Ollama, ...), no cost
 │   └── cloud_llm.py           # Tier 3: Anthropic + OpenAI-compatible (Groq/Mistral/Cerebras/OpenRouter/custom) backends, sync httpx, tool-forced JSON, audit cap
@@ -490,9 +611,17 @@ src/codecheck/
 │   ├── base.py                 # HouseCheck ABC
 │   ├── no_bare_except.py       # RULE-001
 │   ├── no_sql_string_format.py # RULE-002
+│   ├── whitelist_permission_check.py, n_plus_one_query.py, no_manual_commit.py,
+│   │   missing_translation.py, leftover_print.py, silent_exception.py,
+│   │   hardcoded_credential.py                        # RULE-003..009 (Python)
+│   ├── js_hardcoded_html.py, js_inline_style.py, js_console_debugger.py,
+│   │   js_jquery_dom.py, js_frappe_call_error_handling.py,
+│   │   js_hardcoded_credential.py                      # RULE-010..016 (JS)
 │   └── registry.py             # ALL_CHECKS list, auto-picked-up by HouseRulesRunner
+│       # RULE-017 (test coverage) lives in reviewers/rules_engine.py, not here --
+│       # it's a diff-level SubRunner, not a per-file HouseCheck (see above).
 └── reporters/
-    ├── console.py, json_report.py, markdown_report.py
+    ├── console.py, json_report.py, markdown_report.py, docx_report.py
 tests/                        # pytest, 108 tests total, including CLI-level tests via typer.testing.CliRunner
 ```
 

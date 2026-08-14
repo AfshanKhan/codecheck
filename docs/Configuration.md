@@ -7,6 +7,7 @@ rules:
   eslint: true
   semgrep: true
   house_rules: true
+  test_coverage: true   # RULE-017: diff changes app code but touches no test file (diff mode only)
 
 cloud:
   enabled: false          # can also be turned on with --cloud

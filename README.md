@@ -133,9 +133,13 @@ After either command, you'll see a table directly in your terminal, like this:
   merging), `MEDIUM` (worth fixing), `LOW`/`INFO` (minor, style-level).
 - **Check** is an ID you can search for if you want more detail (`RULE-002`
   means house rule #2 — see "What does each tier actually check?" below).
-- Two report files are also saved for you, every time: `reports/report.md`
-  (readable, good for pasting into a PR description or Slack) and
-  `reports/report.json` (for other tools to read).
+- Three report files are also saved for you, every time, in `reports/`:
+  a `.md` (readable, good for pasting into a PR description or Slack), a
+  `.json` (for other tools to read), and a `.docx` (for sharing with someone
+  who'd rather open Word). Each run gets its own timestamped filename —
+  `<repo>[_pr<N>]_<mode>_<timestamp>.{md,json,docx}` (e.g.
+  `codecheck_pr12_20260814_161000.json`) — so re-running never silently
+  overwrites a previous run's report.
 
 If it says **"No findings"**, nothing was wrong — you're done.
 
@@ -183,7 +187,22 @@ nothing.
 | `eslint` | JavaScript/TypeScript issues — only runs if your project already has an eslint setup |
 | `semgrep` | Security patterns across many languages (SQL injection shapes, unsafe deserialization, etc.) |
 | `RULE-001` (house rule) | Bare `except:` blocks, which silently swallow errors including ones you'd want to know about |
-| `RULE-002` (house rule) | Building a database query by directly inserting a variable into the text (SQL injection risk), instead of using safe parameters |
+| `RULE-002` (house rule) | Building a `frappe.db.sql()` query by directly inserting a variable into the text (SQL injection risk), instead of using safe parameters |
+| `RULE-003` (house rule) | A `@frappe.whitelist()` method with no visible permission check — anyone logged in could call it |
+| `RULE-004` (house rule) | A database call made inside a loop instead of batched before it (N+1 queries) |
+| `RULE-005` (house rule) | A manual `frappe.db.commit()` — Frappe already commits at the end of a successful request |
+| `RULE-006` (house rule) | A user-facing message (`frappe.throw`/`msgprint`) that isn't wrapped in `_()` for translation |
+| `RULE-007` (house rule) | A leftover `print()` call — debug output that won't show up in the site's log |
+| `RULE-008` (house rule) | An `except SomeError:` block that silently discards the error instead of handling or logging it |
+| `RULE-009` (house rule) | A variable named like a secret (password/token/key) assigned a hardcoded string |
+| `RULE-010` (house rule) | Hardcoded `<input>`/`<button>` HTML in a client script, instead of Frappe's field/dialog APIs |
+| `RULE-011` (house rule) | An inline `style=` attribute, which bypasses the app's theme/CSS |
+| `RULE-012` (house rule) | A leftover `console.log()` |
+| `RULE-013` (house rule) | A leftover `debugger;` statement, which halts execution for any user with devtools open |
+| `RULE-014` (house rule) | Raw jQuery DOM manipulation instead of the frm/dialog APIs |
+| `RULE-015` (house rule) | A `frappe.call()` with no visible error handling or `freeze: true` |
+| `RULE-016` (house rule) | A JS variable named like a secret assigned a hardcoded string |
+| `RULE-017` (house rule) | A diff changes non-trivial application code but touches no test file (`diff` mode only) |
 
 `ruff`, `eslint`, and `semgrep` all need to actually be installed — see step 1
 above if you haven't yet. Any of these that are missing are just skipped, not

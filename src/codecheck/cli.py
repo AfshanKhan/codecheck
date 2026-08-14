@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import re
 import sys
 import time
 from contextlib import ExitStack
@@ -20,6 +22,7 @@ from codecheck.lm_link import resolve_model_location, set_preferred_device
 from codecheck.models import ReviewReport, ReviewTarget, Severity
 from codecheck.repo_scan import get_repo_files
 from codecheck.reporters.console import print_report
+from codecheck.reporters.docx_report import write_docx_report
 from codecheck.reporters.json_report import write_json_report
 from codecheck.reporters.markdown_report import write_markdown_report
 from codecheck.resume import (
@@ -306,14 +309,112 @@ def _run_tiers(
     return results, tiers_run, skipped, current_file_hashes
 
 
-def _finish(report: ReviewReport, output_dir: Path, cfg: Config) -> None:
+def _sanitize_slug(value: str) -> str:
+    return "".join(c for c in value if c.isalnum() or c in ("-", "_"))
+
+
+def _repo_label(repo_path: Path, repo_url: str | None) -> str:
+    """A short, filesystem-safe name for the reviewed repo, used in report
+    filenames. Prefers owner_repo parsed from --repo-url/--pr's URL over the
+    local directory name -- cloned repos land in a randomly-named temp dir
+    (see github_source.cloned_repo), so the directory name itself is useless
+    there.
+    """
+    if repo_url:
+        cleaned = repo_url.strip().rstrip("/")
+        if cleaned.endswith(".git"):
+            cleaned = cleaned[: -len(".git")]
+        parts = [p for p in re.split(r"[/:]", cleaned) if p]
+        if len(parts) >= 2:
+            slug = f"{_sanitize_slug(parts[-2])}_{_sanitize_slug(parts[-1])}"
+        elif parts:
+            slug = _sanitize_slug(parts[-1])
+        else:
+            slug = ""
+    else:
+        slug = _sanitize_slug(repo_path.resolve().name)
+    return slug or "repo"
+
+
+def _report_basename(repo_label: str, pr_number: int | None, mode: str, generated_at: datetime) -> str:
+    suffix = f"pr{pr_number}" if pr_number is not None else mode
+    timestamp = generated_at.strftime("%Y%m%d_%H%M%S")
+    return f"{repo_label}_{suffix}_{timestamp}"
+
+
+_REPORT_EXTENSIONS = (".json", ".md", ".docx")
+
+
+def _claim_unique_basename(output_dir: Path, basename: str) -> str:
+    """The timestamp in `basename` only has second resolution, so two runs for
+    the same repo/PR/mode finishing within the same second would otherwise
+    collide and silently overwrite each other's reports. Reserves all three
+    `<candidate>.{json,md,docx}` paths with an atomic exclusive-create
+    (O_CREAT | O_EXCL) each, not a check-then-write -- an exists() check
+    followed by a later write has a TOCTOU gap two concurrent codecheck
+    processes could both pass, still overwriting the same paths. Claiming
+    only the `.json` path isn't enough either: a partial leftover (e.g. an
+    interrupted prior run, or the `.json` deleted by hand) could leave `.md`/
+    `.docx` behind with no matching `.json`, and a claim scoped to `.json`
+    alone would then silently overwrite them. If any one of the three is
+    already taken, whatever this candidate did manage to claim is rolled back
+    before moving on to the next suffix, so a candidate is only ever
+    considered "won" once all three are actually free. A non-collision I/O
+    error (permission denied, disk full, ...) on the 2nd/3rd extension gets
+    the same rollback treatment, then re-raises rather than silently trying
+    the next suffix -- an error like that will likely fail identically for
+    every candidate, so swallowing it and looping would just leave a trail of
+    empty, permanently-claimed files behind for no benefit.
+    """
+    candidate = basename
+    suffix = 2
+    while True:
+        claimed: list[Path] = []
+        try:
+            for ext in _REPORT_EXTENSIONS:
+                path = output_dir / f"{candidate}{ext}"
+                fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                os.close(fd)
+                claimed.append(path)
+            return candidate
+        except FileExistsError:
+            for path in claimed:
+                path.unlink(missing_ok=True)
+            candidate = f"{basename}-{suffix}"
+            suffix += 1
+        except OSError:
+            for path in claimed:
+                path.unlink(missing_ok=True)
+            raise
+
+
+def _finish(report: ReviewReport, output_dir: Path, cfg: Config, repo_label: str, pr_number: int | None = None) -> None:
     console.print()
     print_report(report, console)
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    write_json_report(report, output_dir / "report.json")
-    write_markdown_report(report, output_dir / "report.md")
-    console.print(f"\n[dim]Reports written to {output_dir}/report.json and {output_dir}/report.md[/dim]")
+    basename = _claim_unique_basename(
+        output_dir, _report_basename(repo_label, pr_number, report.mode, report.generated_at)
+    )
+    json_path = output_dir / f"{basename}.json"
+    md_path = output_dir / f"{basename}.md"
+    docx_path = output_dir / f"{basename}.docx"
+    try:
+        write_json_report(report, json_path)
+        write_markdown_report(report, md_path)
+        write_docx_report(report, docx_path)
+    except BaseException:
+        # A reporter raising here would otherwise leave this basename
+        # permanently claimed by empty/partial files -- no future run could
+        # ever reuse it (the atomic claim in _claim_unique_basename sees them
+        # as "already exists" forever), and anyone opening one would find an
+        # empty or truncated report. Free the name back up instead: delete
+        # whatever got claimed/written for this basename and let the
+        # original error propagate.
+        for path in (json_path, md_path, docx_path):
+            path.unlink(missing_ok=True)
+        raise
+    console.print(f"\n[dim]Reports written to {json_path}, {md_path}, and {docx_path}[/dim]")
 
     fail_threshold = Severity(cfg.thresholds.fail_on_severity)
     if report.findings_at_or_above(fail_threshold):
@@ -364,7 +465,7 @@ def diff(
         "--device",
         help="Which device to use when local.model is loaded on more than one (e.g. 'local' or a device name from `lms link status`). Sets LM Studio's LM Link preferred device.",
     ),
-    output_dir: Path = typer.Option(Path("./reports"), "--output-dir", help="Where JSON/markdown reports land."),
+    output_dir: Path = typer.Option(Path("./reports"), "--output-dir", help="Where JSON/markdown/docx reports land. Filenames are timestamped: <repo>[_pr<N>]_<mode>_<timestamp>.{json,md,docx}."),
     resume_from: Optional[Path] = typer.Option(
         None,
         "--resume-from",
@@ -412,6 +513,7 @@ def diff(
         cfg.cloud.enabled = True
     if local:
         cfg.local.enabled = True
+    repo_label = _repo_label(repo_path, repo_url)
 
     with ExitStack() as stack:
         if repo_url:
@@ -479,7 +581,7 @@ def diff(
             skipped=skipped,
             file_hashes=file_hashes,
         )
-        _finish(report, output_dir, cfg)
+        _finish(report, output_dir, cfg, repo_label, pr_number=pr_number)
 
 
 @app.command()
@@ -509,7 +611,7 @@ def audit(
         "--device",
         help="Which device to use when local.model is loaded on more than one (e.g. 'local' or a device name from `lms link status`). Sets LM Studio's LM Link preferred device.",
     ),
-    output_dir: Path = typer.Option(Path("./reports"), "--output-dir", help="Where JSON/markdown reports land."),
+    output_dir: Path = typer.Option(Path("./reports"), "--output-dir", help="Where JSON/markdown/docx reports land. Filenames are timestamped: <repo>[_pr<N>]_<mode>_<timestamp>.{json,md,docx}."),
     resume_from: Optional[Path] = typer.Option(
         None,
         "--resume-from",
@@ -531,6 +633,7 @@ def audit(
         cfg.cloud.enabled = True
     if local:
         cfg.local.enabled = True
+    repo_label = _repo_label(repo_path, repo_url)
 
     with ExitStack() as stack:
         if repo_url:
@@ -579,7 +682,7 @@ def audit(
             skipped=skipped,
             file_hashes=file_hashes,
         )
-        _finish(report, output_dir, cfg)
+        _finish(report, output_dir, cfg, repo_label)
 
 
 if __name__ == "__main__":

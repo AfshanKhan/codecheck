@@ -6,6 +6,7 @@ diff (or unfiltered, in whole-repo audit mode where changed_lines is None).
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 from abc import ABC, abstractmethod
@@ -262,7 +263,9 @@ class HouseRulesRunner(SubRunner):
         return True, None
 
     def run(self, targets: list[ReviewTarget], repo_path: Path) -> list[Finding]:
-        py_targets = _filter_targets(targets, (".py",))
+        # .py for the AST-based checks, .js for the regex/line-based Frappe
+        # client-script checks -- each HouseCheck filters by its own extension.
+        py_targets = _filter_targets(targets, (".py", ".js"))
         findings: list[Finding] = []
         for target in py_targets:
             content = read_file_content(repo_path, target)
@@ -271,6 +274,111 @@ class HouseRulesRunner(SubRunner):
             for check in ALL_CHECKS:
                 findings.extend(check.check_file(target.path, content, target.changed_lines))
         return findings
+
+
+_APP_EXTENSIONS = (".py", ".js", ".jsx", ".ts", ".tsx")
+_TEST_MARKERS = ("def test_", "test(", "it(", "describe(")
+
+# A plain `"test" in path` substring match also fires on ordinary application
+# filenames like contest.tsx or latest.ts -- match test-file *conventions*
+# instead: a bare test.py / test_*.py / *_test.py module, a bare test.<ext> /
+# .test./.spec. / *_test.<ext> JS/TS file, or a path inside a
+# tests/__tests__ directory. (The bare "test.ext" and JS/TS "*_test.ext" forms
+# were added after Greptile caught the first version rejecting them --
+# test.py, test.tsx, and foo_test.js all being real, common test filenames.)
+_PY_TEST_PATH_RE = re.compile(r"(^|/)(test(_[^/]+)?|[^/]+_test)\.py$")
+_JS_TEST_PATH_RE = re.compile(r"(^|/)(test|[^/]+\.(test|spec)|[^/]+_test)\.(js|jsx|ts|tsx)$")
+_TEST_DIR_RE = re.compile(r"(^|/)(tests?|__tests__)/")
+
+
+def _is_test_path(path: str) -> bool:
+    lowered = path.lower()
+    if not lowered.endswith(_APP_EXTENSIONS):
+        return False
+    return bool(
+        _PY_TEST_PATH_RE.search(lowered)
+        or _JS_TEST_PATH_RE.search(lowered)
+        or _TEST_DIR_RE.search(lowered)
+    )
+
+
+def _added_line_count(diff_text: str) -> int:
+    return sum(
+        1 for line in diff_text.splitlines() if line.startswith("+") and not line.startswith("+++")
+    )
+
+
+def _looks_like_real_test(target: ReviewTarget) -> bool:
+    """Mirrors pr_probe's PRAnalyzer.check_tests(): a test file only counts if
+    its diff has an actual test declaration, or -- when there's no patch to
+    inspect, or the patch is boilerplate (e.g. a stub `pass` body) -- a large
+    enough addition count or a real modification to give it the benefit of the
+    doubt.
+    """
+    if any(marker in target.diff_text for marker in _TEST_MARKERS):
+        return True
+    additions = _added_line_count(target.diff_text)
+    if "pass" in target.diff_text and additions < 15:
+        return False  # boilerplate stub, not a real test
+    if additions > 15:
+        return True
+    return target.status == "modified" and additions > 0
+
+
+class TestCoverageRunner(SubRunner):
+    """Flags a diff that changes non-trivial application code but touches no
+    test file -- ported from pr_probe's PRAnalyzer.check_tests() heuristic
+    (a PR-metrics tool, not a code-review tool, but the same signal is a
+    useful house-rule-style finding here). Diff-only: in audit mode every
+    target has changed_lines=None and there's no single "this change" to
+    judge against, so it's a no-op there.
+    """
+
+    name = "test_coverage"
+
+    def is_available(self, repo_path: Path) -> tuple[bool, str | None]:
+        return True, None
+
+    def run(self, targets: list[ReviewTarget], repo_path: Path) -> list[Finding]:
+        if not targets or all(t.changed_lines is None for t in targets):
+            return []
+
+        app_targets = [
+            t
+            for t in targets
+            if t.status != "deleted" and t.path.endswith(_APP_EXTENSIONS) and not _is_test_path(t.path)
+        ]
+        if not app_targets:
+            return []
+
+        total_app_additions = sum(_added_line_count(t.diff_text) for t in app_targets)
+        if total_app_additions < 5:
+            return []  # too small a change to reasonably expect test coverage
+
+        test_targets = [t for t in targets if t.status != "deleted" and _is_test_path(t.path)]
+        if any(_looks_like_real_test(t) for t in test_targets):
+            return []
+
+        anchor = max(app_targets, key=lambda t: _added_line_count(t.diff_text))
+        return [
+            Finding(
+                check_id="RULE-017",
+                tier="rules",
+                source="house",
+                severity=Severity.LOW,
+                title="No test changes detected for this PR",
+                explanation=(
+                    f"This change adds/modifies {total_app_additions} line(s) of application "
+                    "code across "
+                    f"{len(app_targets)} file(s), but no file in the diff looks like a test "
+                    "(a path containing 'test' with an actual test declaration). If this change "
+                    "has behavior worth covering, consider adding or updating a test."
+                ),
+                file=anchor.path,
+                line_start=1,
+                line_end=1,
+            )
+        ]
 
 
 class RulesEngineReviewer(Reviewer):
@@ -293,6 +401,8 @@ class RulesEngineReviewer(Reviewer):
             self._runners.append(SemgrepRunner())
         if config.house_rules:
             self._runners.append(HouseRulesRunner())
+        if config.test_coverage:
+            self._runners.append(TestCoverageRunner())
 
     def is_available(self, repo_path: Path) -> tuple[bool, str | None]:
         if not self.config.enabled or not self._runners:
