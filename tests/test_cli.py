@@ -7,9 +7,17 @@ from unittest.mock import patch
 import pytest
 from typer.testing import CliRunner
 
-from codecheck.cli import _claim_unique_basename, _repo_label, _report_basename, _run_llm_tier, app
+from codecheck.cli import (
+    _claim_unique_basename,
+    _finish,
+    _repo_label,
+    _report_basename,
+    _run_llm_tier,
+    app,
+)
+from codecheck.config import Config
 from codecheck.lm_link import DeviceCandidate, ModelLocation
-from codecheck.models import ReviewTarget
+from codecheck.models import ReviewReport, ReviewTarget
 
 runner = CliRunner()
 
@@ -128,6 +136,32 @@ def test_claim_unique_basename_partial_leftover_docx_not_overwritten(tmp_path: P
     basename = _claim_unique_basename(tmp_path, "myrepo_audit_20260814_161000")
     assert basename == "myrepo_audit_20260814_161000-2"
     assert (tmp_path / "myrepo_audit_20260814_161000.docx").read_bytes() == b"existing docx"
+
+
+def test_finish_cleans_up_claimed_files_when_a_reporter_raises(tmp_path: Path, monkeypatch):
+    # regression (Greptile): a reporter raising after the basename was claimed
+    # would otherwise leave that basename permanently poisoned by empty/partial
+    # files -- no future run could ever reuse it, and it'd look like a real
+    # (but empty) report to anyone who opened it.
+    def _boom(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr("codecheck.cli.write_markdown_report", _boom)
+
+    report = ReviewReport(
+        repo_path="/repo",
+        mode="audit",
+        base_ref=None,
+        head_ref=None,
+        generated_at=datetime(2026, 8, 14, 16, 10, 0, tzinfo=timezone.utc),
+        tiers_run=["rules"],
+    )
+
+    with pytest.raises(RuntimeError, match="boom"):
+        _finish(report, tmp_path, Config(), "myrepo")
+
+    remaining = list(tmp_path.iterdir())
+    assert remaining == [], f"expected no leftover files, found {remaining}"
 
 
 def test_audit_finds_house_rule_violations(sandbox_repo: Path, tmp_path: Path):

@@ -390,9 +390,21 @@ def _finish(report: ReviewReport, output_dir: Path, cfg: Config, repo_label: str
     json_path = output_dir / f"{basename}.json"
     md_path = output_dir / f"{basename}.md"
     docx_path = output_dir / f"{basename}.docx"
-    write_json_report(report, json_path)
-    write_markdown_report(report, md_path)
-    write_docx_report(report, docx_path)
+    try:
+        write_json_report(report, json_path)
+        write_markdown_report(report, md_path)
+        write_docx_report(report, docx_path)
+    except BaseException:
+        # A reporter raising here would otherwise leave this basename
+        # permanently claimed by empty/partial files -- no future run could
+        # ever reuse it (the atomic claim in _claim_unique_basename sees them
+        # as "already exists" forever), and anyone opening one would find an
+        # empty or truncated report. Free the name back up instead: delete
+        # whatever got claimed/written for this basename and let the
+        # original error propagate.
+        for path in (json_path, md_path, docx_path):
+            path.unlink(missing_ok=True)
+        raise
     console.print(f"\n[dim]Reports written to {json_path}, {md_path}, and {docx_path}[/dim]")
 
     fail_threshold = Severity(cfg.thresholds.fail_on_severity)
