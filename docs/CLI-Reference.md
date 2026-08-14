@@ -203,11 +203,13 @@ claimed atomically — an exclusive file-create (not a check-then-write) on
 *all three* extensions, not just `.json`, so two `codecheck` processes
 finishing in the same second against the same repo/PR/mode can't both win the
 same filename, and a leftover `.md`/`.docx` from an earlier interrupted run
-(with no matching `.json`) can't get silently overwritten either. If writing
-any of the three actually fails partway through (a reporter raises), the
-claimed files for that run are deleted rather than left behind empty — a
-crashed run doesn't leave a permanently unusable, empty-looking report
-sitting at a filename no later run can ever reclaim.
+(with no matching `.json`) can't get silently overwritten either. Any failure
+during this process — a collision on the 2nd/3rd extension, a non-collision
+I/O error (permission denied, disk full), or a reporter raising once writing
+actual content starts — rolls back whatever got claimed/written for that run
+rather than leaving it behind. A crashed or failed run never leaves a
+permanently unusable, empty-looking report sitting at a filename no later run
+can ever reclaim.
 
 ### Exit codes (both modes)
 

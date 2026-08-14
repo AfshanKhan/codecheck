@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -136,6 +137,32 @@ def test_claim_unique_basename_partial_leftover_docx_not_overwritten(tmp_path: P
     basename = _claim_unique_basename(tmp_path, "myrepo_audit_20260814_161000")
     assert basename == "myrepo_audit_20260814_161000-2"
     assert (tmp_path / "myrepo_audit_20260814_161000.docx").read_bytes() == b"existing docx"
+
+
+def test_claim_unique_basename_rolls_back_and_reraises_on_non_collision_os_error(
+    tmp_path: Path, monkeypatch
+):
+    # regression (Greptile): a non-FileExistsError OSError (permission denied,
+    # disk full, ...) claiming the 2nd/3rd extension used to leave the 1st
+    # extension's already-claimed empty file behind forever, with no rollback
+    # and no useful retry (the same error would likely recur on every suffix).
+    real_open = os.open
+    call_count = 0
+
+    def flaky_open(path, flags):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 2:  # fails claiming .md, right after .json succeeded
+            raise PermissionError("simulated I/O error")
+        return real_open(path, flags)
+
+    monkeypatch.setattr("codecheck.cli.os.open", flaky_open)
+
+    with pytest.raises(PermissionError):
+        _claim_unique_basename(tmp_path, "myrepo_audit_20260814_161000")
+
+    remaining = list(tmp_path.iterdir())
+    assert remaining == [], f"expected the claimed .json to be rolled back, found {remaining}"
 
 
 def test_finish_cleans_up_claimed_files_when_a_reporter_raises(tmp_path: Path, monkeypatch):

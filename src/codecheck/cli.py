@@ -359,7 +359,12 @@ def _claim_unique_basename(output_dir: Path, basename: str) -> str:
     alone would then silently overwrite them. If any one of the three is
     already taken, whatever this candidate did manage to claim is rolled back
     before moving on to the next suffix, so a candidate is only ever
-    considered "won" once all three are actually free.
+    considered "won" once all three are actually free. A non-collision I/O
+    error (permission denied, disk full, ...) on the 2nd/3rd extension gets
+    the same rollback treatment, then re-raises rather than silently trying
+    the next suffix -- an error like that will likely fail identically for
+    every candidate, so swallowing it and looping would just leave a trail of
+    empty, permanently-claimed files behind for no benefit.
     """
     candidate = basename
     suffix = 2
@@ -377,6 +382,10 @@ def _claim_unique_basename(output_dir: Path, basename: str) -> str:
                 path.unlink(missing_ok=True)
             candidate = f"{basename}-{suffix}"
             suffix += 1
+        except OSError:
+            for path in claimed:
+                path.unlink(missing_ok=True)
+            raise
 
 
 def _finish(report: ReviewReport, output_dir: Path, cfg: Config, repo_label: str, pr_number: int | None = None) -> None:
