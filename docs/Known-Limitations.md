@@ -76,6 +76,23 @@
 - vLLM's presence in the config docs (`provider: vllm`) is a documented,
   code-verified pattern — not a live-tested one. No real vLLM deployment was
   reached (needs an NVIDIA GPU not available in this dev environment).
+- **The name `codecheck` is already taken on PyPI by a different, unrelated
+  project.** Confirmed directly: `pip install codecheck` today installs that
+  other package, not this one — silently, with no error. This doesn't affect
+  local/wheel-based installs (see [Installation](Installation.md)), but it
+  means this project cannot be published to PyPI under the name `codecheck` as
+  currently named — a future publish would need a different distribution name
+  (e.g. `codecheck-cli`) or a resolved dispute with the existing package owner.
+- `uv tool install`'s isolated-environment model only exposes the entry points
+  of the package you explicitly named — not those of its optional-dependency
+  extras, and not those of packages added via `--with`. Confirmed directly:
+  `uv tool install --editable ".[rules]"` and `uv tool install --editable . --with
+  ruff --with semgrep` both report "Installed 1 executable: codecheck," leaving
+  `ruff`/`semgrep` installed but unreachable on `PATH`. The `[rules]` extra
+  only actually helps in dev mode (`uv sync --extra rules`) or when installing
+  from a locally-built wheel with `pip`/`uv pip` — for a `uv tool install`
+  setup, install `ruff`/`semgrep` as their own separate tools instead (see
+  [Installation](Installation.md)).
 
 ---
 

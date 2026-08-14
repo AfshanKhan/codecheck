@@ -25,6 +25,15 @@ Run commands with `uv run codecheck ...` from inside this repo (used throughout
 the rest of this README). Changes to the source take effect immediately, no
 reinstall needed.
 
+`ruff` is already pulled in here (it's also used to lint `codecheck`'s own
+source). To also get `semgrep` — genuinely works in this mode, since `uv run`
+activates the shared project venv where both live, no isolation involved:
+
+```bash
+uv sync --extra rules
+uv run codecheck audit --repo-path .    # ruff and semgrep both resolve now
+```
+
 ### Option B — install as a standalone tool (use it from anywhere)
 
 Verified end to end — this actually produces a working, persistent `codecheck`
@@ -57,18 +66,34 @@ rich, httpx, gitpython, pydantic, pyyaml). This is deliberate: `codecheck`'s
 rules-engine sub-runners are "bring your own tool" — it runs whatever
 `ruff`/`semgrep` version you already have configured for your project, rather
 than forcing a specific pinned version as a hard dependency that could
-conflict with your project's own. If you don't already have them, install the
-optional `rules` extra to get a reasonable default of both in one command:
+conflict with your project's own.
+
+**For this install path specifically, install them the same way — as their
+own separate tools:**
 
 ```bash
-uv tool install --editable ".[rules]"    # or: pip install "codecheck[rules]"
+uv tool install ruff
+uv tool install semgrep
 ```
 
-`eslint` can't be included this way at all — it's an npm package, not a
-Python one, so there's no way to declare it as a Python dependency. Install it
-separately (`npm install -g eslint`, or per-project) if you want that
-sub-runner. Any of these that are still missing are skipped gracefully (not an
-error) — see the rules engine in [Architecture](Architecture.md).
+This is confirmed to actually work: each lands its own executable in the same
+`~/.local/bin` directory `codecheck` itself uses. This package's own `[rules]`
+optional-dependency extra (see Option C below) does **not** help here, even
+though it looks like the obvious fit — `uv tool install`'s isolated-environment
+model only exposes the entry point of the package you named, not the entry
+points of its optional dependencies. Confirmed directly: `uv tool install
+--editable ".[rules]"` (and even `uv tool install --editable . --with ruff
+--with semgrep`) both report "Installed 1 executable: codecheck" —
+`ruff`/`semgrep` end up installed *inside* that isolated environment but never
+reach `PATH`. The extra is only useful for Option A (dev mode, above) and
+Option C (installing from a locally-built wheel, below), where there's no such
+isolation.
+
+`eslint` can't be bundled at all regardless of install path — it's an npm
+package, not a Python one, so there's no way to declare it as a Python
+dependency. Install it separately (`npm install -g eslint`, or per-project)
+if you want that sub-runner. Any of these that are still missing are skipped
+gracefully (not an error) — see the rules engine in [Architecture](Architecture.md).
 
 ### Option C — build a real wheel, install with plain `pip` (no `uv` at all)
 
@@ -87,6 +112,21 @@ codecheck --help
 (`uv build` is just the build-frontend used to produce the wheel — the
 resulting artifact has no `uv` dependency; `python -m build` from the standard
 `build` package works identically, since both just call hatchling.)
+
+**To also get `ruff`/`semgrep` via the `[rules]` extra, install from the local
+wheel file with the extra appended** — this genuinely works, since a plain
+`pip`/venv install has no isolation getting in the way:
+
+```bash
+pip install "dist/codecheck-<version>-py3-none-any.whl[rules]"
+```
+
+**Do not run `pip install "codecheck[rules]"` (or even plain `pip install
+codecheck`) as written** — confirmed directly that PyPI already has a
+different, unrelated project also named `codecheck`. That command installs
+the wrong package silently (no error, just the wrong tool) rather than
+failing. Always install from the local wheel file as shown above until/unless
+this project is published under a different, collision-free name.
 
 **Upgrading works exactly like any other `pip` package** — verified directly:
 bumped `version` in `pyproject.toml` from `0.1.0` to `0.1.1`, rebuilt, and
