@@ -4,7 +4,11 @@ tend to mix multiple responsibilities that are easier to review, test, and
 reuse once split apart.
 
 Ported from frappe-pr-reviewer's python_analyzer.py, extended to also cover
-`async def` (the original only checked sync `def`).
+`async def` (the original only checked sync `def`), and with one further fix:
+diff scope is checked against the function's whole line range, not just its
+`def` line -- a diff that only touches the body of an existing >50-line
+function (never touching the `def` line itself) still counts as "this
+change" touching that function, and should still be flagged (Greptile catch).
 """
 
 from __future__ import annotations
@@ -40,7 +44,9 @@ class MethodTooLongCheck(HouseCheck):
             length = end_line - node.lineno + 1
             if length <= _MAX_LINES:
                 continue
-            if changed_lines is not None and node.lineno not in changed_lines:
+            if changed_lines is not None and changed_lines.isdisjoint(
+                range(node.lineno, end_line + 1)
+            ):
                 continue
             findings.append(
                 Finding(

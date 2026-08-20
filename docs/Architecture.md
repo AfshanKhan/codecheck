@@ -114,8 +114,11 @@ internally, so `check_file()` is a no-op on a file type it doesn't handle.
   severity `HIGH`.
 - **`RULE-018`** — a `def`/`async def` longer than 50 lines
   (`checks/method_too_long.py`), severity `LOW`. Added after a live comparison
-  against `frappe-pr-reviewer` on a real PR showed it flagging 6 long methods
-  `codecheck` had no equivalent for at the time.
+  against `frappe-pr-reviewer` on a real PR showed it flagging 5 long methods
+  `codecheck` had no equivalent for at the time. Diff scope is checked against
+  the function's whole line range, not just its `def` line — a diff touching
+  only the body of an existing long function still counts as touching it
+  (Greptile catch; same shape as the `RULE-015` fix below).
 
 **JS checks (regex/line-based, no JS AST parser dependency) — `RULE-010` through `RULE-016`:**
 
@@ -137,7 +140,10 @@ internally, so `check_file()` is a no-op on a file type it doesn't handle.
   comparison against `frappe-pr-reviewer` on a real PR found a Prettier-
   formatted `frappe\n\t.call({` split across two lines that the original
   same-line-only regex missed entirely (zero findings in a file that should
-  have had two).
+  have had two). Diff scope is checked against every line the match spans,
+  not just the line it starts on — a diff that only touches the `.call(`
+  line of an existing `frappe\n.call(` pair (the `frappe` line itself
+  unchanged) still counts as touching it (Greptile catch).
 - **`RULE-016`** — a JS variable named like a secret assigned a hardcoded
   string (`checks/js_hardcoded_credential.py`), severity `HIGH`.
 

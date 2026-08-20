@@ -15,6 +15,12 @@ two frappe.call() findings in a file written exactly this way, codecheck
 found zero. _CALL_RE now allows whitespace (including newlines) between
 "frappe" and ".call(", and matching runs over the whole file content instead
 of line-by-line so a match spanning two lines can actually be found.
+
+Second fix: diff scope is checked against every line the match spans, not
+just the line the match starts on -- a diff that only touches the ".call("
+line of an existing "frappe\n.call(" pair (the "frappe" line itself unchanged)
+still counts as touching this call and should still be flagged (another
+Greptile catch, same shape as the RULE-018 fix above it).
 """
 
 from __future__ import annotations
@@ -45,6 +51,7 @@ class JsFrappeCallErrorHandlingCheck(HouseCheck):
         findings = []
         for match in _CALL_RE.finditer(content):
             lineno = content.count("\n", 0, match.start()) + 1
+            match_end_line = content.count("\n", 0, match.end()) + 1
             idx = lineno - 1
             window = lines[idx : idx + _WINDOW]
             window_text = "\n".join(window)
@@ -52,7 +59,9 @@ class JsFrappeCallErrorHandlingCheck(HouseCheck):
             has_freeze = bool(_FREEZE_RE.search(window_text))
             if has_error_handling or has_freeze:
                 continue
-            if changed_lines is not None and lineno not in changed_lines:
+            if changed_lines is not None and changed_lines.isdisjoint(
+                range(lineno, match_end_line + 1)
+            ):
                 continue
             findings.append(
                 Finding(
