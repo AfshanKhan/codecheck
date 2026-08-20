@@ -6,6 +6,7 @@ from codecheck.checks.js_hardcoded_html import JsHardcodedHtmlCheck
 from codecheck.checks.js_inline_style import JsInlineStyleCheck
 from codecheck.checks.js_jquery_dom import JsJqueryDomCheck
 from codecheck.checks.leftover_print import LeftoverPrintCheck
+from codecheck.checks.method_too_long import MethodTooLongCheck
 from codecheck.checks.missing_translation import MissingTranslationCheck
 from codecheck.checks.n_plus_one_query import NPlusOneQueryCheck
 from codecheck.checks.no_bare_except import NoBareExceptCheck
@@ -322,8 +323,40 @@ def test_js_frappe_call_with_error_handling_not_flagged():
     assert findings == []
 
 
+def test_js_frappe_call_multiline_chained_style_flagged():
+    # regression: found via a live comparison against frappe-pr-reviewer --
+    # Prettier-formatted code often breaks "frappe.call(" across two lines
+    # ("frappe" then ".call({" on the next line), which the original
+    # same-line-only regex never matched.
+    content = "frappe\n\t.call({\n\t\tmethod: 'my.method',\n\t});\n"
+    findings = JsFrappeCallErrorHandlingCheck().check_file("a.js", content, changed_lines={1})
+    assert len(findings) == 1
+    assert findings[0].check_id == "RULE-015"
+    assert findings[0].line_start == 1
+
+
 def test_js_hardcoded_credential_flagged():
     content = "const api_key = 'sk-abc123realvalue';\n"
     findings = JsHardcodedCredentialCheck().check_file("a.js", content, changed_lines={1})
     assert len(findings) == 1
     assert findings[0].check_id == "RULE-016"
+
+
+def test_method_too_long_flagged():
+    content = "def big():\n" + "\n".join(f"    x{i} = {i}" for i in range(55)) + "\n    return x0\n"
+    findings = MethodTooLongCheck().check_file("a.py", content, changed_lines={1})
+    assert len(findings) == 1
+    assert findings[0].check_id == "RULE-018"
+
+
+def test_method_under_limit_not_flagged():
+    content = "def small():\n    return 1\n"
+    findings = MethodTooLongCheck().check_file("a.py", content, changed_lines={1})
+    assert findings == []
+
+
+def test_async_method_too_long_flagged():
+    content = "async def big():\n" + "\n".join(f"    x{i} = {i}" for i in range(55)) + "\n"
+    findings = MethodTooLongCheck().check_file("a.py", content, changed_lines={1})
+    assert len(findings) == 1
+    assert findings[0].check_id == "RULE-018"

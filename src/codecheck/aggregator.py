@@ -25,7 +25,24 @@ def _titles_similar(a: str, b: str) -> bool:
 
 
 def _is_duplicate(a: Finding, b: Finding) -> bool:
-    return a.file == b.file and _ranges_overlap(a, b) and _titles_similar(a.title, b.title)
+    if a.file != b.file:
+        return False
+    if a.check_id == b.check_id and a.source == b.source:
+        # The line-window+title-similarity heuristic below exists to catch the
+        # SAME issue reported by two different tools/checks at slightly
+        # different line numbers (e.g. ruff's E722 and our own RULE-001 both
+        # flagging one bare except). It's wrong to apply between two findings
+        # from the identical check: the same rule firing twice a few lines
+        # apart (three separate print() calls, three separate untranslated
+        # strings, ...) is almost always two distinct, real occurrences of the
+        # pattern, not a duplicate report of the same one -- confirmed as a
+        # real bug via a live comparison against frappe-pr-reviewer, which
+        # correctly reported all three of three nearby print() calls while
+        # this dedup logic silently merged two of them into one. Only treat
+        # the same check as self-duplicating if it's literally the same line
+        # range.
+        return (a.line_start, a.line_end or a.line_start) == (b.line_start, b.line_end or b.line_start)
+    return _ranges_overlap(a, b) and _titles_similar(a.title, b.title)
 
 
 def _tier_priority(finding: Finding) -> int:

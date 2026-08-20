@@ -11,6 +11,7 @@ from codecheck.checks.js_hardcoded_html import JsHardcodedHtmlCheck
 from codecheck.checks.js_inline_style import JsInlineStyleCheck
 from codecheck.checks.js_jquery_dom import JsJqueryDomCheck
 from codecheck.checks.leftover_print import LeftoverPrintCheck
+from codecheck.checks.method_too_long import MethodTooLongCheck
 from codecheck.checks.missing_translation import MissingTranslationCheck
 from codecheck.checks.n_plus_one_query import NPlusOneQueryCheck
 from codecheck.checks.no_bare_except import NoBareExceptCheck
@@ -36,4 +37,5 @@ ALL_CHECKS: list[HouseCheck] = [
     JsJqueryDomCheck(),
     JsFrappeCallErrorHandlingCheck(),
     JsHardcodedCredentialCheck(),
+    MethodTooLongCheck(),
 ]

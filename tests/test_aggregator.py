@@ -82,6 +82,29 @@ def test_cloud_tier_wins_as_primary_and_severity_is_max():
     assert merged[0].severity == Severity.CRITICAL
 
 
+def test_same_check_firing_twice_nearby_is_not_deduped():
+    # regression: found via a live comparison against frappe-pr-reviewer on a
+    # real PR -- three separate print() calls at lines 15, 17, 18 in one file
+    # were supposed to be three findings, but the old dedup logic treated
+    # RULE-007 firing at line 17 as "the same finding" as RULE-007 firing at
+    # line 15 (same check_id+source, within the 2-line window, identical
+    # title), silently merging them and losing the line-17 finding entirely.
+    f15 = make_finding(check_id="RULE-007", title="Leftover print() call", line_start=15, line_end=15)
+    f17 = make_finding(check_id="RULE-007", title="Leftover print() call", line_start=17, line_end=17)
+    f18 = make_finding(check_id="RULE-007", title="Leftover print() call", line_start=18, line_end=18)
+    merged = aggregate({"rules": [f15, f17, f18]})
+    assert sorted(f.line_start for f in merged) == [15, 17, 18]
+
+
+def test_same_check_same_line_from_two_tiers_still_dedupes():
+    # the same check_id+source at the exact same line (e.g. a resumed run
+    # re-reporting the same finding) should still collapse to one.
+    a = make_finding(check_id="RULE-007", title="Leftover print() call", line_start=15, line_end=15)
+    b = make_finding(check_id="RULE-007", title="Leftover print() call", line_start=15, line_end=15)
+    merged = aggregate({"rules": [a, b]})
+    assert len(merged) == 1
+
+
 def test_sorted_by_severity_desc_then_file_then_line():
     low = make_finding(file="z.py", severity=Severity.LOW, line_start=1, title="A")
     high = make_finding(file="a.py", severity=Severity.HIGH, line_start=5, title="B")
