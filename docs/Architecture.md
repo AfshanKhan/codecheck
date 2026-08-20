@@ -62,7 +62,7 @@ repo's entire pre-existing lint debt instead of just what changed.
 
 ### House rules (`checks/`)
 
-16 checks registered in [`checks/registry.py`](../src/codecheck/checks/registry.py),
+17 checks registered in [`checks/registry.py`](../src/codecheck/checks/registry.py),
 all accepting `changed_lines: set[int] | None` with the same
 None-means-everything semantics. `HouseRulesRunner` (`reviewers/rules_engine.py`)
 passes both `.py` and `.js` targets — each check filters to its own extension
@@ -112,6 +112,13 @@ internally, so `check_file()` is a no-op on a file type it doesn't handle.
 - **`RULE-009`** — a variable named like a secret (password/token/key/etc.)
   assigned a non-placeholder string literal (`checks/hardcoded_credential.py`),
   severity `HIGH`.
+- **`RULE-018`** — a `def`/`async def` longer than 50 lines
+  (`checks/method_too_long.py`), severity `LOW`. Added after a live comparison
+  against `frappe-pr-reviewer` on a real PR showed it flagging 5 long methods
+  `codecheck` had no equivalent for at the time. Diff scope is checked against
+  the function's whole line range, not just its `def` line — a diff touching
+  only the body of an existing long function still counts as touching it
+  (Greptile catch; same shape as the `RULE-015` fix below).
 
 **JS checks (regex/line-based, no JS AST parser dependency) — `RULE-010` through `RULE-016`:**
 
@@ -128,7 +135,15 @@ internally, so `check_file()` is a no-op on a file type it doesn't handle.
   `LOW`.
 - **`RULE-015`** — a `frappe.call()` with no `error:`/`callback:`/`.catch()`/
   `freeze: true` signal within the following ~12 lines
-  (`checks/js_frappe_call_error_handling.py`), severity `LOW`.
+  (`checks/js_frappe_call_error_handling.py`), severity `LOW`. Matches
+  `frappe` and `.call(` across a line break, not just on one line — a live
+  comparison against `frappe-pr-reviewer` on a real PR found a Prettier-
+  formatted `frappe\n\t.call({` split across two lines that the original
+  same-line-only regex missed entirely (zero findings in a file that should
+  have had two). Diff scope is checked against every line the match spans,
+  not just the line it starts on — a diff that only touches the `.call(`
+  line of an existing `frappe\n.call(` pair (the `frappe` line itself
+  unchanged) still counts as touching it (Greptile catch).
 - **`RULE-016`** — a JS variable named like a secret assigned a hardcoded
   string (`checks/js_hardcoded_credential.py`), severity `HIGH`.
 
@@ -550,18 +565,29 @@ and:
 1. Flattens all findings into one list.
 2. Two findings are considered the same underlying issue if: same `file`, their
    line ranges overlap (within a ±2 line window), **and** their titles are
-   similar (`difflib.SequenceMatcher` ratio ≥ `0.6` on lowercased titles).
+   similar (`difflib.SequenceMatcher` ratio ≥ `0.6` on lowercased titles) --
+   **unless they share the same `check_id` and `source`**, in which case they
+   only merge if they're at the exact same line range, not just an overlapping
+   one. That carve-out exists because the ±2-line window is meant to catch the
+   SAME issue reported by two DIFFERENT tools/checks at slightly different
+   line numbers (see the ruff/RULE-001 example below); applied between two
+   findings from the identical check, it does the opposite of what's wanted --
+   confirmed as a real bug via a live comparison against `frappe-pr-reviewer`
+   on a real PR, where three separate `print()` calls two and three lines
+   apart in one file (RULE-007 firing three times) were silently collapsed
+   into two findings, permanently losing the third.
 3. When two findings merge, the one from the higher-priority tier is kept as
    primary (`cloud_llm` > `local_llm` > `rules`), the other's `source:check_id` is
    appended to `raw["also_flagged_by"]`, and severity becomes the max of the two.
 4. Final list is sorted: severity descending, then file, then line number.
 
-**Known limitation, confirmed by testing:** this only catches duplicates when the
-*wording* is close. It does **not** merge cases where two tools flag the exact
-same line for the exact same underlying issue but describe it very differently —
-concretely, ruff's `E722: Do not use bare `except`` and our own `RULE-001: Bare
-except clause` on the same line do **not** get merged (ratio ≈ 0.46, below
-threshold) and both show up in the report.
+**Known limitation, confirmed by testing:** this only catches cross-check
+duplicates when the *wording* is close. It does **not** merge cases where two
+tools flag the exact same line for the exact same underlying issue but
+describe it very differently — concretely, ruff's `E722: Do not use bare
+`except`` and our own `RULE-001: Bare except clause` on the same line do
+**not** get merged (ratio ≈ 0.46, below threshold) and both show up in the
+report.
 
 ## Reporters
 

@@ -203,6 +203,7 @@ nothing.
 | `RULE-015` (house rule) | A `frappe.call()` with no visible error handling or `freeze: true` |
 | `RULE-016` (house rule) | A JS variable named like a secret assigned a hardcoded string |
 | `RULE-017` (house rule) | A diff changes non-trivial application code but touches no test file (`diff` mode only) |
+| `RULE-018` (house rule) | A function/method longer than 50 lines |
 
 `ruff`, `eslint`, and `semgrep` all need to actually be installed — see step 1
 above if you haven't yet. Any of these that are missing are just skipped, not
