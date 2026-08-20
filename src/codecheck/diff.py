@@ -13,7 +13,21 @@ _HUNK_HEADER_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 
 
 def _parse_changed_lines(diff_text: str) -> set[int]:
-    """Extract line numbers added/modified in the new file version from a unified diff."""
+    """Extract line numbers touched in the new file version from a unified diff.
+
+    A `-` line doesn't advance the new-file line counter (nothing was added in
+    its place), so a hunk that only deletes lines -- no `+` lines at all --
+    used to leave `changed` completely untouched for that hunk, making a
+    deletion-only diff invisible to every line-scoped rule (confirmed as a
+    real gap via Greptile review: a diff that only removes lines from an
+    already-too-long function, leaving it still too long, produced no
+    RULE-018 finding at all). Fixed the same way GitHub's own PR review UI
+    treats a deletion: attribute it to the nearest surviving new-file line
+    adjacent to it (`current_line`, where the cursor sits right after the
+    deletion) -- so a line-scoped rule can still recognize that this diff
+    touched something right here, without needing full old-line/new-line
+    hunk bookkeeping.
+    """
     changed: set[int] = set()
     current_line = 0
     for raw_line in diff_text.splitlines():
@@ -27,7 +41,7 @@ def _parse_changed_lines(diff_text: str) -> set[int]:
             changed.add(current_line)
             current_line += 1
         elif raw_line.startswith("-") and not raw_line.startswith("---"):
-            continue  # removed line, doesn't advance new-file line counter
+            changed.add(max(current_line, 1))
         else:
             current_line += 1
     return changed

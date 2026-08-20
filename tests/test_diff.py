@@ -3,7 +3,13 @@ from pathlib import Path
 
 import pytest
 
-from codecheck.diff import _parse_diff_header, _unquote_git_path, get_diff, read_file_content
+from codecheck.diff import (
+    _parse_changed_lines,
+    _parse_diff_header,
+    _unquote_git_path,
+    get_diff,
+    read_file_content,
+)
 from codecheck.models import ReviewTarget
 
 
@@ -13,6 +19,29 @@ def test_invalid_base_ref_raises_value_error_not_git_command_error(sandbox_repo:
     # with a raw traceback instead of a clean "Error: ..." message + exit 2.
     with pytest.raises(ValueError, match="Invalid base_ref"):
         get_diff(sandbox_repo, base_ref="this-branch-does-not-exist", staged=False)
+
+
+def test_parse_changed_lines_pure_addition():
+    diff_text = "@@ -1,2 +1,3 @@\n a\n+b\n c\n"
+    assert _parse_changed_lines(diff_text) == {2}
+
+
+def test_parse_changed_lines_deletion_only_attributes_to_adjacent_surviving_line():
+    # regression (Greptile): a hunk that only removes lines (no + lines at
+    # all) used to leave changed_lines completely empty for that hunk, making
+    # a deletion-only diff invisible to every line-scoped rule -- e.g. RULE-018
+    # never firing on a function that's still too long after some lines were
+    # deleted from it, just because nothing was *added*. Deletions now
+    # attribute to the nearest surviving new-file line adjacent to them.
+    diff_text = "@@ -1,4 +1,2 @@\n a\n-b\n-c\n d\n"
+    # new file is just "a\nd\n" -- line 1 (a) unchanged, line 2 (d) is where
+    # the deleted "b"/"c" lines used to sit.
+    assert _parse_changed_lines(diff_text) == {2}
+
+
+def test_parse_changed_lines_deletion_at_start_of_hunk():
+    diff_text = "@@ -1,3 +1,1 @@\n-a\n-b\n c\n"
+    assert _parse_changed_lines(diff_text) == {1}
 
 
 @pytest.fixture

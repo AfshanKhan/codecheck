@@ -346,6 +346,18 @@ def test_js_frappe_call_multiline_flagged_when_only_call_line_changed():
     assert findings[0].check_id == "RULE-015"
 
 
+def test_js_frappe_call_flagged_when_only_argument_line_changed():
+    # regression (Greptile): the regex match only spans up through the opening
+    # "(" (it can't safely balance-match the closing paren), so a diff that
+    # only changes an argument *inside* the call -- neither the "frappe" nor
+    # the ".call(" line itself -- must still be flagged, not silently dropped
+    # because the argument line falls outside the match's own span.
+    content = "frappe.call({\n\tmethod: 'my.method',\n\targs: {x: 2},\n});\n"
+    findings = JsFrappeCallErrorHandlingCheck().check_file("a.js", content, changed_lines={3})
+    assert len(findings) == 1
+    assert findings[0].check_id == "RULE-015"
+
+
 def test_js_hardcoded_credential_flagged():
     content = "const api_key = 'sk-abc123realvalue';\n"
     findings = JsHardcodedCredentialCheck().check_file("a.js", content, changed_lines={1})
