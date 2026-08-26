@@ -225,6 +225,35 @@ since Tier 1 already covers that. The difference between Tier 2 and Tier 3 is
 only *where* the AI model runs (your machine vs. a cloud provider), not what
 it looks for.
 
+### 6. Beyond the basics
+
+A handful of smaller features for once the basic `diff`/`audit` flow feels
+comfortable — full details in the [CLI reference](docs/CLI-Reference.md) and
+[Configuration](docs/Configuration.md):
+
+- **`--gate strict|standard|relaxed`** — dial the pass/fail exit code up or
+  down without hand-editing config (e.g. `--gate strict` on a
+  security-sensitive repo, `--gate relaxed` while a legacy codebase works
+  down a backlog).
+- **`--redact`** — scrub your machine's absolute file path out of the saved
+  report before handing it to someone else.
+- **`codecheck compare old.json new.json`** — see what's newly broken or
+  newly fixed between two runs of the same repo, instead of only ever
+  looking at one snapshot. Pairs well with pinning a periodic `audit` as a
+  baseline.
+- **`codecheck render report.json`** — regenerate the `.md`/`.docx` from a
+  report you already have (after upgrading `codecheck`, or to make a
+  `--redact` copy), no re-review needed.
+- **`--suggest-fixes`** — with `--cloud`/`--local` on, ask the AI for a short,
+  targeted fix on findings that don't already have one — cheaper than a full
+  AI review pass, since it's answering one specific question per finding
+  instead of re-reading the whole file.
+- **`rules.disabled_checks`** in `config.yaml` — silence specific check IDs
+  you don't want (from any tool, not just house rules) without turning off
+  the whole check category.
+- **`rules.extra_checks`** in `config.yaml` — plug in your own project-specific
+  checks alongside the built-in ones, no fork required.
+
 ### Troubleshooting
 
 - **"command not found: codecheck"** — the install step didn't finish, or you

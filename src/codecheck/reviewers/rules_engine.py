@@ -12,7 +12,7 @@ import subprocess
 from abc import ABC, abstractmethod
 from pathlib import Path
 
-from codecheck.checks.registry import ALL_CHECKS
+from codecheck.checks.registry import ALL_CHECKS, load_extra_checks
 from codecheck.config import RulesConfig
 from codecheck.diff import read_file_content
 from codecheck.models import Finding, ReviewTarget, Severity
@@ -259,6 +259,13 @@ class SemgrepRunner(SubRunner):
 class HouseRulesRunner(SubRunner):
     name = "house_rules"
 
+    def __init__(self, extra_checks: list | None = None):
+        # Project-supplied checks (rules.extra_checks in config.yaml) run
+        # alongside the built-ins, sharing the exact same per-file loop below
+        # -- a HouseCheck doesn't know or care whether it's built-in or
+        # loaded from config, they're interchangeable.
+        self._checks = [*ALL_CHECKS, *(extra_checks or [])]
+
     def is_available(self, repo_path: Path) -> tuple[bool, str | None]:
         return True, None
 
@@ -271,7 +278,7 @@ class HouseRulesRunner(SubRunner):
             content = read_file_content(repo_path, target)
             if content is None:
                 continue
-            for check in ALL_CHECKS:
+            for check in self._checks:
                 findings.extend(check.check_file(target.path, content, target.changed_lines))
         return findings
 
@@ -392,6 +399,13 @@ class RulesEngineReviewer(Reviewer):
         # review(); surfaced by the CLI so an enabled-but-skipped linter isn't
         # silently mistaken for "ran and found nothing."
         self.skipped_runners: list[tuple[str, str]] = []
+        # A misconfigured entry in rules.extra_checks (bad path, import error,
+        # not a HouseCheck) is recorded here at construction time rather than
+        # raised -- review() folds these into skipped_runners on the first
+        # call, same visibility as any other skipped sub-runner, without
+        # taking the built-in checks down with it.
+        extra_checks, extra_check_errors = load_extra_checks(config.extra_checks)
+        self._extra_check_errors = extra_check_errors
         self._runners: list[SubRunner] = []
         if config.ruff:
             self._runners.append(RuffRunner())
@@ -400,7 +414,7 @@ class RulesEngineReviewer(Reviewer):
         if config.semgrep:
             self._runners.append(SemgrepRunner())
         if config.house_rules:
-            self._runners.append(HouseRulesRunner())
+            self._runners.append(HouseRulesRunner(extra_checks=extra_checks))
         if config.test_coverage:
             self._runners.append(TestCoverageRunner())
 
@@ -410,7 +424,9 @@ class RulesEngineReviewer(Reviewer):
         return True, None
 
     def review(self, targets: list[ReviewTarget], repo_path: Path) -> list[Finding]:
-        self.skipped_runners = []
+        self.skipped_runners = [
+            ("house_rules.extra_checks", error) for error in self._extra_check_errors
+        ]
         findings: list[Finding] = []
         for runner in self._runners:
             available, reason = runner.is_available(repo_path)
@@ -419,4 +435,7 @@ class RulesEngineReviewer(Reviewer):
                     self.skipped_runners.append((runner.name, reason))
                 continue
             findings.extend(runner.run(targets, repo_path))
+        if self.config.disabled_checks:
+            disabled = set(self.config.disabled_checks)
+            findings = [f for f in findings if f.check_id not in disabled]
         return findings

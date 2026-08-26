@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import importlib
+
 from codecheck.checks.base import HouseCheck
 from codecheck.checks.hardcoded_credential import HardcodedCredentialCheck
 from codecheck.checks.js_console_debugger import JsConsoleLogCheck, JsDebuggerStatementCheck
@@ -39,3 +41,35 @@ ALL_CHECKS: list[HouseCheck] = [
     JsHardcodedCredentialCheck(),
     MethodTooLongCheck(),
 ]
+
+
+def load_extra_checks(dotted_paths: list[str]) -> tuple[list[HouseCheck], list[str]]:
+    """Dynamically imports and instantiates each "module.submodule:ClassName"
+    path, for `rules.extra_checks` in config.yaml -- lets a project add its
+    own HouseCheck subclasses without forking codecheck to add them to
+    ALL_CHECKS directly. Returns (loaded_checks, error_messages); a path that
+    fails to import, isn't a HouseCheck subclass, or can't be instantiated
+    with no arguments is reported as an error string rather than raised, so
+    one bad entry doesn't take down every built-in check along with it.
+    """
+    checks: list[HouseCheck] = []
+    errors: list[str] = []
+    for dotted_path in dotted_paths:
+        module_name, _, class_name = dotted_path.partition(":")
+        if not module_name or not class_name:
+            errors.append(f"{dotted_path}: expected 'module.path:ClassName'")
+            continue
+        try:
+            module = importlib.import_module(module_name)
+            check_class = getattr(module, class_name)
+        except (ImportError, AttributeError) as e:
+            errors.append(f"{dotted_path}: {e}")
+            continue
+        if not (isinstance(check_class, type) and issubclass(check_class, HouseCheck)):
+            errors.append(f"{dotted_path}: not a HouseCheck subclass")
+            continue
+        try:
+            checks.append(check_class())
+        except Exception as e:  # a broken __init__ shouldn't crash the whole run
+            errors.append(f"{dotted_path}: failed to instantiate: {e}")
+    return checks, errors

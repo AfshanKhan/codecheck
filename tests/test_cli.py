@@ -703,3 +703,209 @@ def test_version_flag_prints_version_and_exits():
     assert result.exit_code == 0
     assert "codecheck" in result.stdout
     assert version("codecheck") in result.stdout
+
+
+# --- --gate / --redact / render / compare / --suggest-fixes -----------------
+
+
+def test_gate_relaxed_downgrades_a_high_finding_to_not_failing(sandbox_repo: Path, tmp_path: Path):
+    output_dir = tmp_path / "reports"
+    result = runner.invoke(
+        app,
+        [
+            "audit", "--repo-path", str(sandbox_repo), "--output-dir", str(output_dir),
+            "--gate", "relaxed",
+        ],
+    )
+    # RULE-002 is HIGH; --gate relaxed only fails on CRITICAL -- same findings,
+    # different exit code than the default run.
+    assert result.exit_code == 0
+    assert "RULE-002" in result.stdout
+
+
+def test_gate_strict_still_fails_on_a_high_finding(sandbox_repo: Path, tmp_path: Path):
+    output_dir = tmp_path / "reports"
+    result = runner.invoke(
+        app,
+        [
+            "audit", "--repo-path", str(sandbox_repo), "--output-dir", str(output_dir),
+            "--gate", "strict",
+        ],
+    )
+    assert result.exit_code == 1
+
+
+def test_gate_rejects_an_unknown_profile_name(sandbox_repo: Path, tmp_path: Path):
+    output_dir = tmp_path / "reports"
+    result = runner.invoke(
+        app,
+        [
+            "audit", "--repo-path", str(sandbox_repo), "--output-dir", str(output_dir),
+            "--gate", "not-a-real-profile",
+        ],
+    )
+    assert result.exit_code == 2
+    assert "--gate" in result.stdout
+
+
+def test_redact_scrubs_repo_path_from_written_json(sandbox_repo: Path, tmp_path: Path):
+    output_dir = tmp_path / "reports"
+    result = runner.invoke(
+        app,
+        ["audit", "--repo-path", str(sandbox_repo), "--output-dir", str(output_dir), "--redact"],
+    )
+    assert result.exit_code == 1  # findings are unaffected by --redact
+    json_path = _report_json_path(output_dir)
+    data = json.loads(json_path.read_text())
+    assert str(sandbox_repo) not in data["repo_path"]
+    assert "<local repo>" in data["repo_path"]
+    # the terminal output (this process's own machine) is not redacted, only
+    # the written files -- the sandbox repo's real path is fine to show here
+    assert "RULE-002" in result.stdout
+
+
+def test_render_recreates_reports_from_a_prior_json_without_rerunning_checks(
+    sandbox_repo: Path, tmp_path: Path
+):
+    first_output = tmp_path / "reports1"
+    runner.invoke(app, ["audit", "--repo-path", str(sandbox_repo), "--output-dir", str(first_output)])
+    json_path = _report_json_path(first_output)
+
+    second_output = tmp_path / "reports2"
+    result = runner.invoke(app, ["render", str(json_path), "--output-dir", str(second_output)])
+
+    assert result.exit_code == 0
+    rendered_json = _report_json_path(second_output)
+    rendered_md = _report_md_path(second_output)
+    rendered_docx = _report_docx_path(second_output)
+    assert rendered_json.exists()
+    assert "RULE-002" in rendered_md.read_text()
+    assert rendered_docx.exists()
+
+
+def test_render_with_redact_scrubs_the_repo_path(sandbox_repo: Path, tmp_path: Path):
+    first_output = tmp_path / "reports1"
+    runner.invoke(app, ["audit", "--repo-path", str(sandbox_repo), "--output-dir", str(first_output)])
+    json_path = _report_json_path(first_output)
+
+    second_output = tmp_path / "reports2"
+    runner.invoke(app, ["render", str(json_path), "--output-dir", str(second_output), "--redact"])
+
+    rendered_json = _report_json_path(second_output)
+    data = json.loads(rendered_json.read_text())
+    assert str(sandbox_repo) not in data["repo_path"]
+
+
+def test_render_rejects_a_nonexistent_report_path(tmp_path: Path):
+    result = runner.invoke(app, ["render", str(tmp_path / "does_not_exist.json")])
+    assert result.exit_code == 2
+
+
+def test_render_rejects_malformed_json(tmp_path: Path):
+    bad = tmp_path / "bad.json"
+    bad.write_text("{not valid json")
+    result = runner.invoke(app, ["render", str(bad)])
+    assert result.exit_code == 2
+
+
+def _write_report_json(path: Path, findings: list[dict]) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "repo_path": "/repo",
+                "mode": "audit",
+                "base_ref": None,
+                "head_ref": None,
+                "generated_at": "2026-08-20T10:00:00+00:00",
+                "tiers_run": ["rules"],
+                "duration_seconds": 1.0,
+                "files_reviewed": [],
+                "skipped": [],
+                "file_hashes": {},
+                "counts_by_severity": {},
+                "findings": findings,
+            }
+        )
+    )
+
+
+def _finding_dict(check_id: str, file: str, line: int, severity: str = "medium") -> dict:
+    return {
+        "check_id": check_id, "tier": "rules", "source": "house", "severity": severity,
+        "title": f"{check_id} finding", "explanation": "explanation", "file": file,
+        "line_start": line, "line_end": line, "suggestion": None, "raw": None,
+    }
+
+
+def test_compare_reports_added_and_resolved_findings(tmp_path: Path):
+    old_path = tmp_path / "old.json"
+    new_path = tmp_path / "new.json"
+    _write_report_json(old_path, [_finding_dict("RULE-001", "a.py", 10)])
+    _write_report_json(
+        new_path,
+        [_finding_dict("RULE-002", "b.py", 5, severity="high")],  # RULE-001 gone, RULE-002 new
+    )
+
+    result = runner.invoke(app, ["compare", str(old_path), str(new_path)])
+
+    assert "1 newly introduced finding" in result.stdout
+    assert "RULE-002" in result.stdout
+    assert "1 resolved finding" in result.stdout
+    assert "RULE-001" in result.stdout
+    assert result.exit_code == 1  # RULE-002 is HIGH, at/above the default fail_on_severity
+
+
+def test_compare_exit_code_0_when_no_new_finding_meets_the_gate(tmp_path: Path):
+    old_path = tmp_path / "old.json"
+    new_path = tmp_path / "new.json"
+    _write_report_json(old_path, [])
+    _write_report_json(new_path, [_finding_dict("RULE-007", "a.py", 1, severity="low")])
+
+    result = runner.invoke(app, ["compare", str(old_path), str(new_path)])
+
+    assert result.exit_code == 0  # LOW is below the default "high" gate
+
+
+def test_compare_respects_gate_override(tmp_path: Path):
+    old_path = tmp_path / "old.json"
+    new_path = tmp_path / "new.json"
+    _write_report_json(old_path, [])
+    # MEDIUM is below the default "high" gate but at/above --gate strict ("medium")
+    _write_report_json(new_path, [_finding_dict("RULE-007", "a.py", 1, severity="medium")])
+
+    default_result = runner.invoke(app, ["compare", str(old_path), str(new_path)])
+    assert default_result.exit_code == 0
+
+    strict_result = runner.invoke(app, ["compare", str(old_path), str(new_path), "--gate", "strict"])
+    assert strict_result.exit_code == 1
+
+
+def test_compare_no_changes_between_identical_reports(tmp_path: Path):
+    old_path = tmp_path / "old.json"
+    new_path = tmp_path / "new.json"
+    findings = [_finding_dict("RULE-001", "a.py", 10)]
+    _write_report_json(old_path, findings)
+    _write_report_json(new_path, findings)
+
+    result = runner.invoke(app, ["compare", str(old_path), str(new_path)])
+
+    assert result.exit_code == 0
+    assert "No newly introduced findings" in result.stdout
+    assert "No resolved findings" in result.stdout
+
+
+def test_suggest_fixes_without_cloud_or_local_records_a_skip_not_a_crash(
+    sandbox_repo: Path, tmp_path: Path
+):
+    output_dir = tmp_path / "reports"
+    result = runner.invoke(
+        app,
+        [
+            "audit", "--repo-path", str(sandbox_repo), "--output-dir", str(output_dir),
+            "--suggest-fixes",
+        ],
+    )
+    assert result.exit_code == 1  # the underlying findings are unaffected
+    json_path = _report_json_path(output_dir)
+    data = json.loads(json_path.read_text())
+    assert any("suggest_fixes" in entry for entry in data["skipped"])

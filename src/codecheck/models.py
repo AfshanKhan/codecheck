@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 
 
@@ -104,6 +104,31 @@ class Finding:
             "raw": self.raw,
         }
 
+    @classmethod
+    def from_dict(cls, data: dict) -> "Finding | None":
+        """Inverse of to_dict(), for tools that read back a previously-written
+        report (codecheck render / codecheck compare) rather than a live
+        review run. Returns None for a malformed entry -- e.g. a hand-edited
+        report.json missing a required field -- so a caller can skip it
+        rather than crash on it.
+        """
+        check_id, file_path = data.get("check_id"), data.get("file")
+        if not check_id or not file_path:
+            return None
+        return cls(
+            check_id=check_id,
+            tier=data.get("tier") or "rules",
+            source=data.get("source") or "unknown",
+            severity=Severity.parse(data.get("severity")),
+            title=data.get("title") or "",
+            explanation=data.get("explanation") or "",
+            file=file_path,
+            line_start=data.get("line_start") if isinstance(data.get("line_start"), int) else 1,
+            line_end=data.get("line_end") if isinstance(data.get("line_end"), int) else None,
+            suggestion=data.get("suggestion"),
+            raw=data.get("raw"),
+        )
+
 
 @dataclass
 class ReviewReport:
@@ -154,3 +179,39 @@ class ReviewReport:
             },
             "findings": [f.to_dict() for f in self.findings],
         }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "ReviewReport":
+        """Inverse of to_dict() -- reconstructs a full ReviewReport from a
+        prior run's report.json, for `codecheck render` (re-render as
+        markdown/docx without re-running any checks) and `codecheck compare`
+        (diff two prior reports). Tolerant of a missing/malformed
+        generated_at (falls back to now) since this may be reading a report
+        written by an older codecheck version or edited by hand.
+        """
+        generated_at_raw = data.get("generated_at")
+        try:
+            generated_at = datetime.fromisoformat(generated_at_raw) if generated_at_raw else None
+        except ValueError:
+            generated_at = None
+        raw_findings = data.get("findings")
+        findings = (
+            [f for f in (Finding.from_dict(d) for d in raw_findings if isinstance(d, dict)) if f]
+            if isinstance(raw_findings, list)
+            else []
+        )
+        return cls(
+            repo_path=data.get("repo_path") or "",
+            mode=data.get("mode") or "diff",
+            base_ref=data.get("base_ref"),
+            head_ref=data.get("head_ref"),
+            generated_at=generated_at or datetime.now(timezone.utc),
+            tiers_run=data.get("tiers_run") if isinstance(data.get("tiers_run"), list) else [],
+            findings=findings,
+            files_reviewed=(
+                data.get("files_reviewed") if isinstance(data.get("files_reviewed"), list) else []
+            ),
+            duration_seconds=data.get("duration_seconds") or 0.0,
+            skipped=data.get("skipped") if isinstance(data.get("skipped"), list) else [],
+            file_hashes=data.get("file_hashes") if isinstance(data.get("file_hashes"), dict) else {},
+        )
