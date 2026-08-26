@@ -27,7 +27,7 @@ dependencies = [
 # one, so there's no way to declare it as a Python dependency. Install it
 # separately (e.g. `npm install -g eslint`) if you want that sub-runner.
 rules = [
-    "ruff>=0.16.3",
+    "ruff>=0.16.4",
     "semgrep>=1.0",
 ]
 
@@ -44,7 +44,7 @@ packages = ["src/codecheck"]
 [dependency-groups]
 dev = [
     "pytest>=8.0",
-    "ruff>=0.16.3",
+    "ruff>=0.16.4",
 ]
 
 [tool.ruff]
