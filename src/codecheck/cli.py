@@ -497,17 +497,31 @@ def _maybe_suggest_fixes(
     if not suggest_fixes:
         return
     reviewer = None
+    cloud_unsupported_reason: str | None = None
     if cfg.cloud.enabled:
         candidate = build_cloud_reviewer(cfg.cloud)
         if isinstance(candidate, OpenAIProtocolReviewer):
-            available, _reason = candidate.is_available(repo_path)
+            available, reason = candidate.is_available(repo_path)
             if available:
                 reviewer = candidate
+            else:
+                cloud_unsupported_reason = reason or "the configured cloud provider isn't available"
+        else:
+            cloud_unsupported_reason = (
+                f"cloud.provider={cfg.cloud.provider!r} isn't supported for suggestions yet "
+                "(Anthropic has no suggestion-compatible client -- use a non-Anthropic, "
+                "OpenAI-compatible cloud provider instead)"
+            )
     if reviewer is None and cfg.local.enabled:
         candidate = LocalLLMReviewer(cfg.local)
         available, _reason = candidate.is_available(repo_path)
         if available:
             reviewer = candidate
+            if cloud_unsupported_reason is not None:
+                skipped.append(
+                    f"suggest_fixes: cloud unusable ({cloud_unsupported_reason}) -- "
+                    "falling back to --local for suggestions instead"
+                )
     if reviewer is None:
         skipped.append(
             "suggest_fixes: requires --cloud (a non-Anthropic, OpenAI-compatible provider -- "

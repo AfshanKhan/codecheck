@@ -934,3 +934,31 @@ def test_maybe_suggest_fixes_with_default_anthropic_cloud_provider_does_not_cras
     _maybe_suggest_fixes(True, cfg, [], [], tmp_path, skipped)  # must not raise
 
     assert any("suggest_fixes" in entry and "Anthropic" in entry for entry in skipped)
+
+
+def test_maybe_suggest_fixes_falling_back_to_local_records_why(tmp_path: Path, monkeypatch):
+    # regression (Greptile): when cloud is enabled with an unsupported
+    # provider (Anthropic) and local is also enabled and available,
+    # _maybe_suggest_fixes used to fall through to local silently -- nothing
+    # in the report said cloud was configured but skipped, even though the
+    # docs describe cloud as preferred whenever both are on. Now the fallback
+    # itself is recorded as a skipped entry.
+    import codecheck.cli as cli_module
+    from codecheck.cli import _maybe_suggest_fixes
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-not-real")
+    monkeypatch.setattr(
+        cli_module.LocalLLMReviewer, "is_available", lambda self, repo_path: (True, None)
+    )
+    monkeypatch.setattr(cli_module, "generate_suggestions", lambda *a, **k: (0, []))
+    cfg = Config()
+    cfg.cloud.enabled = True  # provider defaults to "anthropic" -- unsupported here
+    cfg.local.enabled = True
+    cfg.local.model = "some-model"
+    skipped: list[str] = []
+
+    _maybe_suggest_fixes(True, cfg, [], [], tmp_path, skipped)
+
+    assert any(
+        "suggest_fixes" in entry and "falling back to --local" in entry for entry in skipped
+    )

@@ -71,6 +71,22 @@ def test_redact_scrubs_spaced_path_and_stops_at_a_clear_terminator():
     assert "line 5, see the docs" in redacted.skipped[0]  # trailing prose after ":" survives
 
 
+def test_redact_scrubs_absolute_path_with_apostrophe_parenthesis_and_plus_sign():
+    # regression (Greptile, security): the space-widened char class was still
+    # a whitelist ([\w.\- ]), so any other valid filesystem character --
+    # apostrophe, parenthesis, plus sign, etc. -- stopped the match early and
+    # leaked the identifying suffix, same failure mode as the earlier
+    # space-only gap.
+    report = make_report(
+        "/Users/afshan/Workspace/codecheck",
+        ["rules: semgrep: config error at /Users/O'Brien's Files/project (v2)+final/app.js"],
+    )
+    redacted = redact_report(report)
+    assert "O'Brien" not in redacted.skipped[0]
+    assert "project (v2)+final" not in redacted.skipped[0]
+    assert "<local repo>" in redacted.skipped[0]
+
+
 def test_redact_leaves_relative_paths_in_skipped_entries_alone():
     report = make_report(
         "/Users/afshan/Workspace/codecheck",

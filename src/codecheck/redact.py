@@ -34,19 +34,25 @@ _PLACEHOLDER = "<local repo>"
 # pattern) would turn the leftover "/app.py" into a second, redundant
 # placeholder instead of leaving the actual filename visible.
 #
-# Each path segment allows a literal space (`[\w.\- ]+`, not just `[\w.\-]+`)
-# -- a real, common macOS/Windows path component ("/Users/John Doe/project")
-# has one, and the original space-excluding class only redacted the prefix
-# before it, leaving the identifying suffix (often the actual username)
-# exposed in the written report (confirmed real via Greptile security
-# review). Allowing spaces trades a small risk of over-matching a bit of
-# trailing prose after a path in the same sentence for never under-matching
-# and leaking a path -- the safe direction for a redaction feature: at worst
-# a little extra text gets swallowed into the placeholder, never a real path
-# left showing. Newlines are still excluded, so this can't swallow past the
-# end of the current line/sentence in a multi-line message.
+# Each path segment matches any run of characters other than the segment
+# separator, a newline, or a colon (not a curated `[\w.\- ]` class) -- a real
+# path component can contain apostrophes, parentheses, plus signs, or
+# anything else a filesystem allows ("/Users/O'Brien's Files/project
+# (backup)"), and a whitelist-style character class only redacts the prefix
+# up to the first character outside it, leaving the identifying suffix
+# (often the actual username) exposed in the written report (confirmed real
+# via Greptile security review, twice -- first for spaces, then again for
+# other punctuation). Matching "anything but the separator" instead of a
+# specific character set trades a small risk of over-matching a bit of
+# trailing prose after a path for never under-matching and leaking a path --
+# the safe direction for a redaction feature. Colon is still excluded
+# because it's the conventional "path: message" separator in linter/tool
+# output (eslint, semgrep, ...) -- without excluding it, one over-matching
+# path would swallow the entire rest of a diagnostic message, not just a
+# little trailing prose. Newlines are excluded for the same multi-line
+# reason as before.
 _ABS_PATH_RE = re.compile(
-    rf"(?<![\w/])(?<!{re.escape(_PLACEHOLDER)})(?:/[\w.\- ]+)+/?|[A-Za-z]:\\(?:[\w.\- \\]+\\)*[\w.\- ]*"
+    rf"(?<![\w/])(?<!{re.escape(_PLACEHOLDER)})(?:/[^/:\n]+)+/?|[A-Za-z]:\\(?:[^\\:\n]+\\)*[^\\:\n]*"
 )
 
 
