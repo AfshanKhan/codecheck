@@ -909,3 +909,28 @@ def test_suggest_fixes_without_cloud_or_local_records_a_skip_not_a_crash(
     json_path = _report_json_path(output_dir)
     data = json.loads(json_path.read_text())
     assert any("suggest_fixes" in entry for entry in data["skipped"])
+
+
+def test_maybe_suggest_fixes_with_default_anthropic_cloud_provider_does_not_crash(
+    tmp_path: Path, monkeypatch
+):
+    # regression (Greptile): AnthropicCloudReviewer (cloud.provider defaults
+    # to "anthropic") isn't an OpenAIProtocolReviewer -- it has no
+    # _get_client()/_resolved_base_url(), so handing it to
+    # generate_suggestions used to raise an uncaught AttributeError *after*
+    # the review findings were already computed, losing the whole run instead
+    # of just skipping the suggestion pass. Tested directly against
+    # _maybe_suggest_fixes (not the full CLI) so this doesn't need a real
+    # network call to verify -- a real ANTHROPIC_API_KEY would make
+    # AnthropicCloudReviewer.is_available() return True, but the fix means it
+    # must never even get that far.
+    from codecheck.cli import _maybe_suggest_fixes
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-not-real")
+    cfg = Config()
+    cfg.cloud.enabled = True  # provider defaults to "anthropic"
+    skipped: list[str] = []
+
+    _maybe_suggest_fixes(True, cfg, [], [], tmp_path, skipped)  # must not raise
+
+    assert any("suggest_fixes" in entry and "Anthropic" in entry for entry in skipped)

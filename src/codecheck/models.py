@@ -190,10 +190,12 @@ class ReviewReport:
         written by an older codecheck version or edited by hand.
         """
         generated_at_raw = data.get("generated_at")
-        try:
-            generated_at = datetime.fromisoformat(generated_at_raw) if generated_at_raw else None
-        except ValueError:
-            generated_at = None
+        generated_at = None
+        if isinstance(generated_at_raw, str) and generated_at_raw:
+            try:
+                generated_at = datetime.fromisoformat(generated_at_raw)
+            except ValueError:
+                generated_at = None
         raw_findings = data.get("findings")
         findings = (
             [f for f in (Finding.from_dict(d) for d in raw_findings if isinstance(d, dict)) if f]

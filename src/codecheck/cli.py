@@ -36,6 +36,7 @@ from codecheck.resume import (
 )
 from codecheck.reviewers.cloud_llm import build_cloud_reviewer, exceeds_audit_cap
 from codecheck.reviewers.local_llm import LocalLLMReviewer
+from codecheck.reviewers.openai_protocol import OpenAIProtocolReviewer
 from codecheck.reviewers.rules_engine import RulesEngineReviewer
 from codecheck.suggest import generate_suggestions
 
@@ -480,15 +481,26 @@ def _maybe_suggest_fixes(
     elsewhere) for a short fix suggestion on each one that doesn't already
     have one -- see codecheck.suggest for why this is a narrower, cheaper ask
     than a full independent review.
+
+    Only an OpenAIProtocolReviewer subclass (OpenAICompatibleCloudReviewer,
+    LocalLLMReviewer) is usable here -- codecheck.suggest.generate_suggestions
+    is written against that shared _get_client()/_resolved_base_url()/
+    config.model interface. AnthropicCloudReviewer (cloud.provider="anthropic",
+    the default) is a separate implementation with none of those, so it's
+    deliberately excluded here rather than handed to generate_suggestions and
+    crashing with an AttributeError -- confirmed as a real bug via Greptile
+    review: the default cloud provider is exactly the one this would have
+    crashed on.
     """
     if not suggest_fixes:
         return
     reviewer = None
     if cfg.cloud.enabled:
         candidate = build_cloud_reviewer(cfg.cloud)
-        available, _reason = candidate.is_available(repo_path)
-        if available:
-            reviewer = candidate
+        if isinstance(candidate, OpenAIProtocolReviewer):
+            available, _reason = candidate.is_available(repo_path)
+            if available:
+                reviewer = candidate
     if reviewer is None and cfg.local.enabled:
         candidate = LocalLLMReviewer(cfg.local)
         available, _reason = candidate.is_available(repo_path)
@@ -496,8 +508,9 @@ def _maybe_suggest_fixes(
             reviewer = candidate
     if reviewer is None:
         skipped.append(
-            "suggest_fixes: requires --cloud or --local with a usable, available provider "
-            "to generate suggestions"
+            "suggest_fixes: requires --cloud (a non-Anthropic, OpenAI-compatible provider -- "
+            "Anthropic isn't supported for suggestions yet) or --local with a usable, "
+            "available provider to generate suggestions"
         )
         return
 

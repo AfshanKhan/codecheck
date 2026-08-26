@@ -54,7 +54,75 @@ def test_redact_leaves_relative_paths_in_skipped_entries_alone():
     assert redacted.skipped[0] == report.skipped[0]  # nothing absolute to scrub here
 
 
-def test_redact_does_not_touch_findings():
+def test_redact_leaves_findings_without_absolute_paths_unchanged():
     report = make_report("/Users/afshan/Workspace/codecheck", [])
     redacted = redact_report(report)
-    assert redacted.findings == report.findings
+    assert redacted.findings[0].title == report.findings[0].title
+    assert redacted.findings[0].explanation == report.findings[0].explanation
+
+
+def test_redact_preserves_filename_after_the_repo_root_is_scrubbed():
+    # regression (found while verifying the raw-payload fix live): scrubbing
+    # in two passes -- the exact repo_path first, then the general
+    # any-absolute-path regex -- used to let the second pass re-match the
+    # leftover "/app.py" remainder as if it were its own fresh absolute path,
+    # turning "<local repo>/app.py" into "<local repo><local repo>" and
+    # losing which file the raw payload was actually about.
+    real_path = "/Users/afshan/Workspace/codecheck"
+    finding = Finding(
+        check_id="RUFF-F401", tier="rules", source="ruff", severity=Severity.LOW,
+        title="F401", explanation="e", file="app/api.py", line_start=1,
+        raw={"filename": f"{real_path}/app/api.py"},
+    )
+    report = ReviewReport(
+        repo_path=real_path, mode="diff", base_ref="main", head_ref="feature",
+        generated_at=datetime(2026, 7, 30, tzinfo=timezone.utc),
+        tiers_run=["rules"], findings=[finding],
+    )
+    redacted = redact_report(report)
+    assert redacted.findings[0].raw["filename"] == "<local repo>/app/api.py"
+
+
+def test_redact_scrubs_absolute_path_out_of_finding_raw_payload():
+    # regression (Greptile, security): ruff's own --output-format=json output
+    # carries an absolute "filename" field, stored unchanged in Finding.raw --
+    # RuffRunner relativizes the *displayed* Finding.file separately, but the
+    # raw payload used to bypass redaction entirely, leaking the real path.
+    real_path = "/Users/afshan/Workspace/codecheck"
+    finding = Finding(
+        check_id="RUFF-F401", tier="rules", source="ruff", severity=Severity.LOW,
+        title="F401: unused import", explanation="Unused import 'os'.",
+        file="app/api.py", line_start=1, line_end=1,
+        raw={"filename": f"{real_path}/app/api.py", "code": "F401", "location": {"row": 1}},
+    )
+    report = ReviewReport(
+        repo_path=real_path, mode="diff", base_ref="main", head_ref="feature",
+        generated_at=datetime(2026, 7, 30, tzinfo=timezone.utc),
+        tiers_run=["rules"], findings=[finding],
+    )
+    redacted = redact_report(report)
+    assert "afshan" not in redacted.findings[0].raw["filename"]
+    assert redacted.findings[0].raw["code"] == "F401"  # non-path fields untouched
+    assert redacted.findings[0].raw["location"] == {"row": 1}  # nested non-string values survive
+
+
+def test_redact_scrubs_absolute_path_out_of_finding_suggestion():
+    real_path = "/Users/afshan/Workspace/codecheck"
+    finding = Finding(
+        check_id="RULE-002", tier="rules", source="house", severity=Severity.HIGH,
+        title="t", explanation="e", file="app/api.py", line_start=1,
+        suggestion=f"See {real_path}/app/api.py for the parameterized version.",
+    )
+    report = ReviewReport(
+        repo_path=real_path, mode="diff", base_ref="main", head_ref="feature",
+        generated_at=datetime(2026, 7, 30, tzinfo=timezone.utc),
+        tiers_run=["rules"], findings=[finding],
+    )
+    redacted = redact_report(report)
+    assert "afshan" not in redacted.findings[0].suggestion
+
+
+def test_redact_does_not_mutate_the_original_findings():
+    report = make_report("/Users/afshan/Workspace/codecheck", [])
+    redact_report(report)
+    assert report.findings[0].raw is None  # unchanged

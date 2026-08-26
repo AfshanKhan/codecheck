@@ -74,6 +74,17 @@ def test_review_report_from_dict_tolerates_missing_fields():
     assert report.tiers_run == []
 
 
+def test_review_report_from_dict_tolerates_non_string_generated_at():
+    # regression (Greptile): datetime.fromisoformat() raises TypeError (not
+    # ValueError) for a non-string argument -- a truthy, non-string,
+    # malformed generated_at (an int, a list, ...) used to escape the
+    # documented "tolerant of a malformed generated_at" fallback and crash
+    # render/compare instead of falling back to now().
+    for bad_value in (12345, ["not", "a", "string"], {"nested": "dict"}, True):
+        report = ReviewReport.from_dict({"generated_at": bad_value})
+        assert isinstance(report.generated_at, datetime)  # fell back, didn't crash
+
+
 def test_review_report_from_dict_drops_malformed_findings_not_the_whole_report():
     data = make_report().to_dict()
     data["findings"].append({"check_id": "RULE-999"})  # missing "file" -- malformed
