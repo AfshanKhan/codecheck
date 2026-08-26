@@ -28,7 +28,7 @@ dependencies = [
 # separately (e.g. `npm install -g eslint`) if you want that sub-runner.
 rules = [
     "ruff>=0.16.4",
-    "semgrep>=1.0",
+    "semgrep>=1.174.0",
 ]
 
 [project.scripts]
