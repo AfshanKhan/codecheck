@@ -34,25 +34,38 @@ _PLACEHOLDER = "<local repo>"
 # pattern) would turn the leftover "/app.py" into a second, redundant
 # placeholder instead of leaving the actual filename visible.
 #
-# Each path segment matches any run of characters other than the segment
+# Interior path segments (ones followed by another separator, so they're
+# bounded on both sides) match any run of characters other than the segment
 # separator, a newline, or a colon (not a curated `[\w.\- ]` class) -- a real
 # path component can contain apostrophes, parentheses, plus signs, or
 # anything else a filesystem allows ("/Users/O'Brien's Files/project
-# (backup)"), and a whitelist-style character class only redacts the prefix
-# up to the first character outside it, leaving the identifying suffix
-# (often the actual username) exposed in the written report (confirmed real
-# via Greptile security review, twice -- first for spaces, then again for
-# other punctuation). Matching "anything but the separator" instead of a
-# specific character set trades a small risk of over-matching a bit of
-# trailing prose after a path for never under-matching and leaking a path --
-# the safe direction for a redaction feature. Colon is still excluded
-# because it's the conventional "path: message" separator in linter/tool
-# output (eslint, semgrep, ...) -- without excluding it, one over-matching
-# path would swallow the entire rest of a diagnostic message, not just a
-# little trailing prose. Newlines are excluded for the same multi-line
-# reason as before.
+# (backup)/app.py"), and a whitelist-style character class only redacts the
+# prefix up to the first character outside it, leaving the identifying
+# suffix (often the actual username) exposed in the written report
+# (confirmed real via Greptile security review, twice -- first for spaces,
+# then again for other punctuation).
+#
+# The FINAL segment (the filename or directory the path actually ends on --
+# unbounded on the right, since nothing marks where the path text stops and
+# unrelated prose begins) is deliberately narrower: it stops at the first
+# whitespace or colon, rather than being just as permissive as an interior
+# segment. Real path components almost always end in a bare filename with no
+# embedded space (app.py, config.json); it's specifically *this* final,
+# open-ended segment that risked swallowing an entire trailing diagnostic
+# message word-by-word when made fully permissive (confirmed real via
+# Greptile review: "at /repo/app.py exceeds size limit, see docs for
+# details" lost everything after "app.py"). This narrows that one specific
+# risk back down -- the rare case of a path's *final* component itself
+# containing a space (a bare directory, not a file, as the very last thing
+# on the line) is a strictly smaller, already-improved-on regression versus
+# matching nothing at all. Colon stays excluded from every segment because
+# it's the conventional "path: message" separator in linter/tool output
+# (eslint, semgrep, ...). Newlines are excluded throughout so this can't
+# swallow past the end of the current line in a multi-line message.
 _ABS_PATH_RE = re.compile(
-    rf"(?<![\w/])(?<!{re.escape(_PLACEHOLDER)})(?:/[^/:\n]+)+/?|[A-Za-z]:\\(?:[^\\:\n]+\\)*[^\\:\n]*"
+    rf"(?<![\w/])(?<!{re.escape(_PLACEHOLDER)})"
+    r"(?:/[^/:\n]+)*/[^/:\n\s]+/?"
+    r"|[A-Za-z]:\\(?:[^\\:\n]+\\)*[^\\:\n\s]*"
 )
 
 
