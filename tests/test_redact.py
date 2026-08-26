@@ -45,6 +45,32 @@ def test_redact_scrubs_absolute_paths_out_of_skipped_entries():
     assert "config error at" in redacted.skipped[0]  # rest of the message survives
 
 
+def test_redact_scrubs_absolute_path_containing_a_space_in_a_component():
+    # regression (Greptile, security): the original regex restricted each
+    # path segment to [\w.\-]+ (no spaces), so a real, common macOS/Windows
+    # path like "/Users/John Doe/project" only had its prefix redacted --
+    # "/Users" got replaced but "/John Doe/project" (the actual identifying
+    # part, often the real username) survived untouched in the report.
+    report = make_report(
+        "/Users/afshan/Workspace/codecheck",
+        ["rules: semgrep: config error at /Users/John Doe/some project/app.js"],
+    )
+    redacted = redact_report(report)
+    assert "John Doe" not in redacted.skipped[0]
+    assert "some project" not in redacted.skipped[0]
+    assert "<local repo>" in redacted.skipped[0]
+
+
+def test_redact_scrubs_spaced_path_and_stops_at_a_clear_terminator():
+    report = make_report(
+        "/Users/afshan/Workspace/codecheck",
+        ["rules: semgrep: at /Users/John Doe/project/app.py: line 5, see the docs"],
+    )
+    redacted = redact_report(report)
+    assert "John Doe" not in redacted.skipped[0]
+    assert "line 5, see the docs" in redacted.skipped[0]  # trailing prose after ":" survives
+
+
 def test_redact_leaves_relative_paths_in_skipped_entries_alone():
     report = make_report(
         "/Users/afshan/Workspace/codecheck",
