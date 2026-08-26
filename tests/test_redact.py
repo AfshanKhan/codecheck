@@ -87,6 +87,26 @@ def test_redact_scrubs_absolute_path_with_apostrophe_parenthesis_and_plus_sign()
     assert "<local repo>" in redacted.skipped[0]
 
 
+def test_redact_preserves_diagnostic_prose_after_a_colon_free_path():
+    # regression (Greptile): making the final path segment as permissive as
+    # interior segments (fixing the apostrophe/parenthesis/plus-sign gap
+    # above) meant a path with no colon after it consumed the entire rest of
+    # the line word-by-word, since nothing marked where the path ended and
+    # ordinary prose began -- "at /repo/app.py exceeds size limit, see docs
+    # for details" lost everything after "app.py". Only the final segment
+    # (the filename) needs to stay narrower than interior ones; it's
+    # unbounded on the right, unlike an interior segment sitting between two
+    # separators.
+    report = make_report(
+        "/Users/afshan/Workspace/codecheck",
+        ["rules: semgrep: at /Users/other/other-project/app.py exceeds size limit, see docs for details"],
+    )
+    redacted = redact_report(report)
+    assert "other-project" not in redacted.skipped[0]
+    assert "<local repo>" in redacted.skipped[0]
+    assert "exceeds size limit, see docs for details" in redacted.skipped[0]
+
+
 def test_redact_leaves_relative_paths_in_skipped_entries_alone():
     report = make_report(
         "/Users/afshan/Workspace/codecheck",
