@@ -15,6 +15,29 @@ class RulesConfig(BaseModel):
     semgrep: bool = True
     house_rules: bool = True
     test_coverage: bool = True
+    # Check IDs to drop from the final report regardless of which sub-runner
+    # produced them (a house rule, or a linter's own code like "RUFF-F401") --
+    # for a check that's noisy or not relevant to a given project, without
+    # having to disable that whole sub-runner.
+    disabled_checks: list[str] = []
+    # Dotted import paths ("your_package.module:YourCheckClass") to extra
+    # HouseCheck subclasses to run alongside the built-in ones -- lets a team
+    # add project-specific rules without forking codecheck itself. Each must
+    # be importable from wherever `codecheck` runs and instantiable with no
+    # arguments. A path that fails to import/instantiate is reported as a
+    # skipped sub-runner, not a crash.
+    extra_checks: list[str] = []
+
+
+class SuggestionsConfig(BaseModel):
+    # Caps the fix-suggestion pass (--suggest-fixes) to at most this many
+    # findings per run, highest-severity first -- it's an extra LLM call per
+    # finding, so an unbounded run on a large diff could be slow and costly.
+    max_per_run: int = 5
+    # Check IDs to never send to the LLM for a suggestion (e.g. a check whose
+    # finding already includes everything needed to fix it, or one covering
+    # something too sensitive to hand to a cloud provider).
+    exclude_checks: list[str] = []
 
 
 class CloudConfig(BaseModel):
@@ -56,6 +79,7 @@ class Config(BaseModel):
     cloud: CloudConfig = CloudConfig()
     local: LocalConfig = LocalConfig()
     thresholds: ThresholdsConfig = ThresholdsConfig()
+    suggestions: SuggestionsConfig = SuggestionsConfig()
 
 
 def load_config(config_path: Path | None) -> Config:

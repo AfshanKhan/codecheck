@@ -37,6 +37,10 @@ touched by the diff.
 | `--device` | none | Which device to use when `local.model` is loaded on more than one at once (a device name, or `local`). Sets LM Studio's LM Link preferred device — see LM Link under [Tier 2 in Architecture](Architecture.md). |
 | `--output-dir` | `./reports` | Where the JSON/markdown/docx reports land. Each run gets a timestamped filename — see "Report filenames" below. |
 | `--resume-from` | none | Path to a prior run's `report.json` — see "Resuming after a rate limit" below. |
+| `--gate` | none | Override `thresholds.fail_on_severity` with a named profile (`strict`/`standard`/`relaxed`) instead of a raw severity value — see "Named gate profiles" below. |
+| `--redact` | off | Scrub locally-identifying details (your machine's absolute repo path) from the written report files before saving — see "Sharing a report externally" below. |
+| `--suggest-fixes` | off | Ask whichever LLM tier is enabled for a short fix suggestion on findings that don't already have one — see "Fix suggestions" below. |
+| `--frappe-db-config` | none | Path to a `site_config.json` for a live Frappe site's database (read-only) — enables RULE-019, which checks DocType field references against that site's real schema. Refused together with `--repo-url`/`--pr` — see "Live Frappe site verification" below. |
 
 #### Reviewing a GitHub PR (`--pr`)
 
@@ -143,6 +147,10 @@ every file is in scope, not just changed lines.
 | `--device` | none | Which device to use when `local.model` is loaded on more than one at once (a device name, or `local`). Sets LM Studio's LM Link preferred device — see LM Link under [Tier 2 in Architecture](Architecture.md). |
 | `--output-dir` | `./reports` | Where the JSON/markdown/docx reports land. Each run gets a timestamped filename — see "Report filenames" below. |
 | `--resume-from` | none | Path to a prior run's `report.json` — see "Resuming after a rate limit" below. |
+| `--gate` | none | Override `thresholds.fail_on_severity` with a named profile (`strict`/`standard`/`relaxed`) instead of a raw severity value — see "Named gate profiles" below. |
+| `--redact` | off | Scrub locally-identifying details (your machine's absolute repo path) from the written report files before saving — see "Sharing a report externally" below. |
+| `--suggest-fixes` | off | Ask whichever LLM tier is enabled for a short fix suggestion on findings that don't already have one — see "Fix suggestions" below. |
+| `--frappe-db-config` | none | Path to a `site_config.json` for a live Frappe site's database (read-only) — enables RULE-019, which checks DocType field references against that site's real schema. Refused together with `--repo-url`/`--pr` — see "Live Frappe site verification" below. |
 
 **Cloud cost cap (both modes):** the cloud tier makes one API call per file. An
 `audit` can mean one call per file in the *entire repo*, and a `diff` is only
@@ -211,17 +219,179 @@ rather than leaving it behind. A crashed or failed run never leaves a
 permanently unusable, empty-looking report sitting at a filename no later run
 can ever reclaim.
 
-### Exit codes (both modes)
+### Named gate profiles (`--gate`)
+
+`thresholds.fail_on_severity` (default `high`) controls the exit-code gate —
+what counts as "bad enough to fail the run." `--gate` is a shorthand for
+setting it without a raw severity value or a config edit:
+
+```bash
+codecheck diff --repo-path . --base-ref main --gate strict    # fails at MEDIUM+
+codecheck audit --repo-path . --gate relaxed                  # fails at CRITICAL only
+```
+
+| Profile | Equivalent `fail_on_severity` | When to reach for it |
+|---|---|---|
+| `strict` | `medium` | A security-sensitive repo, or a final pre-release check where you want every non-trivial finding to block. |
+| `standard` | `high` | The default — same as not passing `--gate` at all. |
+| `relaxed` | `critical` | A legacy codebase still working down a large backlog; only the most severe findings should block merges while everything else gets fixed gradually. |
+
+`--gate` only changes the exit code — every tier still runs the same way and
+every finding still shows up in the report and the console output regardless
+of severity; this just moves the line for what makes the process exit `1`.
+
+### Sharing a report externally (`--redact`)
+
+The written `.json`/`.md`/`.docx` reports include `repo_path` — on a local
+run, this is your machine's absolute filesystem path (e.g.
+`/Users/yourname/work/some-project`), which can reveal your username and
+directory layout to anyone who receives the report file. `--redact` replaces
+it with a placeholder before writing (keeping just the repo's own name, e.g.
+`<local repo> (some-project)`), and scrubs any other absolute path that shows
+up inside a `skipped` entry's message (a linter's own error text can echo one
+back). Nothing else in a report is touched — file paths, check IDs, titles,
+and explanations are already repo-relative or generic.
+
+```bash
+codecheck diff --repo-path . --base-ref main --redact
+```
+
+The terminal output for the run you're watching is never redacted, only the
+files written to `--output-dir` — redaction only matters once a report leaves
+your machine.
+
+### Re-rendering a report (`codecheck render`)
+
+```bash
+codecheck render ./reports/myrepo_audit_20260814_161000.json --output-dir ./reports
+codecheck render ./reports/myrepo_audit_20260814_161000.json --redact --output-dir ./shared
+```
+
+Rebuilds the `.md`/`.docx` (and a fresh `.json`) from an existing report's
+JSON, without re-running any checks — useful after upgrading `codecheck` (to
+pick up a newer reporter's formatting on an old report) or to produce a
+`--redact` copy of a report you already generated, without repeating the
+whole review. The new files get their own timestamped filename in
+`--output-dir`, same naming convention as a live run — the original files are
+never modified.
+
+### Comparing two reports (`codecheck compare`)
+
+```bash
+codecheck compare ./reports/baseline_audit_20260101_090000.json ./reports/latest_audit_20260814_090000.json
+codecheck compare baseline.json latest.json --gate strict
+```
+
+Every `diff`/`audit` run is a snapshot — `compare` looks at two of them side
+by side and shows what changed: findings present in the second report but not
+the first (**newly introduced**), and findings present in the first but not
+the second (**resolved**). A finding's identity across the two reports is
+`(file, check_id, line number)` — close enough that unrelated code shifting a
+few lines around it doesn't spuriously mark it as both resolved and new, but
+specific enough that two different issues don't get confused for one.
+
+Typical use: pin an `audit` of your `main` branch as a baseline periodically
+(weekly, or after a big cleanup), then `compare` a later audit against it to
+see whether the codebase is trending better or worse — a single snapshot
+report can't answer that on its own. Exits `1` if any *newly introduced*
+finding is at or above `thresholds.fail_on_severity` (or `--gate`'s override)
+— wire it into a scheduled CI job to catch a codebase regressing over time,
+not just review one point-in-time state.
+
+### Fix suggestions (`--suggest-fixes`)
+
+Most Tier 1 findings (ruff, house rules) come with a title and an explanation
+of *what's* wrong, but not a ready-made fix. `--suggest-fixes` is an opt-in
+second pass, after the normal review, that asks whichever LLM tier is already
+enabled (`--cloud` preferred if both are on, otherwise `--local`) for a short,
+targeted fix on each eligible finding — one focused question per finding
+("how would you fix this exact, already-identified issue"), not a full
+independent re-review of the file. That narrower scope is deliberate: it's
+cheaper than Tier 2/3's normal file-wide review, and answering one specific
+question is less prone to a plausible-sounding wrong answer than an
+open-ended "find problems in this file" prompt.
+
+```bash
+codecheck diff --repo-path . --base-ref main --cloud --suggest-fixes
+codecheck audit --repo-path . --local --suggest-fixes
+```
+
+Requires `--cloud` or `--local` (or the equivalent `cloud.enabled`/
+`local.enabled` in config) — with neither enabled there's no LLM to ask, and
+the run proceeds normally with a note under "Skipped" rather than failing.
+Capped at `suggestions.max_per_run` findings per run (default `5`,
+highest-severity first — see [Configuration](Configuration.md)), and
+`suggestions.exclude_checks` can list check IDs to never send to the LLM at
+all (e.g. one whose finding already contains everything needed to fix it, or
+one you'd rather not hand to a cloud provider). A finding that already has a
+`suggestion` from its own tier (e.g. a cloud/local-tier finding that came with
+one already) is left alone.
+
+### Live Frappe site verification (`--frappe-db-config`)
+
+Every other check in `codecheck` is purely static — it never executes code
+and never needs credentials for anything beyond the git auth you already have
+configured. `--frappe-db-config` is a narrow, opt-in exception: point it at a
+Frappe site's `site_config.json` and `codecheck` opens a **read-only**
+connection to that site's live MariaDB database, which lets RULE-019 catch
+something no static analysis can ever know — a reference to a DocType field
+that doesn't actually exist on that site (renamed, removed, or just never
+existed in the first place):
+
+```bash
+codecheck audit --repo-path ~/frappe-bench/apps/my_app \
+  --frappe-db-config ~/frappe-bench/sites/mysite.local/site_config.json
+```
+
+RULE-019 checks the statically-resolvable cases: `frappe.db.get_value`/
+`set_value` with a literal doctype and literal fieldname(s), and
+`frappe.get_all`/`get_list` with a literal doctype and a literal `fields=[...]`
+list. It reads `db_name`/`db_password`/`db_type`/`db_host`/`db_port` straight
+out of the `site_config.json` you point it at (the same file your bench
+already uses) — nothing is prompted for or stored, and every query it issues
+is a hardcoded `SELECT` against Frappe's own schema tables (`tabDocType`,
+`tabDocField`, `tabCustom Field`) with parameterized values. It never writes
+to the database and never runs arbitrary SQL.
+
+**Refused together with `--repo-url`/`--pr`.** Querying a live database with
+values derived from code you don't control and trust (an external PR, a
+cloned URL) is a materially different risk than pointing it at your own local
+bench's checkout, so `codecheck` refuses the combination outright rather than
+letting you opt into it by accident.
+
+Requires the `pymysql` extra: `pip install codecheck[frappe-db]` or `uv sync
+--extra frappe-db`. Without it (or with a `site_config.json` this can't parse,
+or a database it can't reach), `codecheck` records a clear skip reason under
+"Skipped" and the rest of the run proceeds normally — it never aborts the
+whole review over this one optional check. Currently supports `db_type:
+mariadb` only, the Frappe default.
+
+### Exit codes
+
+`diff` / `audit`:
 
 - `0` — ran clean, or found nothing at/above the fail threshold.
 - `1` — at least one finding at or above `thresholds.fail_on_severity` (default
-  `high`). This is what you'd wire into CI.
-- `2` — a usage/safety error (bad `base_ref`, no merge base, or the audit cloud
-  cap blocked the run). No report is written in this case. A `base_ref` naming
-  a ref that doesn't exist at all used to crash with a raw Python traceback
-  instead — `git.GitCommandError` from `repo.merge_base()` wasn't caught
-  alongside the other `ValueError` cases in `diff.py`/`cli.py`. Fixed: `get_diff()`
-  now converts it into the same clean `ValueError` → `Error: ...` + exit `2` path.
+  `high`, or `--gate`'s override). This is what you'd wire into CI.
+- `2` — a usage/safety error (bad `base_ref`, no merge base, an invalid
+  `--gate` value, or the audit cloud cap blocked the run). No report is
+  written in this case. A `base_ref` naming a ref that doesn't exist at all
+  used to crash with a raw Python traceback instead — `git.GitCommandError`
+  from `repo.merge_base()` wasn't caught alongside the other `ValueError`
+  cases in `diff.py`/`cli.py`. Fixed: `get_diff()` now converts it into the
+  same clean `ValueError` → `Error: ...` + exit `2` path.
+
+`render`:
+
+- `0` — the report was re-rendered successfully.
+- `2` — the given path doesn't exist, isn't readable, or isn't valid JSON.
+
+`compare`:
+
+- `0` — ran clean, or no newly introduced finding meets the fail threshold.
+- `1` — at least one newly introduced finding is at or above
+  `thresholds.fail_on_severity` (or `--gate`'s override).
+- `2` — either given path doesn't exist, isn't readable, or isn't valid JSON.
 
 ---
 

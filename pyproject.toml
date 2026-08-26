@@ -31,6 +31,14 @@ rules = [
     "semgrep>=1.174.0",
 ]
 
+# Only needed for --frappe-db-config -- a niche, opt-in feature most installs
+# will never touch, so it stays out of the core dependency list. Lazily
+# imported in frappe_db.py with a clear "pip install codecheck[frappe-db]"
+# error if it's missing and that feature is actually requested.
+frappe-db = [
+    "pymysql>=1.1",
+]
+
 [project.scripts]
 codecheck = "codecheck.cli:app"
 

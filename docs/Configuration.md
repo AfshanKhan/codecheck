@@ -8,6 +8,12 @@ rules:
   semgrep: true
   house_rules: true
   test_coverage: true   # RULE-017: diff changes app code but touches no test file (diff mode only)
+  disabled_checks: []   # e.g. ["RULE-009", "RUFF-F401"] -- drop specific check IDs from the report
+                         # regardless of which sub-runner produced them, without disabling that
+                         # whole sub-runner
+  extra_checks: []      # e.g. ["your_package.checks:YourCheck"] -- dotted "module:ClassName"
+                         # paths to project-specific HouseCheck subclasses, run alongside the
+                         # built-ins -- see "Adding project-specific checks" below
 
 cloud:
   enabled: false          # can also be turned on with --cloud
@@ -29,7 +35,12 @@ local:
   request_timeout_seconds: 300   # CPU inference can take minutes per file; raise for slower hardware
 
 thresholds:
-  fail_on_severity: "high"   # one of: info, low, medium, high, critical
+  fail_on_severity: "high"   # one of: info, low, medium, high, critical -- or use --gate on the CLI
+                              # for a named profile (strict/standard/relaxed) instead of a raw value
+
+suggestions:                 # only used when --suggest-fixes is passed (see CLI Reference)
+  max_per_run: 5              # cap on how many findings get a fix suggestion per run, highest severity first
+  exclude_checks: []          # e.g. ["RULE-009"] -- check IDs never sent to the LLM for a suggestion
 ```
 
 **Important gap to know about:** `load_config()` ([config.py](../src/codecheck/config.py))
@@ -91,6 +102,47 @@ cloud:
   model: "your-model-name"
   api_key_env: "VLLM_API_KEY"   # only if your deployment requires auth
 ```
+
+### Adding project-specific checks (`rules.extra_checks`)
+
+The 18 built-in house rules ([Architecture](Architecture.md#house-rules-checks))
+cover general Python/JS/Frappe patterns, but a specific project or org often
+has its own conventions worth enforcing automatically — an internal API
+that's easy to misuse, a naming convention, a deprecated helper nobody should
+call anymore. `rules.extra_checks` lets you register your own `HouseCheck`
+subclasses without forking `codecheck` to add them to the built-in list:
+
+```yaml
+rules:
+  extra_checks:
+    - "your_package.checks.security:NoRawShellCommand"
+    - "your_package.checks.style:RequireDocTypeNamingConvention"
+```
+
+Each entry is a dotted `"module.path:ClassName"` string — importable from
+wherever `codecheck` runs (installed alongside it, or just on `PYTHONPATH`),
+implementing the same `HouseCheck` interface as every built-in check (see
+"Adding a new house rule" in [Architecture](Architecture.md#house-rules-checks)):
+a `check_id`/`title`/`severity`, and `check_file(file_path, content,
+changed_lines) -> list[Finding]`. Loaded checks run in the same per-file loop
+as the built-ins — `codecheck` doesn't distinguish between them once loaded.
+
+A path that fails to import, isn't a `HouseCheck` subclass, or can't be
+instantiated with no arguments is reported the same way a missing linter
+binary is — a line under "Skipped" in the report, not a crash that takes the
+built-in checks down with it.
+
+### Live Frappe site verification (optional)
+
+`--frappe-db-config path/to/site_config.json` is CLI-only, like `--gate` and
+`--redact` — there's no `config.yaml` equivalent, since it names a path
+specific to the machine you're running on. Passing it enables RULE-019, which
+checks DocType field references (`frappe.db.get_value`/`set_value`,
+`frappe.get_all`/`get_list`) against that site's real, live schema — a class
+of bug no static check can otherwise catch, since a field being renamed or
+removed leaves the calling code looking syntactically fine. Full details,
+including the read-only guarantee and why it's refused together with
+`--repo-url`/`--pr`, are in the [CLI reference](CLI-Reference.md#live-frappe-site-verification---frappe-db-config).
 
 ---
 

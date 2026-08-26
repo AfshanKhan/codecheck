@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import sys
@@ -17,10 +18,13 @@ from rich.console import Console
 from codecheck.aggregator import aggregate
 from codecheck.config import Config, load_config
 from codecheck.diff import get_diff, read_file_content
+from codecheck.frappe_db import FrappeDbConnection, FrappeDbUnavailable
 from codecheck.github_source import cloned_repo, parse_pr_url, pr_worktree
 from codecheck.lm_link import resolve_model_location, set_preferred_device
 from codecheck.models import ReviewReport, ReviewTarget, Severity
+from codecheck.redact import redact_report
 from codecheck.repo_scan import get_repo_files
+from codecheck.report_diff import diff_reports
 from codecheck.reporters.console import print_report
 from codecheck.reporters.docx_report import write_docx_report
 from codecheck.reporters.json_report import write_json_report
@@ -33,7 +37,9 @@ from codecheck.resume import (
 )
 from codecheck.reviewers.cloud_llm import build_cloud_reviewer, exceeds_audit_cap
 from codecheck.reviewers.local_llm import LocalLLMReviewer
+from codecheck.reviewers.openai_protocol import OpenAIProtocolReviewer
 from codecheck.reviewers.rules_engine import RulesEngineReviewer
+from codecheck.suggest import generate_suggestions
 
 app = typer.Typer(add_completion=False)
 console = Console()
@@ -239,6 +245,7 @@ def _run_tiers(
     force_local: bool = False,
     device: str | None = None,
     resume_from: Path | None = None,
+    frappe_db: FrappeDbConnection | None = None,
 ) -> tuple[dict[str, list], list[str], list[str], dict[str, str]]:
     """Runs the rules tier and (if available) the local and cloud LLM tiers over
     the given targets. Returns (results_by_tier, tiers_run, skip_reasons,
@@ -266,7 +273,7 @@ def _run_tiers(
 
     current_file_hashes = _compute_current_file_hashes(targets, repo_path)
 
-    rules_reviewer = RulesEngineReviewer(cfg.rules)
+    rules_reviewer = RulesEngineReviewer(cfg.rules, frappe_db=frappe_db)
     available, reason = rules_reviewer.is_available(repo_path)
     if available:
         with console.status("[bold]Running rules engine (ruff/eslint/semgrep/house rules)..."):
@@ -388,10 +395,14 @@ def _claim_unique_basename(output_dir: Path, basename: str) -> str:
             raise
 
 
-def _finish(report: ReviewReport, output_dir: Path, cfg: Config, repo_label: str, pr_number: int | None = None) -> None:
-    console.print()
-    print_report(report, console)
-
+def _write_reports(
+    report: ReviewReport, output_dir: Path, repo_label: str, pr_number: int | None = None
+) -> tuple[Path, Path, Path]:
+    """Claims a unique basename and writes the .json/.md/.docx trio for
+    `report`. Shared by `_finish` (a live diff/audit run) and the `render`
+    command (re-rendering a prior run's .json with no checks re-run), so both
+    get the exact same collision-safe, all-or-nothing write behavior.
+    """
     output_dir.mkdir(parents=True, exist_ok=True)
     basename = _claim_unique_basename(
         output_dir, _report_basename(repo_label, pr_number, report.mode, report.generated_at)
@@ -414,12 +425,152 @@ def _finish(report: ReviewReport, output_dir: Path, cfg: Config, repo_label: str
         for path in (json_path, md_path, docx_path):
             path.unlink(missing_ok=True)
         raise
+    return json_path, md_path, docx_path
+
+
+def _finish(
+    report: ReviewReport,
+    output_dir: Path,
+    cfg: Config,
+    repo_label: str,
+    pr_number: int | None = None,
+    redact: bool = False,
+) -> None:
+    console.print()
+    print_report(report, console)
+
+    report_to_write = redact_report(report) if redact else report
+    json_path, md_path, docx_path = _write_reports(report_to_write, output_dir, repo_label, pr_number)
     console.print(f"\n[dim]Reports written to {json_path}, {md_path}, and {docx_path}[/dim]")
 
     fail_threshold = Severity(cfg.thresholds.fail_on_severity)
     if report.findings_at_or_above(fail_threshold):
         raise typer.Exit(code=1)
     raise typer.Exit(code=0)
+
+
+# Named shorthands for thresholds.fail_on_severity, so a CI pipeline (or a
+# human) can dial the exit-code gate up or down without spelling out a raw
+# severity value or hand-editing config.yaml -- e.g. --gate strict on a
+# security-sensitive repo, --gate relaxed while a legacy codebase is still
+# working down a large backlog of MEDIUM-severity findings.
+_GATE_PROFILES = {"strict": "medium", "standard": "high", "relaxed": "critical"}
+
+
+def _resolve_gate(gate: str | None) -> str | None:
+    if gate is None:
+        return None
+    resolved = _GATE_PROFILES.get(gate)
+    if resolved is None:
+        console.print(
+            f"[red]Error:[/red] --gate must be one of {', '.join(_GATE_PROFILES)}, got {gate!r}."
+        )
+        raise typer.Exit(code=2)
+    return resolved
+
+
+def _maybe_suggest_fixes(
+    suggest_fixes: bool,
+    cfg: Config,
+    findings: list,
+    targets: list[ReviewTarget],
+    repo_path: Path,
+    skipped: list[str],
+) -> None:
+    """--suggest-fixes: an opt-in second pass over the findings that already
+    came back from this run, asking whichever LLM tier is already configured
+    (cloud preferred over local, matching how both tiers can run together
+    elsewhere) for a short fix suggestion on each one that doesn't already
+    have one -- see codecheck.suggest for why this is a narrower, cheaper ask
+    than a full independent review.
+
+    Only an OpenAIProtocolReviewer subclass (OpenAICompatibleCloudReviewer,
+    LocalLLMReviewer) is usable here -- codecheck.suggest.generate_suggestions
+    is written against that shared _get_client()/_resolved_base_url()/
+    config.model interface. AnthropicCloudReviewer (cloud.provider="anthropic",
+    the default) is a separate implementation with none of those, so it's
+    deliberately excluded here rather than handed to generate_suggestions and
+    crashing with an AttributeError -- confirmed as a real bug via Greptile
+    review: the default cloud provider is exactly the one this would have
+    crashed on.
+    """
+    if not suggest_fixes:
+        return
+    reviewer = None
+    cloud_unsupported_reason: str | None = None
+    if cfg.cloud.enabled:
+        candidate = build_cloud_reviewer(cfg.cloud)
+        if isinstance(candidate, OpenAIProtocolReviewer):
+            available, reason = candidate.is_available(repo_path)
+            if available:
+                reviewer = candidate
+            else:
+                cloud_unsupported_reason = reason or "the configured cloud provider isn't available"
+        else:
+            cloud_unsupported_reason = (
+                f"cloud.provider={cfg.cloud.provider!r} isn't supported for suggestions yet "
+                "(Anthropic has no suggestion-compatible client -- use a non-Anthropic, "
+                "OpenAI-compatible cloud provider instead)"
+            )
+    if reviewer is None and cfg.local.enabled:
+        candidate = LocalLLMReviewer(cfg.local)
+        available, _reason = candidate.is_available(repo_path)
+        if available:
+            reviewer = candidate
+            if cloud_unsupported_reason is not None:
+                skipped.append(
+                    f"suggest_fixes: cloud unusable ({cloud_unsupported_reason}) -- "
+                    "falling back to --local for suggestions instead"
+                )
+    if reviewer is None:
+        skipped.append(
+            "suggest_fixes: requires --cloud (a non-Anthropic, OpenAI-compatible provider -- "
+            "Anthropic isn't supported for suggestions yet) or --local with a usable, "
+            "available provider to generate suggestions"
+        )
+        return
+
+    targets_by_path = {t.path: t for t in targets}
+    exclude_checks = set(cfg.suggestions.exclude_checks)
+    with console.status("[bold]Generating fix suggestions..."):
+        count, suggest_skips = generate_suggestions(
+            reviewer, findings, repo_path, targets_by_path, cfg.suggestions.max_per_run, exclude_checks
+        )
+    skipped.extend(suggest_skips)
+    if count:
+        noun = "suggestion" if count == 1 else "suggestions"
+        console.print(f"[dim]Generated {count} fix {noun}.[/dim]")
+
+
+def _connect_frappe_db(
+    frappe_db_config: Path | None, untrusted: bool, skipped: list[str]
+) -> FrappeDbConnection | None:
+    """--frappe-db-config: opens a live connection to a Frappe site's database
+    (for RULE-019 and any future DB-verified checks) if a path was given.
+    Refuses outright when the review target is untrusted code (--repo-url or
+    --pr, not a local --repo-path) -- running live DB queries derived from
+    someone else's code while reviewing a fork/PR you don't control is a
+    materially different risk than reviewing your own local bench, and this
+    feature is only meant for the latter. A connection failure (bad path,
+    wrong credentials, DB unreachable) is recorded as a skip and returns
+    None, same as any other tier that couldn't run, rather than aborting the
+    whole review.
+    """
+    if frappe_db_config is None:
+        return None
+    if untrusted:
+        console.print(
+            "[red]Error:[/red] --frappe-db-config can't be combined with --repo-url/--pr "
+            "-- it runs live database queries derived from the reviewed code's own DocType/"
+            "field names, which isn't safe to do against code you don't control. Use it "
+            "with a local --repo-path only."
+        )
+        raise typer.Exit(code=2)
+    try:
+        return FrappeDbConnection.connect(frappe_db_config)
+    except FrappeDbUnavailable as e:
+        skipped.append(f"frappe_db: {e}")
+        return None
 
 
 @app.command()
@@ -478,9 +629,36 @@ def diff(
             "every time."
         ),
     ),
+    gate: Optional[str] = typer.Option(
+        None, "--gate", help=f"Override thresholds.fail_on_severity via a named profile: {', '.join(_GATE_PROFILES)}."
+    ),
+    redact: bool = typer.Option(
+        False, "--redact", help="Scrub locally-identifying details (e.g. your machine's absolute repo path) from the written reports before they're saved."
+    ),
+    suggest_fixes: bool = typer.Option(
+        False,
+        "--suggest-fixes",
+        help=(
+            "After the normal review, ask whichever LLM tier is enabled (--cloud/--local) "
+            "for a short fix suggestion on findings that don't already have one. Capped at "
+            "suggestions.max_per_run findings (highest severity first); see "
+            "suggestions.exclude_checks to skip specific check IDs entirely."
+        ),
+    ),
+    frappe_db_config: Optional[Path] = typer.Option(
+        None,
+        "--frappe-db-config",
+        help=(
+            "Path to a live Frappe site's site_config.json -- turns on RULE-019 "
+            "(DocType field references verified against the real schema, not guessed "
+            "statically). Read-only; credentials come from the file itself, never "
+            "prompted for or stored. Refuses --repo-url/--pr (untrusted code)."
+        ),
+    ),
 ):
     """Review a git diff: staged changes, a base-ref...HEAD diff, or a GitHub PR
     (by full URL, or by number against --repo-path's existing 'origin')."""
+    resolved_gate = _resolve_gate(gate)
     if staged and pr is not None:
         console.print("[red]Error:[/red] --staged and --pr are mutually exclusive.")
         raise typer.Exit(code=2)
@@ -513,9 +691,17 @@ def diff(
         cfg.cloud.enabled = True
     if local:
         cfg.local.enabled = True
+    if resolved_gate:
+        cfg.thresholds.fail_on_severity = resolved_gate
     repo_label = _repo_label(repo_path, repo_url)
+    untrusted_source = repo_url is not None or pr_number is not None
 
     with ExitStack() as stack:
+        skipped_early: list[str] = []
+        frappe_db = _connect_frappe_db(frappe_db_config, untrusted_source, skipped_early)
+        if frappe_db is not None:
+            stack.callback(frappe_db.close)
+
         if repo_url:
             try:
                 source_repo_path = stack.enter_context(cloned_repo(repo_url, branch=branch))
@@ -564,9 +750,11 @@ def diff(
 
         results, tiers_run, skipped, file_hashes = _run_tiers(
             targets, review_repo_path, cfg, "diff",
-            force_local=force_local, device=device, resume_from=resume_from,
+            force_local=force_local, device=device, resume_from=resume_from, frappe_db=frappe_db,
         )
+        skipped = skipped_early + skipped
         findings = aggregate(results)
+        _maybe_suggest_fixes(suggest_fixes, cfg, findings, targets, review_repo_path, skipped)
 
         report = ReviewReport(
             repo_path=str(source_repo_path),
@@ -581,7 +769,7 @@ def diff(
             skipped=skipped,
             file_hashes=file_hashes,
         )
-        _finish(report, output_dir, cfg, repo_label, pr_number=pr_number)
+        _finish(report, output_dir, cfg, repo_label, pr_number=pr_number, redact=redact)
 
 
 @app.command()
@@ -624,18 +812,53 @@ def audit(
             "every time."
         ),
     ),
+    gate: Optional[str] = typer.Option(
+        None, "--gate", help=f"Override thresholds.fail_on_severity via a named profile: {', '.join(_GATE_PROFILES)}."
+    ),
+    redact: bool = typer.Option(
+        False, "--redact", help="Scrub locally-identifying details (e.g. your machine's absolute repo path) from the written reports before they're saved."
+    ),
+    suggest_fixes: bool = typer.Option(
+        False,
+        "--suggest-fixes",
+        help=(
+            "After the normal review, ask whichever LLM tier is enabled (--cloud/--local) "
+            "for a short fix suggestion on findings that don't already have one. Capped at "
+            "suggestions.max_per_run findings (highest severity first); see "
+            "suggestions.exclude_checks to skip specific check IDs entirely."
+        ),
+    ),
+    frappe_db_config: Optional[Path] = typer.Option(
+        None,
+        "--frappe-db-config",
+        help=(
+            "Path to a live Frappe site's site_config.json -- turns on RULE-019 "
+            "(DocType field references verified against the real schema, not guessed "
+            "statically). Read-only; credentials come from the file itself, never "
+            "prompted for or stored. Refuses --repo-url (untrusted code)."
+        ),
+    ),
 ):
     """Audit the whole repo (every tracked file, plus untracked-but-not-ignored
     files) instead of just a diff."""
+    resolved_gate = _resolve_gate(gate)
     start = time.monotonic()
     cfg = load_config(config)
     if cloud:
         cfg.cloud.enabled = True
     if local:
         cfg.local.enabled = True
+    if resolved_gate:
+        cfg.thresholds.fail_on_severity = resolved_gate
     repo_label = _repo_label(repo_path, repo_url)
+    untrusted_source = repo_url is not None
 
     with ExitStack() as stack:
+        skipped_early: list[str] = []
+        frappe_db = _connect_frappe_db(frappe_db_config, untrusted_source, skipped_early)
+        if frappe_db is not None:
+            stack.callback(frappe_db.close)
+
         if repo_url:
             try:
                 effective_repo_path = stack.enter_context(cloned_repo(repo_url, branch=branch))
@@ -665,9 +888,11 @@ def audit(
 
         results, tiers_run, skipped, file_hashes = _run_tiers(
             targets, effective_repo_path, cfg, "audit",
-            force_local=force_local, device=device, resume_from=resume_from,
+            force_local=force_local, device=device, resume_from=resume_from, frappe_db=frappe_db,
         )
+        skipped = skipped_early + skipped
         findings = aggregate(results)
+        _maybe_suggest_fixes(suggest_fixes, cfg, findings, targets, effective_repo_path, skipped)
 
         report = ReviewReport(
             repo_path=str(effective_repo_path),
@@ -682,7 +907,97 @@ def audit(
             skipped=skipped,
             file_hashes=file_hashes,
         )
-        _finish(report, output_dir, cfg, repo_label)
+        _finish(report, output_dir, cfg, repo_label, redact=redact)
+
+
+def _load_report_file(path: Path) -> ReviewReport:
+    try:
+        data = json.loads(path.read_text())
+    except OSError as e:
+        console.print(f"[red]Error:[/red] could not read {path}: {e}")
+        raise typer.Exit(code=2)
+    except json.JSONDecodeError as e:
+        console.print(f"[red]Error:[/red] {path} is not valid JSON: {e}")
+        raise typer.Exit(code=2)
+    if not isinstance(data, dict):
+        console.print(f"[red]Error:[/red] {path} does not contain a JSON object.")
+        raise typer.Exit(code=2)
+    return ReviewReport.from_dict(data)
+
+
+@app.command()
+def render(
+    report_json: Path = typer.Argument(
+        ..., help="Path to a prior run's .json report (see 'Report filenames' in the docs)."
+    ),
+    output_dir: Path = typer.Option(
+        Path("./reports"), "--output-dir", help="Where the re-rendered reports land."
+    ),
+    redact: bool = typer.Option(
+        False, "--redact", help="Scrub locally-identifying details from the re-rendered reports."
+    ),
+):
+    """Re-render a prior run's .json report as markdown/docx, without re-running
+    any checks. Useful after upgrading codecheck (to get the newer reporter
+    output from an old report) or to produce a --redact copy of a report you
+    already have, without a full re-review."""
+    report = _load_report_file(report_json)
+    # Derive the filename label from the real repo_path before redacting --
+    # otherwise a --redact render's own filename would be built from the
+    # placeholder text instead of an actual repo name.
+    repo_label = _sanitize_slug(Path(report.repo_path).name) or "repo"
+    if redact:
+        report = redact_report(report)
+    json_path, md_path, docx_path = _write_reports(report, output_dir, repo_label)
+    console.print(f"[dim]Reports written to {json_path}, {md_path}, and {docx_path}[/dim]")
+    raise typer.Exit(code=0)
+
+
+@app.command()
+def compare(
+    old_report: Path = typer.Argument(..., help="Path to the earlier run's .json report (the baseline)."),
+    new_report: Path = typer.Argument(..., help="Path to the later run's .json report."),
+    config: Optional[Path] = typer.Option(None, "--config", help="Path to config.yaml (for thresholds.fail_on_severity)."),
+    gate: Optional[str] = typer.Option(
+        None, "--gate", help=f"Override thresholds.fail_on_severity via a named profile: {', '.join(_GATE_PROFILES)}."
+    ),
+):
+    """Compare two prior .json reports (e.g. a baseline audit vs. a later one
+    of the same repo) and show which findings are newly introduced vs.
+    resolved since the baseline. Exits 1 if any newly introduced finding is
+    at or above thresholds.fail_on_severity -- wire this into CI to catch a
+    codebase getting worse over time, not just a single run's snapshot."""
+    old = _load_report_file(old_report)
+    new = _load_report_file(new_report)
+    added, resolved = diff_reports(old, new)
+
+    cfg = load_config(config)
+    resolved_gate = _resolve_gate(gate)
+    if resolved_gate:
+        cfg.thresholds.fail_on_severity = resolved_gate
+
+    console.print(f"[dim]Baseline: {old_report} ({len(old.findings)} finding(s))[/dim]")
+    console.print(f"[dim]Compared: {new_report} ({len(new.findings)} finding(s))[/dim]\n")
+
+    if added:
+        console.print(f"[bold red]{len(added)} newly introduced finding(s):[/bold red]")
+        for f in sorted(added, key=lambda x: (-x.severity.rank, x.file, x.line_start)):
+            console.print(f"  [{f.severity.value.upper()}] {f.file}:{f.line_start} {f.check_id} — {f.title}")
+    else:
+        console.print("[dim]No newly introduced findings.[/dim]")
+
+    console.print()
+    if resolved:
+        console.print(f"[bold green]{len(resolved)} resolved finding(s):[/bold green]")
+        for f in sorted(resolved, key=lambda x: (-x.severity.rank, x.file, x.line_start)):
+            console.print(f"  [{f.severity.value.upper()}] {f.file}:{f.line_start} {f.check_id} — {f.title}")
+    else:
+        console.print("[dim]No resolved findings.[/dim]")
+
+    fail_threshold = Severity(cfg.thresholds.fail_on_severity)
+    if any(f.severity >= fail_threshold for f in added):
+        raise typer.Exit(code=1)
+    raise typer.Exit(code=0)
 
 
 if __name__ == "__main__":

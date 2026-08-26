@@ -153,13 +153,31 @@ the way: its permission check only matched the substring `has_permission`,
 missing the equally-valid `check_permission()` pattern — confirmed as a real
 false positive against a live PR. `RULE-003` here matches both.
 
-Adding a new house rule: subclass `HouseCheck` in `checks/base.py`, implement
-`check_file(file_path, content, changed_lines) -> list[Finding]` (handling
-`changed_lines is None` yourself, and filtering to your own file extension(s)),
-add an instance to `ALL_CHECKS` in `registry.py`. If it's a new extension not
-already passed to `HouseRulesRunner`, extend the suffix tuple in
+Adding a new **built-in** house rule: subclass `HouseCheck` in `checks/base.py`,
+implement `check_file(file_path, content, changed_lines) -> list[Finding]`
+(handling `changed_lines is None` yourself, and filtering to your own file
+extension(s)), add an instance to `ALL_CHECKS` in `registry.py`. If it's a new
+extension not already passed to `HouseRulesRunner`, extend the suffix tuple in
 `HouseRulesRunner.run()` (`reviewers/rules_engine.py`). No wiring needed
 elsewhere.
+
+A **project-specific** check doesn't require touching `codecheck`'s own source
+at all: `rules.extra_checks` in config.yaml takes a list of dotted
+`"module.path:ClassName"` strings, dynamically imported and instantiated by
+`load_extra_checks()` in `checks/registry.py`, then passed into
+`HouseRulesRunner(extra_checks=...)` where they run in the exact same per-file
+loop as the built-ins — a loaded check is indistinguishable from a built-in
+one once running. A path that fails to import, isn't a `HouseCheck` subclass,
+or can't be instantiated with no arguments is caught and reported as a
+`("house_rules.extra_checks", error)` entry in `RulesEngineReviewer.skipped_runners`
+(surfaced the same way a missing linter binary is) rather than raised — one
+bad entry in the list doesn't take the built-in checks down with it. See
+"Adding project-specific checks" in [Configuration](Configuration.md).
+
+`RulesEngineReviewer.review()` also applies `rules.disabled_checks` as a final
+post-filter over every sub-runner's combined output — not just house rules,
+any `check_id` (`RUFF-F401`, `RULE-009`, ...) can be suppressed this way,
+without disabling the sub-runner that produces it.
 
 ### Test-coverage check (`TestCoverageRunner`, `RULE-017`)
 
@@ -610,27 +628,156 @@ report.
 All three file reporters are always written on every run — there's no flag to
 suppress them. `cli._finish()` builds a shared basename for all three via
 `_report_basename()` — see "Report filenames" in [CLI Reference](CLI-Reference.md)
-for the exact naming convention (`<repo>[_pr<N>]_<mode>_<timestamp>`, ported
-from a sibling project's PR-review-report naming, since the previous static
-`report.json`/`report.md` silently overwrote the prior run's report on every
-invocation).
+for the exact naming convention (`<repo>[_pr<N>]_<mode>_<timestamp>`, since the
+previous static `report.json`/`report.md` silently overwrote the prior run's
+report on every invocation). `cli._write_reports()` (the claim-then-write
+logic shared by `_finish` and `render`) is what actually performs the write —
+see "Re-rendering a report" below.
+
+## Redaction, re-rendering, and comparing reports
+
+Three small, independent modules sit on top of `ReviewReport` for the
+`--redact` flag and the `render`/`compare` commands — none of them touch the
+review pipeline itself, they all operate on a `ReviewReport` that's already
+been produced (or reloaded).
+
+- [`redact.py`](../src/codecheck/redact.py) — `redact_report(report)` returns
+  a new `ReviewReport` (never mutates the input) with `repo_path` replaced by
+  a placeholder that keeps just the repo's own directory name, and any
+  absolute-path fragment scrubbed out of `skipped` entries via a regex anchored
+  to not match the internal `/` of an ordinary repo-relative path like
+  `app/api.py` (`(?<![\w/])(?:/[\w.\-]+)+/?`). Findings themselves are left
+  alone — file paths there are already repo-relative or generic. `cli._finish()`
+  applies this to the report *before* writing it to disk when `--redact` is
+  passed, but not to what's printed to the terminal for the run you're
+  actively watching.
+- [`report_diff.py`](../src/codecheck/report_diff.py) — `diff_reports(old,
+  new)` returns `(added, resolved)`: findings whose identity
+  `(file, check_id, line_start)` appears in `new` but not `old`, and vice
+  versa. Line number alone (not an exact range or content match) is
+  deliberate — unrelated lines shifting around a finding shouldn't make it
+  look both resolved and newly introduced. Powers `codecheck compare`.
+- `models.py`'s `Finding.from_dict()`/`ReviewReport.from_dict()` are the
+  inverse of the existing `to_dict()` methods, added so `render`/`compare` can
+  reconstruct a full `ReviewReport` from a prior run's JSON. Deliberately
+  independent from `resume.py`'s own dict-to-`Finding` parsing (which
+  reconstructs a finding *in the context of a specific tier being resumed*,
+  a different, narrower job) — these are general-purpose deserializers,
+  tolerant of a missing/malformed field (dropping just that finding, or
+  falling back to a sane default) rather than raising, since they may be
+  reading a report from an older `codecheck` version or one edited by hand.
+
+`cli.render()` reads a `.json` report back via `ReviewReport.from_dict()`,
+optionally redacts it, and calls the same `_write_reports()` that `_finish()`
+uses for a live run — so a re-rendered report gets the identical
+collision-safe, all-or-nothing write behavior, just skipping the "run every
+check again" part entirely. `cli.compare()` loads two reports the same way,
+calls `diff_reports()`, prints both lists, and exits `1` if any *added*
+finding is at or above the resolved fail threshold — the same threshold
+logic `_finish()` uses, just checked against `added` instead of `report.findings`.
+
+## Fix suggestions (`--suggest-fixes`)
+
+[`suggest.py`](../src/codecheck/suggest.py)'s `generate_suggestions()` fills
+in `Finding.suggestion` in place on a bounded subset of the run's findings —
+sorted by severity (`-f.severity.rank`) and capped at `suggestions.max_per_run`
+(default `5`), excluding any finding that already has a `.suggestion` or whose
+`check_id` is in `suggestions.exclude_checks`, or whose file isn't in the
+current target set. `cli._maybe_suggest_fixes()` (called from both `diff()`
+and `audit()`, after `aggregate()` but before the `ReviewReport` is built)
+picks which already-configured reviewer to reuse — `build_cloud_reviewer(cfg.cloud)`
+if `cloud.enabled` and available, else `LocalLLMReviewer(cfg.local)` if
+`local.enabled` and available, else the whole pass is skipped with a
+`skipped` entry rather than failing the run.
+
+Deliberately reuses an `OpenAIProtocolReviewer` subclass instance purely for
+its already-built `_get_client()`/`_resolved_base_url()`/`config.model` (the
+exact same auth/timeout/base-URL resolution the review tiers themselves use),
+not its `review()` method — the request this module sends is a different,
+narrower shape: one specific finding's title/explanation/line plus the file
+content, asking for a short fix rather than an open-ended list of new
+findings, and no `tools`/`tool_choice` schema is forced, since the response
+here is meant to be read as-is (a suggestion is inherently prose, so there's
+no structured field to parse out of it — unlike a findings list, taking the
+raw response text *is* the intended output, not a "scrape" of it). A
+per-finding HTTP failure is recorded as a `skipped` entry and the pass moves
+on to the next finding, never raised — reusing the same `post_with_retry` /
+`format_http_error` helpers the review tiers already use for that.
+
+## Live Frappe site verification (`--frappe-db-config`, RULE-019)
+
+Every other check in `codecheck` is purely static — a `HouseCheck` only ever
+sees one file's content, never a database or the network. RULE-019 is
+different by necessity: judging whether `frappe.db.get_value('Sales Order',
+name, 'customre')` (a typo) is wrong requires knowing what fields actually
+exist on `Sales Order` *on a specific site*, something no amount of source
+reading can tell you — the DocType's real schema lives in that site's
+database, shaped by both the base app and whatever Custom Fields were added
+through the UI.
+
+That's why RULE-019 isn't a `HouseCheck` in `checks/registry.py` alongside
+the other rules — the `HouseCheck.check_file(file_path, content,
+changed_lines)` signature has no way to hand it a database connection.
+Instead, [`checks/frappe_db_field_check.py`](../src/codecheck/checks/frappe_db_field_check.py)'s
+`FrappeDbFieldCheckRunner` is its own `SubRunner`, constructed with a
+`FrappeDbConnection` and wired into `HouseRulesRunner`'s sibling runner list
+by `RulesEngineReviewer.__init__` only when `--frappe-db-config` produced a
+working connection. It deliberately duck-types the `SubRunner` interface
+(`is_available`/`run`/`name`) instead of importing the ABC from
+`rules_engine.py` — that module already imports *this* one to wire the
+runner in, so importing back would be circular; nothing in
+`RulesEngineReviewer.review()` ever does an `isinstance` check, only calls
+the three methods, so duck-typing is sufficient.
+
+[`frappe_db.py`](../src/codecheck/frappe_db.py)'s `FrappeDbConnection.connect(site_config_path)`
+reads `db_name`/`db_password`/`db_type`/`db_host`/`db_port` out of a real
+`site_config.json` (the same file every Frappe bench already has one of per
+site) and opens a `pymysql` connection using Frappe's own convention that the
+DB username equals `db_name` itself. `doctype_fields(doctype)` is the only
+query surface: a hardcoded, parameterized `SELECT` against `tabDocType` (does
+the DocType exist at all — a typo'd *DocType* name is a different problem
+from a typo'd field name, so an unknown DocType returns `None` and the
+runner treats that as "nothing to judge," not "every field is missing"),
+`tabDocField` (standard fields), and `` `tabCustom Field` `` (fields added
+through the UI, not in source) — unioned with a small hardcoded
+`META_FIELDS` set (`name`, `owner`, `modified`, `parent`, ...) that Frappe
+attaches to every DocType automatically and would otherwise all read as
+false positives. Results are cached per-doctype for the run's lifetime,
+since the same DocType is typically referenced from many files. The
+connection is read-only in practice (every query is a fixed `SELECT`
+string with parameterized values — there is no code path that assembles SQL
+from file content or accepts arbitrary queries).
+
+`cli._connect_frappe_db()` enforces the one guardrail this feature needs:
+refusing to combine `--frappe-db-config` with `--repo-url`/`--pr`. Querying a
+live database using doctype/field names lifted from code you don't control
+and trust (an external PR, a cloned URL) is a materially different risk than
+pointing it at your own local bench's checkout of your own app, so
+`codecheck` refuses the combination outright rather than leaving it as an
+easy-to-miss footgun. A missing `pymysql` install, an unreadable/invalid
+`site_config.json`, or a database `codecheck` can't reach are all treated as
+a graceful skip (`FrappeDbUnavailable`, recorded under `skipped`) — never a
+reason to abort the rest of the run.
 
 ## Project layout
 
 ```
 src/codecheck/
-├── cli.py                  # typer entrypoint: `diff` and `audit` subcommands, shared pipeline helper
-├── config.py                # pydantic Config/RulesConfig/CloudConfig/LocalConfig/ThresholdsConfig + load_config()
-├── models.py                # Finding, Severity, ReviewTarget, ReviewReport
+├── cli.py                  # typer entrypoint: `diff`/`audit`/`render`/`compare` subcommands, shared pipeline helper
+├── config.py                # pydantic Config/RulesConfig/CloudConfig/LocalConfig/ThresholdsConfig/SuggestionsConfig + load_config()
+├── models.py                # Finding, Severity, ReviewTarget, ReviewReport (+ from_dict()/to_dict() on the last two)
 ├── diff.py                  # git diff extraction -> ReviewTarget (staged / base-ref merge-base)
 ├── repo_scan.py              # whole-repo file walk -> ReviewTarget (audit mode)
 ├── github_source.py           # --pr (isolated git worktree fetch) and --repo-url (clone) support
 ├── lm_link.py                  # resolves which device (local vs LM Link remote) serves local.model
 ├── aggregator.py              # cross-tier merge + dedupe
+├── redact.py                   # redact_report() -- scrubs repo_path/absolute paths for --redact
+├── report_diff.py              # diff_reports() -- added/resolved findings between two reports, for `compare`
+├── suggest.py                   # generate_suggestions() -- the --suggest-fixes second pass
 ├── reviewers/
 │   ├── base.py                # Reviewer ABC (is_available / review)
 │   ├── rules_engine.py        # Tier 1: SubRunner ABC + Ruff/Eslint/Semgrep/HouseRules/TestCoverage runners
-│   ├── openai_protocol.py     # shared OpenAI chat-completions request/parsing/loop, used by Tiers 2 and 3
+│   ├── openai_protocol.py     # shared OpenAI chat-completions request/parsing/loop, used by Tiers 2 and 3 (and reused by suggest.py)
 │   ├── local_llm.py           # Tier 2: local OpenAI-compatible server (LM Studio, Ollama, ...), no cost
 │   └── cloud_llm.py           # Tier 3: Anthropic + OpenAI-compatible (Groq/Mistral/Cerebras/OpenRouter/custom) backends, sync httpx, tool-forced JSON, audit cap
 ├── checks/
@@ -643,12 +790,19 @@ src/codecheck/
 │   ├── js_hardcoded_html.py, js_inline_style.py, js_console_debugger.py,
 │   │   js_jquery_dom.py, js_frappe_call_error_handling.py,
 │   │   js_hardcoded_credential.py                      # RULE-010..016 (JS)
-│   └── registry.py             # ALL_CHECKS list, auto-picked-up by HouseRulesRunner
+│   ├── method_too_long.py                              # RULE-018 (Python + async def)
+│   ├── frappe_db_field_check.py                        # RULE-019 (opt-in, needs --frappe-db-config)
+│   └── registry.py             # ALL_CHECKS list + load_extra_checks() for rules.extra_checks
 │       # RULE-017 (test coverage) lives in reviewers/rules_engine.py, not here --
 │       # it's a diff-level SubRunner, not a per-file HouseCheck (see above).
+│       # RULE-019 is also excluded from ALL_CHECKS/registry.py, for the same
+│       # reason plus one more: it needs a live DB connection at construction
+│       # time, so rules_engine.py wires it in directly (see below) rather than
+│       # via the no-argument HouseCheck instantiation the registry assumes.
+├── frappe_db.py                # FrappeDbConnection -- read-only connection to a live Frappe site's DB, for RULE-019
 └── reporters/
     ├── console.py, json_report.py, markdown_report.py, docx_report.py
-tests/                        # pytest, 108 tests total, including CLI-level tests via typer.testing.CliRunner
+tests/                        # pytest, CLI-level tests via typer.testing.CliRunner
 ```
 
 ## Running tests

@@ -5,6 +5,7 @@ import pytest
 
 from codecheck.config import RulesConfig
 from codecheck.diff import get_diff
+from codecheck.models import ReviewTarget
 from codecheck.reviewers.rules_engine import RulesEngineReviewer
 
 
@@ -32,6 +33,72 @@ def sandbox_repo(tmp_path: Path) -> Path:
     run("commit", "-q", "-m", "feature change")
 
     return repo
+
+
+def test_disabled_checks_drops_matching_findings(tmp_path: Path):
+    (tmp_path / "risky.py").write_text("try:\n    pass\nexcept:\n    pass\n")
+    targets = [ReviewTarget(path="risky.py", status="modified", changed_lines={3})]
+
+    reviewer = RulesEngineReviewer(
+        RulesConfig(ruff=False, eslint=False, semgrep=False, house_rules=True, test_coverage=False)
+    )
+    findings = reviewer.review(targets, tmp_path)
+    assert any(f.check_id == "RULE-001" for f in findings)
+
+    reviewer_disabled = RulesEngineReviewer(
+        RulesConfig(
+            ruff=False, eslint=False, semgrep=False, house_rules=True, test_coverage=False,
+            disabled_checks=["RULE-001"],
+        )
+    )
+    findings_disabled = reviewer_disabled.review(targets, tmp_path)
+    assert not any(f.check_id == "RULE-001" for f in findings_disabled)
+
+
+def test_disabled_checks_can_suppress_a_non_house_check_id(tmp_path: Path):
+    # the suppression is a post-filter over every sub-runner's output, not
+    # just house rules -- a ruff/eslint/semgrep code should be suppressible
+    # the same way.
+    (tmp_path / "risky.py").write_text("try:\n    pass\nexcept:\n    pass\n")
+    targets = [ReviewTarget(path="risky.py", status="modified", changed_lines={3})]
+    reviewer = RulesEngineReviewer(
+        RulesConfig(
+            ruff=False, eslint=False, semgrep=False, house_rules=True, test_coverage=False,
+            disabled_checks=["RULE-002", "RULE-999-does-not-exist"],  # unrelated IDs, no-op here
+        )
+    )
+    findings = reviewer.review(targets, tmp_path)
+    assert any(f.check_id == "RULE-001" for f in findings)  # untouched by an unrelated suppression
+
+
+def test_extra_checks_run_alongside_built_ins(tmp_path: Path):
+    (tmp_path / "risky.py").write_text("try:\n    pass\nexcept:\n    pass\n")
+    targets = [ReviewTarget(path="risky.py", status="modified", changed_lines={3})]
+    reviewer = RulesEngineReviewer(
+        RulesConfig(
+            ruff=False, eslint=False, semgrep=False, house_rules=True, test_coverage=False,
+            extra_checks=["codecheck.checks.no_bare_except:NoBareExceptCheck"],
+        )
+    )
+    findings = reviewer.review(targets, tmp_path)
+    # the built-in RULE-001 fires once from ALL_CHECKS, plus once more from
+    # the same check reloaded as an "extra" -- proves it actually ran twice,
+    # not just once from the pre-existing built-in registration.
+    assert sum(1 for f in findings if f.check_id == "RULE-001") == 2
+
+
+def test_bad_extra_check_is_reported_not_crashing(tmp_path: Path):
+    reviewer = RulesEngineReviewer(
+        RulesConfig(
+            ruff=False, eslint=False, semgrep=False, house_rules=True, test_coverage=False,
+            extra_checks=["nonexistent_package.module:SomeCheck"],
+        )
+    )
+    findings = reviewer.review([], tmp_path)
+    assert findings == []
+    skipped = dict(reviewer.skipped_runners)
+    assert "house_rules.extra_checks" in skipped
+    assert "nonexistent_package.module:SomeCheck" in skipped["house_rules.extra_checks"]
 
 
 def test_rule_018_fires_on_deletion_only_change_to_long_function(tmp_path: Path):
