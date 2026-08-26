@@ -12,9 +12,11 @@ import subprocess
 from abc import ABC, abstractmethod
 from pathlib import Path
 
+from codecheck.checks.frappe_db_field_check import FrappeDbFieldCheckRunner
 from codecheck.checks.registry import ALL_CHECKS, load_extra_checks
 from codecheck.config import RulesConfig
 from codecheck.diff import read_file_content
+from codecheck.frappe_db import FrappeDbConnection
 from codecheck.models import Finding, ReviewTarget, Severity
 from codecheck.reviewers.base import Reviewer
 
@@ -392,7 +394,7 @@ class RulesEngineReviewer(Reviewer):
     tier = "rules"
     name = "rules_engine"
 
-    def __init__(self, config: RulesConfig):
+    def __init__(self, config: RulesConfig, frappe_db: FrappeDbConnection | None = None):
         self.config = config
         # Sub-runners that were enabled but couldn't run (tool not installed, no
         # eslint config, etc.), as (runner_name, reason) pairs. Populated by
@@ -417,6 +419,13 @@ class RulesEngineReviewer(Reviewer):
             self._runners.append(HouseRulesRunner(extra_checks=extra_checks))
         if config.test_coverage:
             self._runners.append(TestCoverageRunner())
+        # Only added when --frappe-db-config actually produced a live
+        # connection -- cli.py is responsible for constructing that
+        # connection (and closing it) since it owns the config/CLI-flag
+        # resolution and the process lifetime; RulesEngineReviewer just uses
+        # whatever it's handed.
+        if frappe_db is not None:
+            self._runners.append(FrappeDbFieldCheckRunner(frappe_db))
 
     def is_available(self, repo_path: Path) -> tuple[bool, str | None]:
         if not self.config.enabled or not self._runners:

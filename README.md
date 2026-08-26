@@ -253,6 +253,12 @@ comfortable — full details in the [CLI reference](docs/CLI-Reference.md) and
   the whole check category.
 - **`rules.extra_checks`** in `config.yaml` — plug in your own project-specific
   checks alongside the built-in ones, no fork required.
+- **`--frappe-db-config path/to/site_config.json`** — point at a live Frappe
+  site's database (read-only) to catch a class of bug static analysis can
+  never see: code that references a DocType field that doesn't actually
+  exist on that site (renamed, removed, or just never existed). Opt-in only,
+  and refused together with `--repo-url`/`--pr` — see
+  [Configuration](docs/Configuration.md#live-frappe-site-verification-optional).
 
 ### Troubleshooting
 

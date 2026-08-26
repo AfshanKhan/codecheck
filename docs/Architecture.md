@@ -704,6 +704,61 @@ per-finding HTTP failure is recorded as a `skipped` entry and the pass moves
 on to the next finding, never raised — reusing the same `post_with_retry` /
 `format_http_error` helpers the review tiers already use for that.
 
+## Live Frappe site verification (`--frappe-db-config`, RULE-019)
+
+Every other check in `codecheck` is purely static — a `HouseCheck` only ever
+sees one file's content, never a database or the network. RULE-019 is
+different by necessity: judging whether `frappe.db.get_value('Sales Order',
+name, 'customre')` (a typo) is wrong requires knowing what fields actually
+exist on `Sales Order` *on a specific site*, something no amount of source
+reading can tell you — the DocType's real schema lives in that site's
+database, shaped by both the base app and whatever Custom Fields were added
+through the UI.
+
+That's why RULE-019 isn't a `HouseCheck` in `checks/registry.py` alongside
+the other rules — the `HouseCheck.check_file(file_path, content,
+changed_lines)` signature has no way to hand it a database connection.
+Instead, [`checks/frappe_db_field_check.py`](../src/codecheck/checks/frappe_db_field_check.py)'s
+`FrappeDbFieldCheckRunner` is its own `SubRunner`, constructed with a
+`FrappeDbConnection` and wired into `HouseRulesRunner`'s sibling runner list
+by `RulesEngineReviewer.__init__` only when `--frappe-db-config` produced a
+working connection. It deliberately duck-types the `SubRunner` interface
+(`is_available`/`run`/`name`) instead of importing the ABC from
+`rules_engine.py` — that module already imports *this* one to wire the
+runner in, so importing back would be circular; nothing in
+`RulesEngineReviewer.review()` ever does an `isinstance` check, only calls
+the three methods, so duck-typing is sufficient.
+
+[`frappe_db.py`](../src/codecheck/frappe_db.py)'s `FrappeDbConnection.connect(site_config_path)`
+reads `db_name`/`db_password`/`db_type`/`db_host`/`db_port` out of a real
+`site_config.json` (the same file every Frappe bench already has one of per
+site) and opens a `pymysql` connection using Frappe's own convention that the
+DB username equals `db_name` itself. `doctype_fields(doctype)` is the only
+query surface: a hardcoded, parameterized `SELECT` against `tabDocType` (does
+the DocType exist at all — a typo'd *DocType* name is a different problem
+from a typo'd field name, so an unknown DocType returns `None` and the
+runner treats that as "nothing to judge," not "every field is missing"),
+`tabDocField` (standard fields), and `` `tabCustom Field` `` (fields added
+through the UI, not in source) — unioned with a small hardcoded
+`META_FIELDS` set (`name`, `owner`, `modified`, `parent`, ...) that Frappe
+attaches to every DocType automatically and would otherwise all read as
+false positives. Results are cached per-doctype for the run's lifetime,
+since the same DocType is typically referenced from many files. The
+connection is read-only in practice (every query is a fixed `SELECT`
+string with parameterized values — there is no code path that assembles SQL
+from file content or accepts arbitrary queries).
+
+`cli._connect_frappe_db()` enforces the one guardrail this feature needs:
+refusing to combine `--frappe-db-config` with `--repo-url`/`--pr`. Querying a
+live database using doctype/field names lifted from code you don't control
+and trust (an external PR, a cloned URL) is a materially different risk than
+pointing it at your own local bench's checkout of your own app, so
+`codecheck` refuses the combination outright rather than leaving it as an
+easy-to-miss footgun. A missing `pymysql` install, an unreadable/invalid
+`site_config.json`, or a database `codecheck` can't reach are all treated as
+a graceful skip (`FrappeDbUnavailable`, recorded under `skipped`) — never a
+reason to abort the rest of the run.
+
 ## Project layout
 
 ```
@@ -736,9 +791,15 @@ src/codecheck/
 │   │   js_jquery_dom.py, js_frappe_call_error_handling.py,
 │   │   js_hardcoded_credential.py                      # RULE-010..016 (JS)
 │   ├── method_too_long.py                              # RULE-018 (Python + async def)
+│   ├── frappe_db_field_check.py                        # RULE-019 (opt-in, needs --frappe-db-config)
 │   └── registry.py             # ALL_CHECKS list + load_extra_checks() for rules.extra_checks
 │       # RULE-017 (test coverage) lives in reviewers/rules_engine.py, not here --
 │       # it's a diff-level SubRunner, not a per-file HouseCheck (see above).
+│       # RULE-019 is also excluded from ALL_CHECKS/registry.py, for the same
+│       # reason plus one more: it needs a live DB connection at construction
+│       # time, so rules_engine.py wires it in directly (see below) rather than
+│       # via the no-argument HouseCheck instantiation the registry assumes.
+├── frappe_db.py                # FrappeDbConnection -- read-only connection to a live Frappe site's DB, for RULE-019
 └── reporters/
     ├── console.py, json_report.py, markdown_report.py, docx_report.py
 tests/                        # pytest, CLI-level tests via typer.testing.CliRunner

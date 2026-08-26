@@ -132,6 +132,18 @@ instantiated with no arguments is reported the same way a missing linter
 binary is — a line under "Skipped" in the report, not a crash that takes the
 built-in checks down with it.
 
+### Live Frappe site verification (optional)
+
+`--frappe-db-config path/to/site_config.json` is CLI-only, like `--gate` and
+`--redact` — there's no `config.yaml` equivalent, since it names a path
+specific to the machine you're running on. Passing it enables RULE-019, which
+checks DocType field references (`frappe.db.get_value`/`set_value`,
+`frappe.get_all`/`get_list`) against that site's real, live schema — a class
+of bug no static check can otherwise catch, since a field being renamed or
+removed leaves the calling code looking syntactically fine. Full details,
+including the read-only guarantee and why it's refused together with
+`--repo-url`/`--pr`, are in the [CLI reference](CLI-Reference.md#live-frappe-site-verification---frappe-db-config).
+
 ---
 
 [← Documentation index](Home.md)

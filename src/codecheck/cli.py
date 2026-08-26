@@ -18,6 +18,7 @@ from rich.console import Console
 from codecheck.aggregator import aggregate
 from codecheck.config import Config, load_config
 from codecheck.diff import get_diff, read_file_content
+from codecheck.frappe_db import FrappeDbConnection, FrappeDbUnavailable
 from codecheck.github_source import cloned_repo, parse_pr_url, pr_worktree
 from codecheck.lm_link import resolve_model_location, set_preferred_device
 from codecheck.models import ReviewReport, ReviewTarget, Severity
@@ -244,6 +245,7 @@ def _run_tiers(
     force_local: bool = False,
     device: str | None = None,
     resume_from: Path | None = None,
+    frappe_db: FrappeDbConnection | None = None,
 ) -> tuple[dict[str, list], list[str], list[str], dict[str, str]]:
     """Runs the rules tier and (if available) the local and cloud LLM tiers over
     the given targets. Returns (results_by_tier, tiers_run, skip_reasons,
@@ -271,7 +273,7 @@ def _run_tiers(
 
     current_file_hashes = _compute_current_file_hashes(targets, repo_path)
 
-    rules_reviewer = RulesEngineReviewer(cfg.rules)
+    rules_reviewer = RulesEngineReviewer(cfg.rules, frappe_db=frappe_db)
     available, reason = rules_reviewer.is_available(repo_path)
     if available:
         with console.status("[bold]Running rules engine (ruff/eslint/semgrep/house rules)..."):
@@ -526,6 +528,37 @@ def _maybe_suggest_fixes(
         console.print(f"[dim]Generated {count} fix {noun}.[/dim]")
 
 
+def _connect_frappe_db(
+    frappe_db_config: Path | None, untrusted: bool, skipped: list[str]
+) -> FrappeDbConnection | None:
+    """--frappe-db-config: opens a live connection to a Frappe site's database
+    (for RULE-019 and any future DB-verified checks) if a path was given.
+    Refuses outright when the review target is untrusted code (--repo-url or
+    --pr, not a local --repo-path) -- running live DB queries derived from
+    someone else's code while reviewing a fork/PR you don't control is a
+    materially different risk than reviewing your own local bench, and this
+    feature is only meant for the latter. A connection failure (bad path,
+    wrong credentials, DB unreachable) is recorded as a skip and returns
+    None, same as any other tier that couldn't run, rather than aborting the
+    whole review.
+    """
+    if frappe_db_config is None:
+        return None
+    if untrusted:
+        console.print(
+            "[red]Error:[/red] --frappe-db-config can't be combined with --repo-url/--pr "
+            "-- it runs live database queries derived from the reviewed code's own DocType/"
+            "field names, which isn't safe to do against code you don't control. Use it "
+            "with a local --repo-path only."
+        )
+        raise typer.Exit(code=2)
+    try:
+        return FrappeDbConnection.connect(frappe_db_config)
+    except FrappeDbUnavailable as e:
+        skipped.append(f"frappe_db: {e}")
+        return None
+
+
 @app.command()
 def diff(
     repo_path: Path = typer.Option(Path("."), "--repo-path", help="Path to the git repo."),
@@ -598,6 +631,16 @@ def diff(
             "suggestions.exclude_checks to skip specific check IDs entirely."
         ),
     ),
+    frappe_db_config: Optional[Path] = typer.Option(
+        None,
+        "--frappe-db-config",
+        help=(
+            "Path to a live Frappe site's site_config.json -- turns on RULE-019 "
+            "(DocType field references verified against the real schema, not guessed "
+            "statically). Read-only; credentials come from the file itself, never "
+            "prompted for or stored. Refuses --repo-url/--pr (untrusted code)."
+        ),
+    ),
 ):
     """Review a git diff: staged changes, a base-ref...HEAD diff, or a GitHub PR
     (by full URL, or by number against --repo-path's existing 'origin')."""
@@ -637,8 +680,14 @@ def diff(
     if resolved_gate:
         cfg.thresholds.fail_on_severity = resolved_gate
     repo_label = _repo_label(repo_path, repo_url)
+    untrusted_source = repo_url is not None or pr_number is not None
 
     with ExitStack() as stack:
+        skipped_early: list[str] = []
+        frappe_db = _connect_frappe_db(frappe_db_config, untrusted_source, skipped_early)
+        if frappe_db is not None:
+            stack.callback(frappe_db.close)
+
         if repo_url:
             try:
                 source_repo_path = stack.enter_context(cloned_repo(repo_url, branch=branch))
@@ -687,8 +736,9 @@ def diff(
 
         results, tiers_run, skipped, file_hashes = _run_tiers(
             targets, review_repo_path, cfg, "diff",
-            force_local=force_local, device=device, resume_from=resume_from,
+            force_local=force_local, device=device, resume_from=resume_from, frappe_db=frappe_db,
         )
+        skipped = skipped_early + skipped
         findings = aggregate(results)
         _maybe_suggest_fixes(suggest_fixes, cfg, findings, targets, review_repo_path, skipped)
 
@@ -764,6 +814,16 @@ def audit(
             "suggestions.exclude_checks to skip specific check IDs entirely."
         ),
     ),
+    frappe_db_config: Optional[Path] = typer.Option(
+        None,
+        "--frappe-db-config",
+        help=(
+            "Path to a live Frappe site's site_config.json -- turns on RULE-019 "
+            "(DocType field references verified against the real schema, not guessed "
+            "statically). Read-only; credentials come from the file itself, never "
+            "prompted for or stored. Refuses --repo-url (untrusted code)."
+        ),
+    ),
 ):
     """Audit the whole repo (every tracked file, plus untracked-but-not-ignored
     files) instead of just a diff."""
@@ -777,8 +837,14 @@ def audit(
     if resolved_gate:
         cfg.thresholds.fail_on_severity = resolved_gate
     repo_label = _repo_label(repo_path, repo_url)
+    untrusted_source = repo_url is not None
 
     with ExitStack() as stack:
+        skipped_early: list[str] = []
+        frappe_db = _connect_frappe_db(frappe_db_config, untrusted_source, skipped_early)
+        if frappe_db is not None:
+            stack.callback(frappe_db.close)
+
         if repo_url:
             try:
                 effective_repo_path = stack.enter_context(cloned_repo(repo_url, branch=branch))
@@ -808,8 +874,9 @@ def audit(
 
         results, tiers_run, skipped, file_hashes = _run_tiers(
             targets, effective_repo_path, cfg, "audit",
-            force_local=force_local, device=device, resume_from=resume_from,
+            force_local=force_local, device=device, resume_from=resume_from, frappe_db=frappe_db,
         )
+        skipped = skipped_early + skipped
         findings = aggregate(results)
         _maybe_suggest_fixes(suggest_fixes, cfg, findings, targets, effective_repo_path, skipped)
 

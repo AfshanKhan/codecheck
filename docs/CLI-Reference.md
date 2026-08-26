@@ -40,6 +40,7 @@ touched by the diff.
 | `--gate` | none | Override `thresholds.fail_on_severity` with a named profile (`strict`/`standard`/`relaxed`) instead of a raw severity value — see "Named gate profiles" below. |
 | `--redact` | off | Scrub locally-identifying details (your machine's absolute repo path) from the written report files before saving — see "Sharing a report externally" below. |
 | `--suggest-fixes` | off | Ask whichever LLM tier is enabled for a short fix suggestion on findings that don't already have one — see "Fix suggestions" below. |
+| `--frappe-db-config` | none | Path to a `site_config.json` for a live Frappe site's database (read-only) — enables RULE-019, which checks DocType field references against that site's real schema. Refused together with `--repo-url`/`--pr` — see "Live Frappe site verification" below. |
 
 #### Reviewing a GitHub PR (`--pr`)
 
@@ -149,6 +150,7 @@ every file is in scope, not just changed lines.
 | `--gate` | none | Override `thresholds.fail_on_severity` with a named profile (`strict`/`standard`/`relaxed`) instead of a raw severity value — see "Named gate profiles" below. |
 | `--redact` | off | Scrub locally-identifying details (your machine's absolute repo path) from the written report files before saving — see "Sharing a report externally" below. |
 | `--suggest-fixes` | off | Ask whichever LLM tier is enabled for a short fix suggestion on findings that don't already have one — see "Fix suggestions" below. |
+| `--frappe-db-config` | none | Path to a `site_config.json` for a live Frappe site's database (read-only) — enables RULE-019, which checks DocType field references against that site's real schema. Refused together with `--repo-url`/`--pr` — see "Live Frappe site verification" below. |
 
 **Cloud cost cap (both modes):** the cloud tier makes one API call per file. An
 `audit` can mean one call per file in the *entire repo*, and a `diff` is only
@@ -324,6 +326,45 @@ all (e.g. one whose finding already contains everything needed to fix it, or
 one you'd rather not hand to a cloud provider). A finding that already has a
 `suggestion` from its own tier (e.g. a cloud/local-tier finding that came with
 one already) is left alone.
+
+### Live Frappe site verification (`--frappe-db-config`)
+
+Every other check in `codecheck` is purely static — it never executes code
+and never needs credentials for anything beyond the git auth you already have
+configured. `--frappe-db-config` is a narrow, opt-in exception: point it at a
+Frappe site's `site_config.json` and `codecheck` opens a **read-only**
+connection to that site's live MariaDB database, which lets RULE-019 catch
+something no static analysis can ever know — a reference to a DocType field
+that doesn't actually exist on that site (renamed, removed, or just never
+existed in the first place):
+
+```bash
+codecheck audit --repo-path ~/frappe-bench/apps/my_app \
+  --frappe-db-config ~/frappe-bench/sites/mysite.local/site_config.json
+```
+
+RULE-019 checks the statically-resolvable cases: `frappe.db.get_value`/
+`set_value` with a literal doctype and literal fieldname(s), and
+`frappe.get_all`/`get_list` with a literal doctype and a literal `fields=[...]`
+list. It reads `db_name`/`db_password`/`db_type`/`db_host`/`db_port` straight
+out of the `site_config.json` you point it at (the same file your bench
+already uses) — nothing is prompted for or stored, and every query it issues
+is a hardcoded `SELECT` against Frappe's own schema tables (`tabDocType`,
+`tabDocField`, `tabCustom Field`) with parameterized values. It never writes
+to the database and never runs arbitrary SQL.
+
+**Refused together with `--repo-url`/`--pr`.** Querying a live database with
+values derived from code you don't control and trust (an external PR, a
+cloned URL) is a materially different risk than pointing it at your own local
+bench's checkout, so `codecheck` refuses the combination outright rather than
+letting you opt into it by accident.
+
+Requires the `pymysql` extra: `pip install codecheck[frappe-db]` or `uv sync
+--extra frappe-db`. Without it (or with a `site_config.json` this can't parse,
+or a database it can't reach), `codecheck` records a clear skip reason under
+"Skipped" and the rest of the run proceeds normally — it never aborts the
+whole review over this one optional check. Currently supports `db_type:
+mariadb` only, the Frappe default.
 
 ### Exit codes
 
