@@ -8,6 +8,7 @@ rules:
   semgrep: true
   house_rules: true
   test_coverage: true   # RULE-017: diff changes app code but touches no test file (diff mode only)
+  secrets_scan: true    # RULE-035: an .env file present anywhere in the repo and not covered by .gitignore
   disabled_checks: []   # e.g. ["RULE-009", "RUFF-F401"] -- drop specific check IDs from the report
                          # regardless of which sub-runner produced them, without disabling that
                          # whole sub-runner
