@@ -59,6 +59,12 @@ def _print_summary(report: ReviewReport, console: Console) -> None:
         f"\n[bold]{len(report.findings)} finding(s)[/bold] across "
         f"{len(report.by_file())} file(s) — {summary}"
     )
+    compliance = report.compliance_percentage()
+    compliance_color = "green" if compliance >= 80 else "yellow" if compliance >= 50 else "red"
+    console.print(
+        f"[bold]Compliance: [{compliance_color}]{compliance:.1f}%[/{compliance_color}][/bold] "
+        f"[dim](severity-weighted across {len(report.files_reviewed)} file(s) reviewed)[/dim]"
+    )
     tiers_display = ", ".join(f"{t} ({tier_description(t)})" for t in report.tiers_run)
     console.print(f"[dim]Generated {format_ist(report.generated_at)} — tiers run: {tiers_display}[/dim]")
     sources = sorted({f.source for f in report.findings})

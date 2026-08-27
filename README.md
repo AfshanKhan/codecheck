@@ -127,12 +127,21 @@ After either command, you'll see a table directly in your terminal, like this:
 ╰──────────────────────────────────────────────────────────╯
 
 1 finding(s) across 1 file(s) — 1 high
+Compliance: 25.0% (severity-weighted across 1 file(s) reviewed)
 ```
 
 - **Severity** tells you how serious it is: `CRITICAL`/`HIGH` (fix before
   merging), `MEDIUM` (worth fixing), `LOW`/`INFO` (minor, style-level).
 - **Check** is an ID you can search for if you want more detail (`RULE-002`
   means house rule #2 — see "What does each tier actually check?" below).
+- **Compliance** is a single 0-100% score for the whole run: each reviewed
+  file starts at full credit and loses points for every finding on it,
+  weighted by severity (a CRITICAL costs more than a LOW), floored at zero
+  per file so one badly-flagged file can't drag the rest of the run below
+  what it actually earned. 100% means every reviewed file came back clean.
+  It counts findings from every tier/source (house rules, ruff, eslint,
+  semgrep, LLM) — see `ReviewReport.compliance_percentage()` for the exact
+  weighting.
 - Four report files are also saved for you, every time, in their own
   timestamped subdirectory of `reports/` (`reports/<repo>_pr<N>_<timestamp>/`
   for a `--pr` run, `reports/<repo>_<mode>_<timestamp>/` otherwise), e.g.

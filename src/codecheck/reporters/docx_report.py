@@ -59,6 +59,7 @@ def render_docx(report: ReviewReport) -> docx.Document:
         ("Tiers run", tiers_display),
         ("Files reviewed", str(len(report.files_reviewed))),
         ("Duration", f"{report.duration_seconds:.1f}s"),
+        ("Compliance", f"{report.compliance_percentage():.1f}% (severity-weighted)"),
     ]
     counts = report.counts_by_severity()
     for s in (Severity.CRITICAL, Severity.HIGH, Severity.MEDIUM, Severity.LOW, Severity.INFO):

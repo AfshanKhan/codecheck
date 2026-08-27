@@ -50,6 +50,13 @@ def render_markdown(report: ReviewReport) -> str:
     lines.append(f"**{len(report.findings)} finding(s)** — " + ", ".join(summary_bits) if summary_bits else "**No findings.**")
     lines.append("")
 
+    compliance = report.compliance_percentage()
+    lines.append(
+        f"**Compliance: {compliance:.1f}%** _(severity-weighted across "
+        f"{len(report.files_reviewed)} file(s) reviewed)_"
+    )
+    lines.append("")
+
     tier_bits = [f"`{t}` ({tier_description(t)})" for t in report.tiers_run]
     lines.append(f"_Tiers run: {', '.join(tier_bits)}_")
     lines.append("")

@@ -52,6 +52,15 @@ def test_console_report_shows_ist_timestamp_and_source_legend():
     assert "house = one of codecheck's own built-in rules" in output
 
 
+def test_console_report_shows_compliance_percentage():
+    console = Console(record=True, width=100)
+    print_report(make_report(), console)
+    output = console.export_text()
+    # make_report(): 1 HIGH + 1 LOW on the single reviewed file -- the
+    # combined weight already exceeds that file's max credit, so 0%.
+    assert "Compliance: 0.0%" in output
+
+
 def test_console_report_no_findings():
     console = Console(record=True, width=100)
     empty = ReviewReport(
@@ -105,6 +114,11 @@ def test_markdown_report_shows_repo_ist_timestamp_and_source_legend():
     assert "big_file.py" in md
 
 
+def test_markdown_report_shows_compliance_percentage():
+    md = render_markdown(make_report())
+    assert "**Compliance: 0.0%**" in md
+
+
 def test_markdown_report_no_findings():
     empty = ReviewReport(
         repo_path="/repo", mode="diff", base_ref="main", head_ref=None,
@@ -146,6 +160,11 @@ def test_docx_report_shows_ist_timestamp_and_source_legend():
     assert "How to read the Check column" in text
     assert "one of codecheck's own built-in rules" in text
     assert "the ruff Python linter" in text
+
+
+def test_docx_report_shows_compliance_percentage():
+    text = _docx_text(render_docx(make_report()))
+    assert "0.0% (severity-weighted)" in text
 
 
 def test_docx_report_no_findings():
@@ -208,6 +227,14 @@ def test_xlsx_report_shows_ist_timestamp_and_source_legend():
     assert any(isinstance(v, str) and v.startswith("rules (") for v in values)
     assert "one of codecheck's own built-in rules (RULE-0xx)" in values
     assert "the ruff Python linter" in values
+
+
+def test_xlsx_report_shows_compliance_percentage():
+    wb = render_xlsx(make_report())
+    ws = wb["Summary"]
+    values = [cell.value for row in ws.iter_rows() for cell in row if cell.value is not None]
+    assert "Compliance %" in values
+    assert 0.0 in values
 
 
 def test_xlsx_report_no_findings():

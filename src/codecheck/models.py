@@ -59,6 +59,23 @@ SEVERITY_COLOR = {
     Severity.CRITICAL: "bold red",
 }
 
+# Per-severity weight for ReviewReport.compliance_percentage() -- a
+# proportional extension of the High=3/Medium=2/Low=1 scheme a separate
+# audit tool (frappe-audit-tool) uses for its own "Weighted Compliance %".
+# _MAX_FILE_WEIGHT (== the CRITICAL weight) is the per-file cap: one
+# CRITICAL-equivalent's worth of findings on a single file already costs it
+# all its credit, the same way that tool's FAIL gives a check zero credit
+# regardless of how badly it failed -- a file doesn't go "worse than zero"
+# just because it happens to have five HIGH findings instead of two.
+SEVERITY_WEIGHT = {
+    Severity.CRITICAL: 4.0,
+    Severity.HIGH: 3.0,
+    Severity.MEDIUM: 2.0,
+    Severity.LOW: 1.0,
+    Severity.INFO: 0.5,
+}
+_MAX_FILE_WEIGHT = SEVERITY_WEIGHT[Severity.CRITICAL]
+
 
 @dataclass
 class ReviewTarget:
@@ -162,6 +179,41 @@ class ReviewReport:
             counts[f.severity] += 1
         return counts
 
+    def compliance_percentage(self) -> float:
+        """A single 0-100 score for "how clean is this run", weighted by
+        finding severity -- adapted from a separate audit tool
+        (frappe-audit-tool)'s "Weighted Compliance %", which grades a fixed
+        checklist of PASS/PARTIAL/FAIL checks per category and computes
+        weighted_score / weighted_max * 100 (High/Medium/Low weighted 3/2/1,
+        full credit for PASS, half for PARTIAL, none for FAIL).
+
+        codecheck has no such fixed checklist -- house/ruff/eslint/semgrep/
+        LLM findings are all just violations against an open-ended rule set,
+        with no corresponding "checked, found nothing" record to count as a
+        PASS. The natural unit codecheck *does* enumerate per run is
+        `files_reviewed`, so that's the "check" here: each reviewed file
+        starts with full credit (_MAX_FILE_WEIGHT) and loses that file's
+        findings' severity weight, floored at zero -- the same full-credit
+        -to-zero-credit spread as PASS-to-FAIL, just continuous instead of
+        three discrete steps, since codecheck has no PARTIAL/PASS state to
+        grade against.
+
+        Counts every finding regardless of source (house/ruff/eslint/
+        semgrep/LLM) -- a real violation is a real violation no matter which
+        tier caught it.
+        """
+        if not self.files_reviewed:
+            return 100.0
+        penalty_by_file: dict[str, float] = {}
+        for f in self.findings:
+            penalty_by_file[f.file] = penalty_by_file.get(f.file, 0.0) + SEVERITY_WEIGHT[f.severity]
+        total_score = sum(
+            max(0.0, _MAX_FILE_WEIGHT - penalty_by_file.get(path, 0.0))
+            for path in self.files_reviewed
+        )
+        max_possible = len(self.files_reviewed) * _MAX_FILE_WEIGHT
+        return round((total_score / max_possible) * 100, 1)
+
     def to_dict(self) -> dict:
         return {
             "repo_path": self.repo_path,
@@ -177,6 +229,7 @@ class ReviewReport:
             "counts_by_severity": {
                 s.value: c for s, c in self.counts_by_severity().items()
             },
+            "compliance_percentage": self.compliance_percentage(),
             "findings": [f.to_dict() for f in self.findings],
         }
 
