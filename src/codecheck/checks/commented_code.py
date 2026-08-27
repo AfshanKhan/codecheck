@@ -92,7 +92,7 @@ _JS_CODE_PATTERNS = (
     re.compile(r"^\s*[a-zA-Z_$][\w$]*(?:\.[a-zA-Z_$][\w$]*)*\s*\(.*\)\s*;?\s*$"),  # call
 )
 _JS_LINE_START_RE = re.compile(
-    r"^\s*(?:if|else|for|while|function|switch|try|catch)\b|"
+    r"^\s*(?:if|else|for|while|function|switch|try|catch|const|let|var)\b|"
     r"^\s*[a-zA-Z_$][\w$]*(?:\.[a-zA-Z_$][\w$]*)*\s*\("
 )
 _BRACKETS = {"(": ")", "{": "}", "[": "]"}
@@ -120,6 +120,24 @@ def _js_bracket_balance(text: str) -> int:
         elif ch in _BRACKETS.values():
             balance -= 1
     return balance
+
+
+_PY_CONTINUATION_KEYWORDS = ("elif", "else", "except", "finally")
+
+
+def _looks_like_continuation(text: str) -> bool:
+    """True if `text` (one already-'#'-stripped comment line) opens with
+    elif/else/except/finally -- a clause that can only ever appear as the
+    continuation of a *preceding* if/try statement, never parse as a
+    complete unit on its own. Requires the keyword to actually end there
+    (followed by nothing, a space, or a colon) so this doesn't misfire on
+    a variable named e.g. "elsewhere".
+    """
+    stripped = text.lstrip()
+    for kw in _PY_CONTINUATION_KEYWORDS:
+        if stripped == kw or stripped.startswith((kw + " ", kw + ":")):
+            return True
+    return False
 
 
 def _dehash(line: str, prefix: str) -> str:
@@ -178,6 +196,24 @@ class CommentedOutPythonCodeCheck(HouseCheck):
                 # should only be accepted "as is" once there's genuinely no
                 # more comment lines to pull in as its real body.
                 if _is_commented_python_code("\n".join(block), allow_pass_fallback=False):
+                    # A complete, valid statement -- but if the very next
+                    # comment line is an elif/else/except/finally clause,
+                    # it can only belong to *this* statement (those never
+                    # parse standalone), so keep growing instead of
+                    # finalizing here. Otherwise a commented if/else ends
+                    # up reported as two fragments with the else/elif
+                    # header dropped entirely, since "else:" alone is a
+                    # SyntaxError with nothing before it to attach to
+                    # (caught by CodeRabbit review).
+                    following = j + 1
+                    if (
+                        following < n
+                        and (following - i) < _MAX_BLOCK_LINES
+                        and lines[following].strip().startswith("#")
+                        and _looks_like_continuation(_dehash(lines[following], "#"))
+                    ):
+                        j = following
+                        continue
                     matched_end = j
                     break
                 j += 1

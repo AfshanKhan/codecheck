@@ -509,6 +509,55 @@ def test_commented_out_python_header_only_still_flagged_with_no_body():
     assert (findings[0].line_start, findings[0].line_end) == (1, 1)
 
 
+def test_commented_out_python_if_else_merges_into_one_finding():
+    # regression (CodeRabbit): a parseable `if` suite stopped window growth
+    # before a following elif/else/except/finally clause -- "else:" alone
+    # is a SyntaxError with nothing before it to attach to, so it was never
+    # matched at all (silently dropped), while its own body ("do_b()")
+    # became a separate, unrelated-looking finding.
+    content = "# if x:\n#     do_a()\n# else:\n#     do_b()\n"
+    findings = CommentedOutPythonCodeCheck().check_file("a.py", content, None)
+    assert len(findings) == 1
+    assert (findings[0].line_start, findings[0].line_end) == (1, 4)
+
+
+def test_commented_out_python_try_except_finally_merges_into_one_finding():
+    content = (
+        "# try:\n"
+        "#     risky()\n"
+        "# except ValueError:\n"
+        "#     handle()\n"
+        "# finally:\n"
+        "#     cleanup()\n"
+    )
+    findings = CommentedOutPythonCodeCheck().check_file("a.py", content, None)
+    assert len(findings) == 1
+    assert (findings[0].line_start, findings[0].line_end) == (1, 6)
+
+
+def test_commented_out_python_prose_mentioning_else_not_flagged():
+    content = "# TODO handle this else case differently\n"
+    assert CommentedOutPythonCodeCheck().check_file("a.py", content, None) == []
+
+
+def test_commented_out_js_const_declaration_block_merges_into_one_finding():
+    # regression (CodeRabbit): _JS_LINE_START_RE didn't include const/let/var,
+    # so "// const options = {" with commented properties following it fell
+    # back to the single-line check, which only reported the declaration
+    # line and dropped the rest of the object literal.
+    content = "// const options = {\n//     x: 1,\n//     y: 2\n// };\n"
+    findings = CommentedOutJsCodeCheck().check_file("a.js", content, None)
+    assert len(findings) == 1
+    assert (findings[0].line_start, findings[0].line_end) == (1, 4)
+
+
+def test_commented_out_js_complete_const_line_not_grown_unnecessarily():
+    content = "// const x = 1;\n"
+    findings = CommentedOutJsCodeCheck().check_file("a.js", content, None)
+    assert len(findings) == 1
+    assert (findings[0].line_start, findings[0].line_end) == (1, 1)
+
+
 def test_commented_out_multiline_js_call_flagged():
     content = (
         "// frappe.call({\n"
