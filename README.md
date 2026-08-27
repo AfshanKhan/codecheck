@@ -133,15 +133,15 @@ After either command, you'll see a table directly in your terminal, like this:
   merging), `MEDIUM` (worth fixing), `LOW`/`INFO` (minor, style-level).
 - **Check** is an ID you can search for if you want more detail (`RULE-002`
   means house rule #2 — see "What does each tier actually check?" below).
-- Four report files are also saved for you, every time, in `reports/`:
-  a `.md` (readable, good for pasting into a PR description or Slack), a
-  `.json` (for other tools to read), a `.docx` (for sharing with someone
-  who'd rather open Word), and a `.xlsx` (for filtering/sorting findings in a
-  spreadsheet — the "Findings" sheet's header row already has AutoFilter
-  turned on). Each run gets its own timestamped filename —
-  `<repo>[_pr<N>]_<mode>_<timestamp>.{md,json,docx,xlsx}` (e.g.
-  `codecheck_pr12_20260814_161000.json`) — so re-running never silently
-  overwrites a previous run's report.
+- Four report files are also saved for you, every time, in their own
+  timestamped subdirectory of `reports/` (`reports/<repo>[_pr<N>]_<mode>_<timestamp>/`,
+  e.g. `reports/codecheck_pr12_20260814_161000/`) — never loose files mixed
+  together across every run: a `.md` (readable, good for pasting into a PR
+  description or Slack), a `.json` (for other tools to read), a `.docx` (for
+  sharing with someone who'd rather open Word), and a `.xlsx` (for
+  filtering/sorting findings in a spreadsheet — the "Findings" sheet's header
+  row already has AutoFilter turned on). Each run gets its own subdirectory,
+  so re-running never silently overwrites a previous run's report.
 
 If it says **"No findings"**, nothing was wrong — you're done.
 

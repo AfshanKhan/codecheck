@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import json
-import os
 import re
+import shutil
 import sys
 import time
 from contextlib import ExitStack
@@ -350,84 +350,72 @@ def _report_basename(repo_label: str, pr_number: int | None, mode: str, generate
     return f"{repo_label}_{suffix}_{timestamp}"
 
 
-_REPORT_EXTENSIONS = (".json", ".md", ".docx", ".xlsx")
+def _claim_unique_run_dir(output_dir: Path, basename: str) -> Path:
+    """Each run gets its own subdirectory (`<output_dir>/<basename>/`)
+    holding its `.json`/`.md`/`.docx`/`.xlsx` quartet together, instead of
+    every run's four files landing loose in one shared `--output-dir` --
+    flat, all-runs-mixed-together directory listings turn unreadable fast
+    once there's more than a couple of runs sitting in the same place.
 
-
-def _claim_unique_basename(output_dir: Path, basename: str) -> str:
-    """The timestamp in `basename` only has second resolution, so two runs for
+    The timestamp in `basename` only has second resolution, so two runs for
     the same repo/PR/mode finishing within the same second would otherwise
-    collide and silently overwrite each other's reports. Reserves all four
-    `<candidate>.{json,md,docx,xlsx}` paths with an atomic exclusive-create
-    (O_CREAT | O_EXCL) each, not a check-then-write -- an exists() check
-    followed by a later write has a TOCTOU gap two concurrent codecheck
-    processes could both pass, still overwriting the same paths. Claiming
-    only the `.json` path isn't enough either: a partial leftover (e.g. an
-    interrupted prior run, or the `.json` deleted by hand) could leave one of
-    the others behind with no matching `.json`, and a claim scoped to `.json`
-    alone would then silently overwrite them. If any one of the four is
-    already taken, whatever this candidate did manage to claim is rolled back
-    before moving on to the next suffix, so a candidate is only ever
-    considered "won" once all four are actually free. A non-collision I/O
-    error (permission denied, disk full, ...) on a later extension gets the
-    same rollback treatment, then re-raises rather than silently trying the
-    next suffix -- an error like that will likely fail identically for every
-    candidate, so swallowing it and looping would just leave a trail of
-    empty, permanently-claimed files behind for no benefit.
+    collide and silently overwrite each other's reports. `Path.mkdir()` (no
+    `exist_ok`) is itself an atomic exclusive-create at the OS level (it raises
+    FileExistsError if the directory already exists, the same guarantee the
+    old per-file O_CREAT | O_EXCL claim gave when there were four separate
+    files to individually reserve) -- not a check-then-write, since an
+    exists() check followed by a later write has a TOCTOU gap two concurrent
+    codecheck processes could both pass. A non-collision OSError (permission
+    denied, disk full, ...) re-raises rather than silently trying the next
+    suffix -- an error like that will likely fail identically for every
+    candidate.
     """
     candidate = basename
     suffix = 2
     while True:
-        claimed: list[Path] = []
+        run_dir = output_dir / candidate
         try:
-            for ext in _REPORT_EXTENSIONS:
-                path = output_dir / f"{candidate}{ext}"
-                fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                os.close(fd)
-                claimed.append(path)
-            return candidate
+            run_dir.mkdir()
+            return run_dir
         except FileExistsError:
-            for path in claimed:
-                path.unlink(missing_ok=True)
             candidate = f"{basename}-{suffix}"
             suffix += 1
-        except OSError:
-            for path in claimed:
-                path.unlink(missing_ok=True)
-            raise
 
 
 def _write_reports(
     report: ReviewReport, output_dir: Path, repo_label: str, pr_number: int | None = None
 ) -> tuple[Path, Path, Path, Path]:
-    """Claims a unique basename and writes the .json/.md/.docx/.xlsx quartet
-    for `report`. Shared by `_finish` (a live diff/audit run) and the
-    `render` command (re-rendering a prior run's .json with no checks
-    re-run), so both get the exact same collision-safe, all-or-nothing write
-    behavior.
+    """Claims a unique run directory and writes the .json/.md/.docx/.xlsx
+    quartet for `report` into it. Shared by `_finish` (a live diff/audit
+    run) and the `render` command (re-rendering a prior run's .json with no
+    checks re-run), so both get the exact same collision-safe,
+    all-or-nothing write behavior.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
-    basename = _claim_unique_basename(
-        output_dir, _report_basename(repo_label, pr_number, report.mode, report.generated_at)
-    )
-    json_path = output_dir / f"{basename}.json"
-    md_path = output_dir / f"{basename}.md"
-    docx_path = output_dir / f"{basename}.docx"
-    xlsx_path = output_dir / f"{basename}.xlsx"
+    requested_basename = _report_basename(repo_label, pr_number, report.mode, report.generated_at)
+    run_dir = _claim_unique_run_dir(output_dir, requested_basename)
+    # The actual claimed name, e.g. requested_basename + a "-2" suffix if it
+    # collided -- the four filenames inside always match their own
+    # containing directory's name, never the (possibly stale) requested one.
+    basename = run_dir.name
+    json_path = run_dir / f"{basename}.json"
+    md_path = run_dir / f"{basename}.md"
+    docx_path = run_dir / f"{basename}.docx"
+    xlsx_path = run_dir / f"{basename}.xlsx"
     try:
         write_json_report(report, json_path)
         write_markdown_report(report, md_path)
         write_docx_report(report, docx_path)
         write_xlsx_report(report, xlsx_path)
     except BaseException:
-        # A reporter raising here would otherwise leave this basename
-        # permanently claimed by empty/partial files -- no future run could
-        # ever reuse it (the atomic claim in _claim_unique_basename sees them
-        # as "already exists" forever), and anyone opening one would find an
-        # empty or truncated report. Free the name back up instead: delete
-        # whatever got claimed/written for this basename and let the
-        # original error propagate.
-        for path in (json_path, md_path, docx_path, xlsx_path):
-            path.unlink(missing_ok=True)
+        # A reporter raising here would otherwise leave this run directory
+        # permanently claimed by an empty/partial one -- no future run could
+        # ever reuse this basename (the atomic mkdir claim in
+        # _claim_unique_run_dir sees it as "already exists" forever), and
+        # anyone opening it would find an empty or truncated report. Free it
+        # back up instead: delete the whole run directory (whatever did or
+        # didn't get written into it) and let the original error propagate.
+        shutil.rmtree(run_dir, ignore_errors=True)
         raise
     return json_path, md_path, docx_path, xlsx_path
 
