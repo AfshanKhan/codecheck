@@ -608,6 +608,25 @@ def test_commented_out_js_unclosed_bracket_gives_up_not_flagged():
     assert CommentedOutJsCodeCheck().check_file("a.js", content, None) == []
 
 
+def test_commented_out_js_unclosed_keyword_candidate_not_partially_flagged():
+    # regression (CodeRabbit): an unclosed *keyword*-prefixed candidate
+    # ("const options = {", "if (ready) {") used to fall back to the
+    # generic single-line keyword pattern, which matches "const"/"if"/...
+    # alone regardless of what follows -- so it was still reported as its
+    # own incomplete single-line finding, inconsistent with an unclosed
+    # identifier-call candidate ("frappe.call({"), which already correctly
+    # matched nothing (see the test above).
+    content = (
+        "// const options = {\n"
+        "// this rambles on and never\n"
+        "// closes the brace at all\n"
+    )
+    assert CommentedOutJsCodeCheck().check_file("a.js", content, None) == []
+
+    content2 = "// if (ready) {\n// this rambles on and never closes\n"
+    assert CommentedOutJsCodeCheck().check_file("a.js", content2, None) == []
+
+
 def test_commented_out_js_if_block_merges_into_one_finding():
     # regression (CodeRabbit): "if (ready) {" matched the generic
     # single-line keyword pattern before the open-block detection ever got

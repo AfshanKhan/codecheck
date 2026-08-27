@@ -280,7 +280,8 @@ class CommentedOutJsCodeCheck(HouseCheck):
             first = _dehash(lines[i], "//")
             matched_end = None
             first_balance = _js_bracket_balance(first)
-            if _JS_LINE_START_RE.match(first) and first_balance > 0:
+            is_open_candidate = bool(_JS_LINE_START_RE.match(first)) and first_balance > 0
+            if is_open_candidate:
                 # An open multi-line block ("if (ready) {", "frappe.call({",
                 # ...) -- checked *before* the generic single-line patterns
                 # below, not after: those matched on the keyword/call prefix
@@ -301,7 +302,17 @@ class CommentedOutJsCodeCheck(HouseCheck):
                     balance += _js_bracket_balance(_dehash(lines[j], "//"))
                 if balance <= 0 and j > i:
                     matched_end = j
-            if matched_end is None and _is_commented_js_code(first):
+            # A candidate identified as the start of a multi-line block that
+            # never actually closes (ran off into prose, or hit the line
+            # cap) shouldn't fall back to a single-line match either -- the
+            # keyword-prefix pattern below matches "const"/"if"/... alone
+            # regardless of what follows, so without this guard an unclosed
+            # candidate was still reported as its own (incomplete, partial)
+            # single-line finding, inconsistent with an unclosed
+            # identifier-call candidate ("frappe.call({" with no closing
+            # paren), which already correctly matched nothing at all (caught
+            # by CodeRabbit review).
+            if matched_end is None and not is_open_candidate and _is_commented_js_code(first):
                 matched_end = i
             if matched_end is None:
                 i += 1
