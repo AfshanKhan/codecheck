@@ -13,6 +13,7 @@ dependencies = [
     "pydantic>=2.6",
     "pyyaml>=6.0",
     "python-docx>=1.1",
+    "pathspec>=1.0",
 ]
 
 [project.optional-dependencies]

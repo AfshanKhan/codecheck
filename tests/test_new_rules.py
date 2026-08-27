@@ -315,4 +315,29 @@ def test_nested_env_file_flagged_with_relative_path(tmp_path):
     (nested / ".env").write_text("SECRET=1\n")
     findings = SecretsInRepoRunner().run([], tmp_path)
     assert len(findings) == 1
-    assert findings[0].file == "config/.env"
+
+
+def test_double_star_gitignore_pattern_covers_nested_env_file(tmp_path):
+    nested = tmp_path / "config"
+    nested.mkdir()
+    (nested / ".env").write_text("SECRET=1\n")
+    (tmp_path / ".gitignore").write_text("**/.env\n")
+    assert SecretsInRepoRunner().run([], tmp_path) == []
+
+
+def test_negation_pattern_un_ignores_a_specific_env_file(tmp_path):
+    # regression (Graphite AI review): a hand-rolled gitignore approximation
+    # only compared each pattern string against a short list of fixed
+    # candidates and had no concept of negation -- a broad `.env` ignore
+    # plus a narrower `!committed/.env` un-ignore for one deliberately
+    # tracked file still read as "covered," silently missing exactly the
+    # file this check exists to catch. Now backed by pathspec's real
+    # gitwildmatch semantics, where a later `!pattern` correctly overrides
+    # an earlier match.
+    tracked = tmp_path / "committed"
+    tracked.mkdir()
+    (tracked / ".env").write_text("SECRET=1\n")
+    (tmp_path / ".gitignore").write_text(".env\n!committed/.env\n")
+    findings = SecretsInRepoRunner().run([], tmp_path)
+    assert len(findings) == 1
+    assert findings[0].file == "committed/.env"

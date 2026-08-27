@@ -25,6 +25,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pathspec
+
 from codecheck.models import Finding, ReviewTarget, Severity
 
 
@@ -33,21 +35,26 @@ def _read_gitignore_patterns(repo_path: Path) -> list[str]:
     if not gitignore.is_file():
         return []
     try:
-        lines = gitignore.read_text(encoding="utf-8", errors="ignore").splitlines()
+        return gitignore.read_text(encoding="utf-8", errors="ignore").splitlines()
     except OSError:
         return []
-    return [line.strip() for line in lines if line.strip() and not line.strip().startswith("#")]
 
 
 def _is_ignored(rel_path: str, patterns: list[str]) -> bool:
-    name = rel_path.rsplit("/", 1)[-1]
-    for pattern in patterns:
-        cleaned = pattern.strip("/")
-        if cleaned in (rel_path, name, ".env", "*.env", "**/.env"):
-            return True
-        if cleaned.startswith("*") and name.endswith(cleaned.lstrip("*")):
-            return True
-    return False
+    """Real gitignore semantics (wildcards, directory anchoring, negation --
+    '!path' un-ignoring a file another pattern covers) via `pathspec`'s
+    'gitwildmatch' matcher, rather than a hand-rolled approximation.
+
+    A prior hand-rolled version only handled a few fixed shapes by comparing
+    the pattern string itself against a short list of candidates -- it
+    couldn't recognize a negation pattern at all, so a `.gitignore` with a
+    broad `.env` ignore *and* a narrower `!committed/.env` un-ignore for one
+    deliberately-tracked file would still treat that file as covered and
+    silently miss it, the exact false negative this check exists to catch
+    (caught by Graphite AI review on the PR that introduced this check).
+    """
+    spec = pathspec.PathSpec.from_lines("gitignore", patterns)
+    return spec.match_file(rel_path)
 
 
 class SecretsInRepoRunner:
