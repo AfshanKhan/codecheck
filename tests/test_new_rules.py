@@ -521,6 +521,26 @@ def test_commented_out_python_if_else_merges_into_one_finding():
     assert (findings[0].line_start, findings[0].line_end) == (1, 4)
 
 
+def test_commented_out_python_if_else_merges_across_a_blank_comment_line():
+    # regression (CodeRabbit, round 2): the continuation lookahead above only
+    # ever peeked at the *very next* line -- a blank "#" line deliberately
+    # separating the suite from its continuation clause (a common visual
+    # style) broke the lookahead the same way a missing lookahead did,
+    # silently dropping "else:" and reporting its body as a separate finding.
+    content = "# if x:\n#     do_a()\n#\n# else:\n#     do_b()\n"
+    findings = CommentedOutPythonCodeCheck().check_file("a.py", content, None)
+    assert len(findings) == 1
+    assert (findings[0].line_start, findings[0].line_end) == (1, 5)
+
+
+def test_commented_out_python_if_block_not_merged_with_unrelated_code_after_blank_line():
+    # A blank comment line followed by genuinely unrelated code (not a
+    # continuation clause) must not be swallowed into the previous match.
+    content = "# if x:\n#     do_a()\n#\n# y = 5\n"
+    findings = CommentedOutPythonCodeCheck().check_file("a.py", content, None)
+    assert [(f.line_start, f.line_end) for f in findings] == [(1, 2), (3, 4)]
+
+
 def test_commented_out_python_try_except_finally_merges_into_one_finding():
     content = (
         "# try:\n"

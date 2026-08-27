@@ -204,8 +204,20 @@ class CommentedOutPythonCodeCheck(HouseCheck):
                     # up reported as two fragments with the else/elif
                     # header dropped entirely, since "else:" alone is a
                     # SyntaxError with nothing before it to attach to
-                    # (caught by CodeRabbit review).
+                    # (caught by CodeRabbit review). A blank `#` line can
+                    # sit between the suite and its continuation clause (a
+                    # deliberate visual separator) -- skip past any of
+                    # those first, rather than only ever peeking at the
+                    # very next line, so the continuation is still found
+                    # (also caught by CodeRabbit review, on the fix above).
                     following = j + 1
+                    while (
+                        following < n
+                        and (following - i) < _MAX_BLOCK_LINES
+                        and lines[following].strip().startswith("#")
+                        and not _dehash(lines[following], "#").strip()
+                    ):
+                        following += 1
                     if (
                         following < n
                         and (following - i) < _MAX_BLOCK_LINES
