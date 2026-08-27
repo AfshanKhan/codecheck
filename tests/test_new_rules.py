@@ -627,6 +627,50 @@ def test_commented_out_js_unclosed_keyword_candidate_not_partially_flagged():
     assert CommentedOutJsCodeCheck().check_file("a.js", content2, None) == []
 
 
+def test_commented_out_js_bare_assignment_block_merges_into_one_finding():
+    # regression (CodeRabbit): _JS_LINE_START_RE only recognized
+    # const/let/var-declared and identifier-call open candidates -- a bare
+    # assignment ("options = {"), a multi-line "return build(...)", or a
+    # multi-line "throw new Error(...)" all have an unclosed bracket on
+    # their first line too, but weren't recognized as open candidates at
+    # all, so they fell straight to the single-line fallback (which does
+    # match assignment/return/throw individually) and only ever reported
+    # the first line, silently dropping the rest of the statement.
+    content = "// options = {\n//     x: 1,\n//     y: 2\n// };\n"
+    findings = CommentedOutJsCodeCheck().check_file("a.js", content, None)
+    assert len(findings) == 1
+    assert (findings[0].line_start, findings[0].line_end) == (1, 4)
+
+
+def test_commented_out_js_multiline_return_merges_into_one_finding():
+    content = "// return build(\n//     a,\n//     b\n// );\n"
+    findings = CommentedOutJsCodeCheck().check_file("a.js", content, None)
+    assert len(findings) == 1
+    assert (findings[0].line_start, findings[0].line_end) == (1, 4)
+
+
+def test_commented_out_js_multiline_throw_merges_into_one_finding():
+    content = '// throw new Error(\n//     "bad"\n// );\n'
+    findings = CommentedOutJsCodeCheck().check_file("a.js", content, None)
+    assert len(findings) == 1
+    assert (findings[0].line_start, findings[0].line_end) == (1, 3)
+
+
+def test_commented_out_js_complete_one_line_assignment_and_return_not_grown():
+    content = "// options = {x: 1};\n"
+    findings = CommentedOutJsCodeCheck().check_file("a.js", content, None)
+    assert [(f.line_start, f.line_end) for f in findings] == [(1, 1)]
+
+    content2 = "// return x;\n"
+    findings2 = CommentedOutJsCodeCheck().check_file("a.js", content2, None)
+    assert [(f.line_start, f.line_end) for f in findings2] == [(1, 1)]
+
+
+def test_commented_out_js_unclosed_assignment_not_partially_flagged():
+    content = "// options = {\n// this rambles on and never closes\n"
+    assert CommentedOutJsCodeCheck().check_file("a.js", content, None) == []
+
+
 def test_commented_out_js_if_block_merges_into_one_finding():
     # regression (CodeRabbit): "if (ready) {" matched the generic
     # single-line keyword pattern before the open-block detection ever got

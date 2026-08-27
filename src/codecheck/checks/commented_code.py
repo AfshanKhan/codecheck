@@ -92,8 +92,9 @@ _JS_CODE_PATTERNS = (
     re.compile(r"^\s*[a-zA-Z_$][\w$]*(?:\.[a-zA-Z_$][\w$]*)*\s*\(.*\)\s*;?\s*$"),  # call
 )
 _JS_LINE_START_RE = re.compile(
-    r"^\s*(?:if|else|for|while|function|switch|try|catch|const|let|var)\b|"
-    r"^\s*[a-zA-Z_$][\w$]*(?:\.[a-zA-Z_$][\w$]*)*\s*\("
+    r"^\s*(?:if|else|for|while|function|switch|try|catch|const|let|var|return|throw)\b|"
+    r"^\s*[a-zA-Z_$][\w$]*(?:\.[a-zA-Z_$][\w$]*)*\s*\(|"
+    r"^\s*[a-zA-Z_$][\w$]*(?:\.[a-zA-Z_$][\w$]*)*\s*=[^=]"
 )
 _BRACKETS = {"(": ")", "{": "}", "[": "]"}
 
@@ -283,15 +284,19 @@ class CommentedOutJsCodeCheck(HouseCheck):
             is_open_candidate = bool(_JS_LINE_START_RE.match(first)) and first_balance > 0
             if is_open_candidate:
                 # An open multi-line block ("if (ready) {", "frappe.call({",
-                # ...) -- checked *before* the generic single-line patterns
-                # below, not after: those matched on the keyword/call prefix
-                # alone regardless of whether the line's own brackets were
-                # balanced, so an open header got accepted as its own
+                # "options = {", "return build(", "throw new Error(", ...) --
+                # checked *before* the generic single-line patterns below,
+                # not after: those matched on the keyword/call/assignment
+                # prefix alone regardless of whether the line's own brackets
+                # were balanced, so an open header got accepted as its own
                 # complete single-line finding and its real body (or closing
-                # brace) ended up as a separate, fragmented finding instead
-                # of one combined range (caught by CodeRabbit review). Keep
-                # pulling in following comment lines and tracking bracket
-                # balance until it closes back out, up to the line cap.
+                # brace) ended up as a separate, fragmented finding -- or
+                # dropped outright -- instead of one combined range (caught
+                # by CodeRabbit review, across several shapes: control-flow/
+                # declaration keywords first, then bare assignments and
+                # return/throw). Keep pulling in following comment lines and
+                # tracking bracket balance until it closes back out, up to
+                # the line cap.
                 balance = first_balance
                 j = i
                 while balance > 0 and j + 1 < n and (j + 1 - i) < _MAX_BLOCK_LINES:
