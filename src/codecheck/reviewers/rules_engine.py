@@ -14,6 +14,7 @@ from pathlib import Path
 
 from codecheck.checks.frappe_db_field_check import FrappeDbFieldCheckRunner
 from codecheck.checks.registry import ALL_CHECKS, load_extra_checks
+from codecheck.checks.secrets_in_repo import SecretsInRepoRunner
 from codecheck.config import RulesConfig
 from codecheck.diff import read_file_content
 from codecheck.frappe_db import FrappeDbConnection
@@ -273,8 +274,11 @@ class HouseRulesRunner(SubRunner):
 
     def run(self, targets: list[ReviewTarget], repo_path: Path) -> list[Finding]:
         # .py for the AST-based checks, .js for the regex/line-based Frappe
-        # client-script checks -- each HouseCheck filters by its own extension.
-        py_targets = _filter_targets(targets, (".py", ".js"))
+        # client-script checks, .json for the DocType schema checks
+        # (RULE-022/023) -- each HouseCheck filters by its own extension/path
+        # pattern on top of this, so listing an extension here just makes a
+        # file eligible to be offered to every check, not a match on its own.
+        py_targets = _filter_targets(targets, (".py", ".js", ".json"))
         findings: list[Finding] = []
         for target in py_targets:
             content = read_file_content(repo_path, target)
@@ -419,6 +423,8 @@ class RulesEngineReviewer(Reviewer):
             self._runners.append(HouseRulesRunner(extra_checks=extra_checks))
         if config.test_coverage:
             self._runners.append(TestCoverageRunner())
+        if config.secrets_scan:
+            self._runners.append(SecretsInRepoRunner())
         # Only added when --frappe-db-config actually produced a live
         # connection -- cli.py is responsible for constructing that
         # connection (and closing it) since it owns the config/CLI-flag

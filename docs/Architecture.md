@@ -62,11 +62,12 @@ repo's entire pre-existing lint debt instead of just what changed.
 
 ### House rules (`checks/`)
 
-17 checks registered in [`checks/registry.py`](../src/codecheck/checks/registry.py),
+32 checks registered in [`checks/registry.py`](../src/codecheck/checks/registry.py),
 all accepting `changed_lines: set[int] | None` with the same
 None-means-everything semantics. `HouseRulesRunner` (`reviewers/rules_engine.py`)
-passes both `.py` and `.js` targets — each check filters to its own extension
-internally, so `check_file()` is a no-op on a file type it doesn't handle.
+passes `.py`, `.js`, and `.json` targets — each check filters to its own
+extension/path pattern internally, so `check_file()` is a no-op on a file
+type or path shape it doesn't handle.
 
 **Python checks (AST-based, via the `ast` module) — `RULE-001` through `RULE-009`:**
 
@@ -152,6 +153,64 @@ internally, so `check_file()` is a no-op on a file type it doesn't handle.
 the way: its permission check only matched the substring `has_permission`,
 missing the equally-valid `check_permission()` pattern — confirmed as a real
 false positive against a live PR. `RULE-003` here matches both.
+
+**`RULE-020` through `RULE-034`** — a second batch, independently designed
+(not ported) to cover a broader set of Frappe app-review concerns than
+`RULE-001`-`RULE-018` did on their own:
+
+- **`RULE-020`** — `hooks.py` contains something other than a plain
+  assignment/import at module level (`checks/hooks_structure.py`), severity
+  `LOW`. `hooks.py` is read by Frappe at app boot and is expected to stay
+  purely declarative.
+- **`RULE-021`** — `hooks.py` sets a non-empty `override_doctype_class`
+  (`checks/hooks_structure.py`), severity `MEDIUM` — a sharp, easy-to-forget
+  edge that can break silently on a framework upgrade.
+- **`RULE-022`** — a DocType definition file
+  (`.../doctype/<name>/<name>.json`) that isn't valid JSON
+  (`checks/doctype_schema.py`), severity `MEDIUM` — breaks `bench migrate`.
+- **`RULE-023`** — a DocType field's `default` value looks like a JSON blob
+  (`checks/doctype_schema.py`), severity `LOW` — usually means the field
+  should be a child table instead of plain text.
+- **`RULE-024`** — an outbound HTTP call (`requests.*`,
+  `urllib.request.urlopen`) inside a document lifecycle hook (`validate`,
+  `before_save`, `on_submit`, ...) (`checks/blocking_call_in_doc_event.py`),
+  severity `MEDIUM`.
+- **`RULE-025`** — synchronous PDF generation (`frappe.get_pdf`/`get_print`,
+  `pdf.make`) inside the same set of lifecycle hooks
+  (`checks/blocking_call_in_doc_event.py`), severity `LOW`. `RULE-024` and
+  `RULE-025` share one AST visitor (own-scope-only, same reachability
+  approach as `RULE-003`) but were deliberately given *dissimilar* titles —
+  a first version with near-identical boilerplate titles ("... inside a
+  document lifecycle hook") on two adjacent lines tripped the aggregator's
+  cross-check dedup heuristic (line-window + title-similarity, see
+  "Deduplication" below) and silently dropped one of two genuinely distinct
+  findings.
+- **`RULE-026`** — a `.save()` call inside a loop
+  (`checks/save_in_loop.py`), severity `LOW` — the write-side equivalent of
+  `RULE-004`'s read-side N+1 check.
+- **`RULE-027`** — a file using both `frappe.call` and `.then(` with no
+  `async` keyword anywhere (`checks/js_async_await_suggestion.py`), severity
+  `LOW` — a suggestion, not a correctness issue.
+- **`RULE-028`** — `document.getElementById`/`querySelector`/`.innerHTML`
+  (`checks/js_direct_dom.py`), severity `LOW` — the vanilla-JS-DOM
+  equivalent of `RULE-014`'s jQuery-specific check.
+- **`RULE-029`** — a client script longer than 200 lines
+  (`checks/js_client_script_length.py`), severity `LOW`.
+- **`RULE-030`**/**`RULE-031`** — a comment that parses as real code rather
+  than prose (`checks/commented_code.py`), severity `LOW` each. `RULE-030`
+  (Python) tries to `ast.parse()` the comment's text; `RULE-031` (JS, no
+  parser available) falls back to a smaller set of "looks like code"
+  regexes on single-line `//` comments only, to keep the false-positive rate
+  down.
+- **`RULE-032`** — a numeric literal (other than `0`/`1`/`-1`/`2`/`100`) used
+  directly in a calculation or comparison instead of a named constant
+  (`checks/magic_number.py`), severity `LOW`.
+- **`RULE-033`** — a function/method with no docstring
+  (`checks/missing_docstring.py`), severity `INFO`. Skips
+  private/dunder names (`_helper`, `__init__`) to keep volume down — not
+  present in whatever this was inspired by, added here deliberately.
+- **`RULE-034`** — a function parameter with a boolean default value
+  (`checks/boolean_flag_param.py`), severity `INFO`.
 
 Adding a new **built-in** house rule: subclass `HouseCheck` in `checks/base.py`,
 implement `check_file(file_path, content, changed_lines) -> list[Finding]`
@@ -704,6 +763,24 @@ per-finding HTTP failure is recorded as a `skipped` entry and the pass moves
 on to the next finding, never raised — reusing the same `post_with_retry` /
 `format_http_error` helpers the review tiers already use for that.
 
+### Committed secrets check (`SecretsInRepoRunner`, `RULE-035`)
+
+Another repo-wide `SubRunner`, same shape as `TestCoverageRunner`: it needs
+to see the whole tree at once (every `.env` under `repo_path`, plus the
+repo's own `.gitignore`), which a `HouseCheck` (one file's content at a
+time) can't provide. `checks/secrets_in_repo.py` duck-types the `SubRunner`
+interface instead of importing the ABC from `rules_engine.py`, for the same
+circular-import reason `RULE-019`'s runner does (that module imports this
+one to wire the runner in). Gated by `rules.secrets_scan` in config.yaml
+(default `True`), same pattern as `rules.test_coverage`.
+
+Deliberately narrow: it only flags a `.env` file present in the checkout and
+not matched by any `.gitignore` pattern — it doesn't try to detect a secret
+*inside* file content beyond that (`RULE-009`/`RULE-016` already do that,
+wherever a hardcoded-looking literal appears in reviewed source). What this
+catches that those can't: the file being committed at all, independent of
+whatever it currently contains.
+
 ## Live Frappe site verification (`--frappe-db-config`, RULE-019)
 
 Every other check in `codecheck` is purely static — a `HouseCheck` only ever
@@ -791,14 +868,21 @@ src/codecheck/
 │   │   js_jquery_dom.py, js_frappe_call_error_handling.py,
 │   │   js_hardcoded_credential.py                      # RULE-010..016 (JS)
 │   ├── method_too_long.py                              # RULE-018 (Python + async def)
+│   ├── hooks_structure.py, doctype_schema.py, blocking_call_in_doc_event.py,
+│   │   save_in_loop.py, commented_code.py (Python half), magic_number.py,
+│   │   missing_docstring.py, boolean_flag_param.py                    # RULE-020..026, 030, 032..034
+│   ├── js_async_await_suggestion.py, js_direct_dom.py,
+│   │   js_client_script_length.py, commented_code.py (JS half)        # RULE-027..029, 031
 │   ├── frappe_db_field_check.py                        # RULE-019 (opt-in, needs --frappe-db-config)
+│   ├── secrets_in_repo.py                               # RULE-035 (opt-out via rules.secrets_scan)
 │   └── registry.py             # ALL_CHECKS list + load_extra_checks() for rules.extra_checks
 │       # RULE-017 (test coverage) lives in reviewers/rules_engine.py, not here --
 │       # it's a diff-level SubRunner, not a per-file HouseCheck (see above).
-│       # RULE-019 is also excluded from ALL_CHECKS/registry.py, for the same
-│       # reason plus one more: it needs a live DB connection at construction
-│       # time, so rules_engine.py wires it in directly (see below) rather than
-│       # via the no-argument HouseCheck instantiation the registry assumes.
+│       # RULE-019 and RULE-035 are also excluded from ALL_CHECKS/registry.py, for
+│       # the same reason plus one more each: RULE-019 needs a live DB connection
+│       # at construction time, and RULE-035 needs the whole repo tree at once, not
+│       # one file -- rules_engine.py wires both in directly (see below) rather
+│       # than via the no-argument HouseCheck instantiation the registry assumes.
 ├── frappe_db.py                # FrappeDbConnection -- read-only connection to a live Frappe site's DB, for RULE-019
 └── reporters/
     ├── console.py, json_report.py, markdown_report.py, docx_report.py

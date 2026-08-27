@@ -15,6 +15,7 @@ class RulesConfig(BaseModel):
     semgrep: bool = True
     house_rules: bool = True
     test_coverage: bool = True
+    secrets_scan: bool = True
     # Check IDs to drop from the final report regardless of which sub-runner
     # produced them (a house rule, or a linter's own code like "RUFF-F401") --
     # for a check that's noisy or not relevant to a given project, without

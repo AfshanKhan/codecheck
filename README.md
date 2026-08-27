@@ -204,6 +204,22 @@ nothing.
 | `RULE-016` (house rule) | A JS variable named like a secret assigned a hardcoded string |
 | `RULE-017` (house rule) | A diff changes non-trivial application code but touches no test file (`diff` mode only) |
 | `RULE-018` (house rule) | A function/method longer than 50 lines |
+| `RULE-019` (house rule, opt-in) | A DocType field reference that doesn't exist on a live site — needs `--frappe-db-config` |
+| `RULE-020` (house rule) | `hooks.py` contains logic, not just declarative configuration |
+| `RULE-021` (house rule) | `hooks.py` overrides a standard DocType's controller class |
+| `RULE-022` (house rule) | A DocType JSON definition file that isn't valid JSON |
+| `RULE-023` (house rule) | A JSON blob stored as a text field's default value, instead of a child table |
+| `RULE-024` (house rule) | A blocking HTTP call inside a document lifecycle hook (`validate`, `on_submit`, ...) |
+| `RULE-025` (house rule) | Synchronous PDF generation inside a document lifecycle hook |
+| `RULE-026` (house rule) | A `.save()` call inside a loop, instead of a bulk update |
+| `RULE-027` (house rule) | A `frappe.call()` Promise chain that could use async/await |
+| `RULE-028` (house rule) | Direct DOM manipulation (`document.getElementById`, `.innerHTML`) instead of the frm/dialog APIs |
+| `RULE-029` (house rule) | A client script longer than 200 lines |
+| `RULE-030`/`RULE-031` (house rule) | A comment that looks like commented-out code, not an explanation (Python/JS) |
+| `RULE-032` (house rule) | A magic number used directly in a calculation or comparison |
+| `RULE-033` (house rule) | A function with no docstring |
+| `RULE-034` (house rule) | A function parameter with a boolean default value |
+| `RULE-035` (house rule) | A committed `.env` file not covered by `.gitignore` |
 
 `ruff`, `eslint`, and `semgrep` all need to actually be installed — see step 1
 above if you haven't yet. Any of these that are missing are just skipped, not
