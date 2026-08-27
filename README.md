@@ -219,7 +219,7 @@ nothing.
 | `RULE-032` (house rule) | A magic number used directly in a calculation or comparison |
 | `RULE-033` (house rule) | A function with no docstring |
 | `RULE-034` (house rule) | A function parameter with a boolean default value |
-| `RULE-035` (house rule) | A committed `.env` file not covered by `.gitignore` |
+| `RULE-035` (house rule) | An `.env` file present in the checkout and not covered by `.gitignore` |
 
 `ruff`, `eslint`, and `semgrep` all need to actually be installed — see step 1
 above if you haven't yet. Any of these that are missing are just skipped, not

@@ -41,7 +41,7 @@ ran and found nothing.
 | `RuffRunner` | `ruff` on `PATH` | Runs `ruff check --output-format=json -- <targets>` on `.py` targets. |
 | `EslintRunner` | An eslint config file exists in the repo root (`.eslintrc*`, `eslint.config.{js,mjs,cjs}`) **and** a `PATH`-resolved `eslint` binary is found — the reviewed repo's own `node_modules/.bin/eslint` is deliberately never run (see "Security considerations"). | Runs `eslint --format=json -- <targets>` on `.js/.jsx/.ts/.tsx` targets. |
 | `SemgrepRunner` | `semgrep` on `PATH` | Runs `semgrep --config=auto --metrics=off --json --quiet -- <targets>` on all non-deleted targets (language-agnostic; `--metrics=off` disables scan telemetry). |
-| `HouseRulesRunner` | always available | Runs the checks in `checks/registry.py` against `.py` targets' current content. |
+| `HouseRulesRunner` | always available | Runs the checks in `checks/registry.py` against `.py`/`.js`/`.json` targets' current content. |
 
 **Line scoping:** every Tier 1 finding is filtered through `_line_in_scope()` —
 if `target.changed_lines` is a set (diff mode), only lines in it pass; if it's
@@ -763,23 +763,27 @@ per-finding HTTP failure is recorded as a `skipped` entry and the pass moves
 on to the next finding, never raised — reusing the same `post_with_retry` /
 `format_http_error` helpers the review tiers already use for that.
 
-### Committed secrets check (`SecretsInRepoRunner`, `RULE-035`)
+### Uncovered `.env` file check (`SecretsInRepoRunner`, `RULE-035`)
 
 Another repo-wide `SubRunner`, same shape as `TestCoverageRunner`: it needs
-to see the whole tree at once (every `.env` under `repo_path`, plus the
-repo's own `.gitignore`), which a `HouseCheck` (one file's content at a
-time) can't provide. `checks/secrets_in_repo.py` duck-types the `SubRunner`
-interface instead of importing the ABC from `rules_engine.py`, for the same
-circular-import reason `RULE-019`'s runner does (that module imports this
-one to wire the runner in). Gated by `rules.secrets_scan` in config.yaml
-(default `True`), same pattern as `rules.test_coverage`.
+to see the whole tree at once (every `.env` under `repo_path`, plus every
+`.gitignore` that could cover one), which a `HouseCheck` (one file's content
+at a time) can't provide. `checks/secrets_in_repo.py` duck-types the
+`SubRunner` interface instead of importing the ABC from `rules_engine.py`,
+for the same circular-import reason `RULE-019`'s runner does (that module
+imports this one to wire the runner in). Gated by `rules.secrets_scan` in
+config.yaml (default `True`), same pattern as `rules.test_coverage`.
 
-Deliberately narrow: it only flags a `.env` file present in the checkout and
-not matched by any `.gitignore` pattern — it doesn't try to detect a secret
-*inside* file content beyond that (`RULE-009`/`RULE-016` already do that,
-wherever a hardcoded-looking literal appears in reviewed source). What this
-catches that those can't: the file being committed at all, independent of
-whatever it currently contains.
+Deliberately a presence check, not a `git ls-files`-backed tracked-status
+check: it flags any `.env` file present in the checkout and not matched by
+a `.gitignore` (checking every directory from the repo root down to that
+`.env`'s own directory, not just the root — a nested app-level `.gitignore`
+counts too), regardless of whether it's actually been committed yet.
+Catching one before `.gitignore` covers it is at least as valuable as
+catching one after the fact, and it avoids depending on git state a plain
+filesystem scan doesn't need. Doesn't try to detect a secret *inside* file
+content beyond that (`RULE-009`/`RULE-016` already do that, wherever a
+hardcoded-looking literal appears in reviewed source).
 
 ## Live Frappe site verification (`--frappe-db-config`, RULE-019)
 

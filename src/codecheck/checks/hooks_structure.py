@@ -86,14 +86,22 @@ class DoctypeClassOverrideCheck(HouseCheck):
 
         findings = []
         for node in tree.body:
-            if not isinstance(node, ast.Assign):
+            if isinstance(node, ast.Assign):
+                targets, value = node.targets, node.value
+            elif isinstance(node, ast.AnnAssign) and node.value is not None:
+                # An annotated assignment (override_doctype_class: dict =
+                # {...}) is just as real an override as a plain one -- the
+                # type annotation doesn't change what runs (caught by
+                # CodeRabbit review).
+                targets, value = [node.target], node.value
+            else:
                 continue
             if not any(
                 isinstance(target, ast.Name) and target.id == "override_doctype_class"
-                for target in node.targets
+                for target in targets
             ):
                 continue
-            if isinstance(node.value, ast.Dict) and not node.value.keys:
+            if isinstance(value, ast.Dict) and not value.keys:
                 continue  # an explicitly empty dict is a no-op, not an override
             if changed_lines is not None and node.lineno not in changed_lines:
                 continue

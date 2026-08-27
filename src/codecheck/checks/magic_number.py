@@ -33,9 +33,15 @@ def _numeric_literal(node: ast.expr) -> tuple[bool, float | int | None]:
 def _is_uppercase_target(node: ast.Assign | ast.AnnAssign) -> bool:
     if isinstance(node, ast.AnnAssign):
         return isinstance(node.target, ast.Name) and node.target.id.isupper()
-    return all(
-        isinstance(t, ast.Name) and t.id.isupper() for t in node.targets if isinstance(t, ast.Name)
-    ) and bool(node.targets)
+    # Every target must itself be an uppercase Name -- filtering out
+    # non-Name targets *before* checking, rather than requiring each one to
+    # pass, let all() vacuously return True on an empty generator for an
+    # attribute/subscript target like `settings.limit = total * 4837`,
+    # wrongly treating it as a constant declaration and suppressing a real
+    # magic number (caught by CodeRabbit review).
+    return bool(node.targets) and all(
+        isinstance(t, ast.Name) and t.id.isupper() for t in node.targets
+    )
 
 
 class MagicNumberCheck(HouseCheck):

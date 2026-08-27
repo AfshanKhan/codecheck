@@ -41,6 +41,24 @@ def _line_of(content: str, needle: str) -> int:
     return content.count("\n", 0, idx) + 1 if idx != -1 else 1
 
 
+def _default_value_line(content: str, fieldname: str) -> int:
+    """Line of this field's own "default" key -- not its "fieldname" key.
+    A diff that only touches the default *value* itself (the fieldname line
+    unchanged) still counts as touching the field the finding is about
+    (caught by CodeRabbit review; same shape as the RULE-018/RULE-015 fixes
+    elsewhere in this codebase). Searches for "default" starting from this
+    field's own "fieldname" occurrence, so it lands within this field's own
+    JSON object rather than a different field's.
+    """
+    fname_idx = content.find(f'"fieldname": "{fieldname}"')
+    if fname_idx == -1:
+        return _line_of(content, f'"fieldname": "{fieldname}"')
+    default_idx = content.find('"default"', fname_idx)
+    if default_idx == -1:
+        return content.count("\n", 0, fname_idx) + 1
+    return content.count("\n", 0, default_idx) + 1
+
+
 class DoctypeJsonSyntaxCheck(HouseCheck):
     check_id = "RULE-022"
     title = "DocType JSON file is not valid JSON"
@@ -108,7 +126,7 @@ class DoctypeJsonBlobFieldCheck(HouseCheck):
             if not looks_like_json:
                 continue
             fieldname = field.get("fieldname", "?")
-            lineno = _line_of(content, f'"fieldname": "{fieldname}"')
+            lineno = _default_value_line(content, fieldname)
             if changed_lines is not None and lineno not in changed_lines:
                 continue
             findings.append(

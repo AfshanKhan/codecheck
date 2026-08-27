@@ -55,6 +55,21 @@ def test_doctype_override_empty_dict_not_flagged():
     assert DoctypeClassOverrideCheck().check_file("my_app/hooks.py", content, None) == []
 
 
+def test_doctype_override_flagged_when_annotated():
+    # regression (CodeRabbit): only ast.Assign was handled -- an annotated
+    # assignment (override_doctype_class: dict = {...}) is just as real an
+    # override, but was silently ignored.
+    content = 'override_doctype_class: dict = {"ToDo": "my_app.ToDo"}\n'
+    findings = DoctypeClassOverrideCheck().check_file("my_app/hooks.py", content, None)
+    assert len(findings) == 1
+    assert findings[0].check_id == "RULE-021"
+
+
+def test_doctype_override_annotated_empty_dict_not_flagged():
+    content = "override_doctype_class: dict = {}\n"
+    assert DoctypeClassOverrideCheck().check_file("my_app/hooks.py", content, None) == []
+
+
 # RULE-022: DocType JSON must be valid JSON
 def test_invalid_doctype_json_flagged():
     findings = DoctypeJsonSyntaxCheck().check_file(_JSON_PATH, "not valid json", None)
@@ -95,6 +110,32 @@ def test_json_blob_check_skips_invalid_json_silently():
     assert DoctypeJsonBlobFieldCheck().check_file(_JSON_PATH, "not json", None) == []
 
 
+def test_json_blob_finding_anchored_on_default_value_line_not_fieldname_line():
+    # regression (CodeRabbit): diff scope was checked against the
+    # "fieldname" key's own line, not the "default" value's line that
+    # actually changed -- a diff touching only the default value (the
+    # fieldname line unchanged) was silently skipped, same class of gap as
+    # the earlier RULE-018/RULE-015 fixes.
+    content = (
+        "{\n"
+        '  "name": "Sales Order",\n'
+        '  "fields": [\n'
+        "    {\n"
+        '      "fieldname": "notes",\n'
+        '      "fieldtype": "Text",\n'
+        '      "default": "{\\"a\\": 1}"\n'
+        "    }\n"
+        "  ]\n"
+        "}\n"
+    )
+    fieldname_line = 5
+    default_line = 7
+    assert DoctypeJsonBlobFieldCheck().check_file(_JSON_PATH, content, {fieldname_line}) == []
+    findings = DoctypeJsonBlobFieldCheck().check_file(_JSON_PATH, content, {default_line})
+    assert len(findings) == 1
+    assert findings[0].line_start == default_line
+
+
 # RULE-024: blocking network call inside a doc-event hook
 def test_blocking_http_call_in_doc_event_flagged():
     content = (
@@ -125,6 +166,23 @@ def test_http_call_in_nested_uncalled_helper_not_flagged():
         "            requests.get('https://example.com')\n"
     )
     assert BlockingHttpCallInDocEventCheck().check_file("a.py", content, None) == []
+
+
+def test_http_call_in_nested_function_default_value_flagged():
+    # regression (CodeRabbit): a nested function's default-value expression
+    # runs immediately, when the `def` statement itself is reached -- not
+    # deferred like its body -- so a blocking call there really does run
+    # every time the hook runs, even though the nested function is never
+    # called.
+    content = (
+        "class SalesOrder:\n"
+        "    def validate(self):\n"
+        "        def inner(value=requests.get('https://example.com')):\n"
+        "            pass\n"
+    )
+    findings = BlockingHttpCallInDocEventCheck().check_file("a.py", content, None)
+    assert len(findings) == 1
+    assert findings[0].check_id == "RULE-024"
 
 
 # RULE-025: synchronous PDF generation inside a doc-event hook
@@ -159,9 +217,53 @@ def test_save_in_loop_flagged():
     assert findings[0].check_id == "RULE-026"
 
 
+def test_save_in_loop_nested_inside_a_method_flagged():
+    # regression (self-caught during live verification, not by a unit test):
+    # a first attempt at fixing the deferred-nested-function false positive
+    # below applied the "skip a nested function's body" rule unconditionally
+    # instead of only once inside an active loop -- since a top-level method
+    # is itself a "nested function" relative to its enclosing class/module,
+    # that broke finding a loop (and its .save() call) inside an ordinary
+    # method entirely. Every test above uses a bare loop with no enclosing
+    # function, so none of them caught this -- only a live run against a
+    # realistic fixture (a .save() inside a for loop inside validate()) did.
+    content = (
+        "class SalesOrder:\n"
+        "    def validate(self, docs):\n"
+        "        for d in docs:\n"
+        "            d.save()\n"
+    )
+    findings = SaveInLoopCheck().check_file("a.py", content, None)
+    assert len(findings) == 1
+    assert findings[0].check_id == "RULE-026"
+
+
 def test_save_outside_loop_not_flagged():
     content = "doc.save()\n"
     assert SaveInLoopCheck().check_file("a.py", content, None) == []
+
+
+def test_save_in_deferred_nested_function_body_not_flagged():
+    # regression (CodeRabbit): a .save() inside a nested function/lambda
+    # *defined* once per loop iteration but only actually called later (a
+    # registered callback) doesn't run once per iteration just because it
+    # was declared once per iteration.
+    content = (
+        "for d in docs:\n"
+        "    def deferred():\n"
+        "        d.save()\n"
+        "    register(deferred)\n"
+    )
+    assert SaveInLoopCheck().check_file("a.py", content, None) == []
+
+
+def test_save_in_nested_function_default_value_flagged():
+    # The counterpart to the above: a default-value expression runs
+    # immediately at declaration time, so it's still "in the loop."
+    content = "for d in docs:\n    def helper(x=d.save()):\n        pass\n"
+    findings = SaveInLoopCheck().check_file("a.py", content, None)
+    assert len(findings) == 1
+    assert findings[0].check_id == "RULE-026"
 
 
 # RULE-027: frappe.call() promise chain could use async/await
@@ -255,6 +357,18 @@ def test_constant_declaration_not_flagged():
     assert MagicNumberCheck().check_file("a.py", content, None) == []
 
 
+def test_attribute_assignment_target_still_flagged():
+    # regression (CodeRabbit): filtering out non-Name targets *before*
+    # checking upper-case-ness let all() vacuously return True on the
+    # resulting empty generator for an attribute target like
+    # `settings.limit = total * 4837`, wrongly treating it as a constant
+    # declaration and suppressing a real magic number.
+    content = "settings.limit = total * 4837\n"
+    findings = MagicNumberCheck().check_file("a.py", content, None)
+    assert len(findings) == 1
+    assert findings[0].check_id == "RULE-032"
+
+
 # RULE-033: missing docstring
 def test_missing_docstring_flagged():
     content = "def process(order):\n    return order.total\n"
@@ -284,6 +398,20 @@ def test_boolean_default_param_flagged():
 def test_non_boolean_default_not_flagged():
     content = "def notify(user, retries=3):\n    pass\n"
     assert BooleanFlagParamCheck().check_file("a.py", content, None) == []
+
+
+def test_boolean_default_anchored_on_its_own_line_not_the_def_line():
+    # regression (CodeRabbit): diff scope was checked against the `def`
+    # line, not the default value's own line -- a diff touching only
+    # `send_email=True` on a multiline signature (the `def notify(` line
+    # unchanged) was silently skipped, same class of gap as the earlier
+    # RULE-018/RULE-015 fixes.
+    content = "def notify(\n    user,\n    send_email=True,\n):\n    pass\n"
+    default_line = 3
+    assert BooleanFlagParamCheck().check_file("a.py", content, {1}) == []
+    findings = BooleanFlagParamCheck().check_file("a.py", content, {default_line})
+    assert len(findings) == 1
+    assert findings[0].line_start == default_line
 
 
 # RULE-035: committed .env file not covered by .gitignore
@@ -323,6 +451,29 @@ def test_double_star_gitignore_pattern_covers_nested_env_file(tmp_path):
     (nested / ".env").write_text("SECRET=1\n")
     (tmp_path / ".gitignore").write_text("**/.env\n")
     assert SecretsInRepoRunner().run([], tmp_path) == []
+
+
+def test_nested_gitignore_covers_env_file_in_its_own_subtree(tmp_path):
+    # regression (CodeRabbit): only the repo-root .gitignore was ever read --
+    # a real app's own .gitignore a few directories down had no effect at
+    # all, so an .env covered only by that nested file was still flagged.
+    app_dir = tmp_path / "my_app"
+    app_dir.mkdir()
+    (app_dir / ".env").write_text("SECRET=1\n")
+    (app_dir / ".gitignore").write_text(".env\n")
+    assert SecretsInRepoRunner().run([], tmp_path) == []
+
+
+def test_nested_gitignore_does_not_cover_env_file_outside_its_subtree(tmp_path):
+    app_dir = tmp_path / "my_app"
+    app_dir.mkdir()
+    other_dir = tmp_path / "other"
+    other_dir.mkdir()
+    (other_dir / ".env").write_text("SECRET=1\n")
+    (app_dir / ".gitignore").write_text(".env\n")
+    findings = SecretsInRepoRunner().run([], tmp_path)
+    assert len(findings) == 1
+    assert findings[0].file == "other/.env"
 
 
 def test_negation_pattern_un_ignores_a_specific_env_file(tmp_path):

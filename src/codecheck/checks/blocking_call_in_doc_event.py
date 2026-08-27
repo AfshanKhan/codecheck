@@ -42,10 +42,37 @@ _PDF_CALL_NAMES = {"pdf.make", "get_pdf", "frappe.get_print", "frappe.get_pdf"}
 _NESTED_SCOPE_TYPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
 
 
+def _default_value_exprs(node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda):
+    return (d for d in (*node.args.defaults, *node.args.kw_defaults) if d is not None)
+
+
 def _iter_own_scope(node: ast.AST):
+    """Like ast.iter_child_nodes()'s recursive closure, but doesn't descend
+    into a nested function/lambda's *body* -- that's deferred until the
+    nested callable is actually invoked, so a call inside it shouldn't count
+    as running whenever the outer scope runs.
+
+    A nested function/lambda's decorators and default-value expressions are
+    the exception: those execute immediately, when the `def`/`lambda`
+    statement itself is reached -- not deferred like the body -- so
+    `def helper(value=requests.get(url)): ...` inside a doc-event hook
+    really does make a blocking call every time that hook runs, even though
+    `helper` itself is never called (caught by CodeRabbit review).
+    """
     for child in ast.iter_child_nodes(node):
         yield child
-        if not isinstance(child, _NESTED_SCOPE_TYPES):
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for decorator in child.decorator_list:
+                yield decorator
+                yield from _iter_own_scope(decorator)
+            for default in _default_value_exprs(child):
+                yield default
+                yield from _iter_own_scope(default)
+        elif isinstance(child, ast.Lambda):
+            for default in _default_value_exprs(child):
+                yield default
+                yield from _iter_own_scope(default)
+        else:
             yield from _iter_own_scope(child)
 
 
