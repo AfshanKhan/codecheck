@@ -1,7 +1,9 @@
 """Tier 2: local LLM reviewer, against any OpenAI-compatible local server (LM
-Studio, Ollama, etc.) -- no API key, no cost, no network call beyond
-localhost. Built on the same `OpenAIProtocolReviewer` base as the cloud
-tier's OpenAI-compatible backend; only endpoint resolution differs."""
+Studio, Ollama, etc.). With the default provider presets: no API key, no
+network call beyond localhost -- a custom `local.base_url`/`api_key_env`
+can point this at a remote endpoint instead. Built on the same
+`OpenAIProtocolReviewer` base as the cloud tier's OpenAI-compatible
+backend; only endpoint resolution differs."""
 
 from __future__ import annotations
 

@@ -1,9 +1,11 @@
-"""RULE-026: flag a `.save()` call inside a loop -- prefer Frappe's bulk
-helpers (bulk_update, a bulk insert) instead. The write-side equivalent of
-RULE-004's read-side N+1 check.
+"""RULE-026: flag a `.save()` call inside a `for`/`while` node -- prefer
+Frappe's bulk helpers (bulk_update, a bulk insert) instead. The write-side
+equivalent of RULE-004's read-side N+1 check. Note: this walks the whole
+loop node (body, but also its iterator/condition/orelse), not just the body
+that actually re-executes per iteration.
 
 Doesn't descend into a nested function/lambda's body defined inside a loop --
-only a call actually reached while the loop body executes counts, not one
+only a call actually reached while walking the loop node counts, not one
 merely defined there. Decorators and default-value expressions are the
 exception, since those run immediately."""
 

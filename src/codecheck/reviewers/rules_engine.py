@@ -299,8 +299,9 @@ def _added_line_count(diff_text: str) -> int:
 
 
 def _looks_like_real_test(target: ReviewTarget) -> bool:
-    """A test file counts if its diff has a test declaration, or (when there's
-    no usable patch) a large enough addition/modification count."""
+    """A test file counts if its diff has a test declaration; otherwise a
+    large enough added-line count, or (falling back) any modification with
+    at least one added line -- but not a bare boilerplate stub."""
     if any(marker in target.diff_text for marker in _TEST_MARKERS):
         return True
     additions = _added_line_count(target.diff_text)

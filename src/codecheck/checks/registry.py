@@ -74,8 +74,10 @@ ALL_CHECKS: list[HouseCheck] = [
 
 def load_extra_checks(dotted_paths: list[str]) -> tuple[list[HouseCheck], list[str]]:
     """Dynamically imports and instantiates each "module.submodule:ClassName"
-    path from `rules.extra_checks`. Returns (loaded_checks, error_messages);
-    a bad entry is reported, not raised."""
+    path from `rules.extra_checks`. Returns (loaded_checks, error_messages).
+    An ImportError/AttributeError, a non-HouseCheck class, or a constructor
+    exception is reported, not raised; any other exception during the
+    module's own import still propagates."""
     checks: list[HouseCheck] = []
     errors: list[str] = []
     for dotted_path in dotted_paths:
