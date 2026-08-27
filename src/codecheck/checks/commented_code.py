@@ -47,7 +47,7 @@ def _looks_like_directive(text: str) -> bool:
     return any(lowered.startswith(p) for p in _IGNORE_PREFIXES)
 
 
-def _is_commented_python_code(text: str) -> bool:
+def _is_commented_python_code(text: str, allow_pass_fallback: bool = True) -> bool:
     """text may be one line or several (already '#'-stripped, joined with
     real newlines) -- ast.parse doesn't care either way. Uniformly
     indenting every line by the same amount (rather than just the first)
@@ -55,11 +55,21 @@ def _is_commented_python_code(text: str) -> bool:
     *relative* to the others, which is all Python's own parser cares about,
     and any extra whitespace that lands inside an open string/bracket is
     harmless since we only care whether this parses, not its exact value.
+
+    `allow_pass_fallback=False` disables the "append a synthetic pass to a
+    colon-terminated header" shortcut -- the caller uses this while it's
+    still growing the window, so a genuinely present indented suite in the
+    following comment line(s) gets a chance to complete the statement for
+    real, rather than the header being accepted as "done" on its own and
+    its actual body ending up as a separate, fragmented finding (or missed
+    outright if the body isn't independently parseable on its own -- caught
+    by CodeRabbit review). The fallback is still used, as a last resort,
+    once growing is exhausted (see check_file below).
     """
     text = text.strip("\n")
     if not text.strip() or _looks_like_directive(text.lstrip().splitlines()[0]):
         return False
-    if text.rstrip().endswith(":"):
+    if allow_pass_fallback and text.rstrip().endswith(":"):
         text = text.rstrip() + "\n pass"
     indented = "\n".join("        " + line for line in text.splitlines())
     try:
@@ -81,10 +91,9 @@ _JS_CODE_PATTERNS = (
     re.compile(r"^\s*[a-zA-Z_$][\w$]*(?:\.[a-zA-Z_$][\w$]*)*\s*=[^=]"),  # assignment
     re.compile(r"^\s*[a-zA-Z_$][\w$]*(?:\.[a-zA-Z_$][\w$]*)*\s*\(.*\)\s*;?\s*$"),  # call
 )
-_JS_OPEN_START_RE = re.compile(
-    r"^\s*(?:[a-zA-Z_$][\w$]*(?:\.[a-zA-Z_$][\w$]*)*\s*\(|"
-    r"(?:if|for|while|function|switch)\b.*\(|"
-    r"(?:try|else)\b)\s*[{(]?\s*$"
+_JS_LINE_START_RE = re.compile(
+    r"^\s*(?:if|else|for|while|function|switch|try|catch)\b|"
+    r"^\s*[a-zA-Z_$][\w$]*(?:\.[a-zA-Z_$][\w$]*)*\s*\("
 )
 _BRACKETS = {"(": ")", "{": "}", "[": "]"}
 
@@ -165,10 +174,19 @@ class CommentedOutPythonCodeCheck(HouseCheck):
             j = i
             while j < n and (j - i) < _MAX_BLOCK_LINES and lines[j].strip().startswith("#"):
                 block.append(_dehash(lines[j], "#"))
-                if _is_commented_python_code("\n".join(block)):
+                # No pass-fallback while growing -- a colon-terminated header
+                # should only be accepted "as is" once there's genuinely no
+                # more comment lines to pull in as its real body.
+                if _is_commented_python_code("\n".join(block), allow_pass_fallback=False):
                     matched_end = j
                     break
                 j += 1
+            else:
+                # Ran out of comment lines (or hit the cap) without a real
+                # match -- last resort: a header-only disabled statement
+                # (`# if x:` with no comment body ever shown) still counts.
+                if block and _is_commented_python_code("\n".join(block), allow_pass_fallback=True):
+                    matched_end = j - 1
             if matched_end is None:
                 i += 1
                 continue
@@ -213,14 +231,19 @@ class CommentedOutJsCodeCheck(HouseCheck):
                 continue
             first = _dehash(lines[i], "//")
             matched_end = None
-            if _is_commented_js_code(first):
-                matched_end = i
-            elif _JS_OPEN_START_RE.match(first.strip()):
-                # Looks like the start of a multi-line call/control-flow
-                # statement (ends in an unclosed bracket) -- keep pulling
-                # in following comment lines and tracking bracket balance
-                # until it closes back out, up to the line cap.
-                balance = _js_bracket_balance(first)
+            first_balance = _js_bracket_balance(first)
+            if _JS_LINE_START_RE.match(first) and first_balance > 0:
+                # An open multi-line block ("if (ready) {", "frappe.call({",
+                # ...) -- checked *before* the generic single-line patterns
+                # below, not after: those matched on the keyword/call prefix
+                # alone regardless of whether the line's own brackets were
+                # balanced, so an open header got accepted as its own
+                # complete single-line finding and its real body (or closing
+                # brace) ended up as a separate, fragmented finding instead
+                # of one combined range (caught by CodeRabbit review). Keep
+                # pulling in following comment lines and tracking bracket
+                # balance until it closes back out, up to the line cap.
+                balance = first_balance
                 j = i
                 while balance > 0 and j + 1 < n and (j + 1 - i) < _MAX_BLOCK_LINES:
                     j += 1
@@ -230,6 +253,8 @@ class CommentedOutJsCodeCheck(HouseCheck):
                     balance += _js_bracket_balance(_dehash(lines[j], "//"))
                 if balance <= 0 and j > i:
                     matched_end = j
+            if matched_end is None and _is_commented_js_code(first):
+                matched_end = i
             if matched_end is None:
                 i += 1
                 continue

@@ -479,6 +479,36 @@ def test_commented_out_python_diff_scope_covers_the_whole_block():
     assert CommentedOutPythonCodeCheck().check_file("a.py", content, {99}) == []
 
 
+def test_commented_out_python_if_header_and_body_merge_into_one_finding():
+    # regression (CodeRabbit): the synthetic-pass fallback let a
+    # colon-terminated header ("# if enabled:") be accepted as "complete"
+    # on its own, without checking whether the following comment line was
+    # actually its real, indented body -- fragmenting one logical
+    # if-statement into two separate findings (or, for a body that isn't
+    # independently parseable on its own, missing it outright). Now the
+    # fallback is only used as a last resort, once growing the window
+    # further genuinely can't pull in more comment lines.
+    content = "# if enabled:\n#     run_task()\n"
+    findings = CommentedOutPythonCodeCheck().check_file("a.py", content, None)
+    assert len(findings) == 1
+    assert (findings[0].line_start, findings[0].line_end) == (1, 2)
+    # A diff touching only the body line still counts as touching the
+    # single, combined finding.
+    body_only = CommentedOutPythonCodeCheck().check_file("a.py", content, {2})
+    assert len(body_only) == 1
+    assert (body_only[0].line_start, body_only[0].line_end) == (1, 2)
+
+
+def test_commented_out_python_header_only_still_flagged_with_no_body():
+    # The original single-line case this fallback exists for: a disabled
+    # `if x:` with no comment body ever shown (the comment run ends right
+    # there) still needs the synthetic pass to be recognized as code at all.
+    content = "# if x:\n"
+    findings = CommentedOutPythonCodeCheck().check_file("a.py", content, None)
+    assert len(findings) == 1
+    assert (findings[0].line_start, findings[0].line_end) == (1, 1)
+
+
 def test_commented_out_multiline_js_call_flagged():
     content = (
         "// frappe.call({\n"
@@ -507,6 +537,36 @@ def test_commented_out_js_unclosed_bracket_gives_up_not_flagged():
         "// actually closes the bracket at all\n"
     )
     assert CommentedOutJsCodeCheck().check_file("a.js", content, None) == []
+
+
+def test_commented_out_js_if_block_merges_into_one_finding():
+    # regression (CodeRabbit): "if (ready) {" matched the generic
+    # single-line keyword pattern before the open-block detection ever got
+    # a chance to run, and that open-block regex couldn't handle a
+    # condition-then-brace shape like "if (ready) {" anyway (a closing ")"
+    # before the "{" broke it) -- so the header was reported as its own
+    # single-line finding, separate from its body/closing brace, instead of
+    # one combined range.
+    content = "// if (ready) {\n//     doSomething();\n// }\n"
+    findings = CommentedOutJsCodeCheck().check_file("a.js", content, None)
+    assert len(findings) == 1
+    assert (findings[0].line_start, findings[0].line_end) == (1, 3)
+
+
+def test_commented_out_js_for_loop_block_merges_into_one_finding():
+    content = "// for (let i = 0; i < 10; i++) {\n//     doSomething(i);\n// }\n"
+    findings = CommentedOutJsCodeCheck().check_file("a.js", content, None)
+    assert len(findings) == 1
+    assert (findings[0].line_start, findings[0].line_end) == (1, 3)
+
+
+def test_commented_out_js_complete_single_line_if_not_grown_unnecessarily():
+    # A self-contained one-liner (balanced brackets already) shouldn't be
+    # treated as an open block needing more lines.
+    content = "// if (x) doSomething();\n"
+    findings = CommentedOutJsCodeCheck().check_file("a.js", content, None)
+    assert len(findings) == 1
+    assert (findings[0].line_start, findings[0].line_end) == (1, 1)
 
 
 def test_commented_out_js_multiline_prose_not_flagged():
