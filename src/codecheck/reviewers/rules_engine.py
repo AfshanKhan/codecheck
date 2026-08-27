@@ -275,10 +275,12 @@ class HouseRulesRunner(SubRunner):
     def run(self, targets: list[ReviewTarget], repo_path: Path) -> list[Finding]:
         # .py for the AST-based checks, .js for the regex/line-based Frappe
         # client-script checks, .json for the DocType schema checks
-        # (RULE-022/023) -- each HouseCheck filters by its own extension/path
-        # pattern on top of this, so listing an extension here just makes a
-        # file eligible to be offered to every check, not a match on its own.
-        py_targets = _filter_targets(targets, (".py", ".js", ".json"))
+        # (RULE-022/023), .html for the two markup-agnostic checks
+        # (RULE-010/011) that also scan Jinja templates -- each HouseCheck
+        # filters by its own extension/path pattern on top of this, so
+        # listing an extension here just makes a file eligible to be offered
+        # to every check, not a match on its own.
+        py_targets = _filter_targets(targets, (".py", ".js", ".json", ".html"))
         findings: list[Finding] = []
         for target in py_targets:
             content = read_file_content(repo_path, target)

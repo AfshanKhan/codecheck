@@ -1,6 +1,13 @@
-"""RULE-011: flag inline `style=` CSS attributes in Frappe client-script JS --
-inline styles bypass the app's theme/CSS and don't respond to dark mode or
-theme overrides.
+"""RULE-011: flag inline `style=` CSS attributes in a Frappe client-script or
+an `.html` template -- inline styles bypass the app's theme/CSS and don't
+respond to dark mode or theme overrides.
+
+The regex is markup-agnostic, so it's applied to both `.js` (a client script
+building a snippet of HTML by hand, e.g. inside `frm.set_df_property(...,
+"description", "<div style=...")`) and `.html` (a Jinja print format/email
+template/web page). A comparison against a separate audit tool on real repos
+found real `style=` attributes in `.html` email/print templates that this
+check missed entirely while only ever looking at `.js`.
 
 Ported from frappe-pr-reviewer's js_analyzer.py.
 """
@@ -23,7 +30,7 @@ class JsInlineStyleCheck(HouseCheck):
     def check_file(
         self, file_path: str, content: str, changed_lines: set[int] | None
     ) -> list[Finding]:
-        if not file_path.endswith(".js"):
+        if not file_path.endswith((".js", ".html")):
             return []
 
         findings = []

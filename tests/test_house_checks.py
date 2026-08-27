@@ -283,6 +283,34 @@ def test_js_inline_style_flagged():
     assert findings[0].check_id == "RULE-011"
 
 
+def test_js_hardcoded_html_flagged_in_html_template():
+    # regression (comparing against a separate audit tool on real repos): a
+    # raw <input>/<button> tag inside an actual .html Jinja template (print
+    # format, email template, web page) was invisible to this check, which
+    # only ever looked at .js client scripts.
+    content = '<div>\n  <input type="text" name="x" />\n</div>\n'
+    findings = JsHardcodedHtmlCheck().check_file("a.html", content, changed_lines={2})
+    assert len(findings) == 1
+    assert findings[0].check_id == "RULE-010"
+
+
+def test_js_hardcoded_html_still_ignores_other_extensions():
+    content = '<input type="text" />\n'
+    assert JsHardcodedHtmlCheck().check_file("a.py", content, None) == []
+
+
+def test_js_inline_style_flagged_in_html_template():
+    content = '<div style="color: red;">text</div>\n'
+    findings = JsInlineStyleCheck().check_file("a.html", content, changed_lines={1})
+    assert len(findings) == 1
+    assert findings[0].check_id == "RULE-011"
+
+
+def test_js_inline_style_still_ignores_other_extensions():
+    content = '<div style="color: red;">text</div>\n'
+    assert JsInlineStyleCheck().check_file("a.py", content, None) == []
+
+
 def test_js_console_log_flagged():
     content = "console.log('debug');\n"
     findings = JsConsoleLogCheck().check_file("a.js", content, changed_lines={1})
@@ -308,6 +336,29 @@ def test_js_jquery_dom_safe_wrapper_not_flagged():
     content = "$wrapper.find('.btn').hide();\n"
     findings = JsJqueryDomCheck().check_file("a.js", content, changed_lines={1})
     assert findings == []
+
+
+def test_js_jquery_dom_wrapping_sanctioned_wrapper_not_flagged():
+    content = "$($wrapper).find('.btn').hide();\n"
+    assert JsJqueryDomCheck().check_file("a.js", content, changed_lines={1}) == []
+
+
+def test_js_jquery_dom_wrapping_fields_dict_wrapper_not_flagged():
+    content = "$(frm.fields_dict.my_field.$wrapper).find('.btn').hide();\n"
+    assert JsJqueryDomCheck().check_file("a.js", content, changed_lines={1}) == []
+
+
+def test_js_jquery_dom_wrapping_unrelated_dollar_wrapper_property_flagged():
+    # regression (comparing against a separate audit tool on a real repo):
+    # the old exemption matched the substring "$wrapper" anywhere on the
+    # line, which also suppressed a genuinely raw jQuery call wrapping a
+    # *different* object that merely has its own same-named property --
+    # `field.$wrapper` is not the framework's sanctioned `$wrapper`/
+    # `frm.fields_dict` entry point.
+    content = "$(field.$wrapper).find('.control-label').css({color: 'red'});\n"
+    findings = JsJqueryDomCheck().check_file("a.js", content, changed_lines={1})
+    assert len(findings) == 1
+    assert findings[0].check_id == "RULE-014"
 
 
 def test_js_frappe_call_no_error_handling_flagged():
