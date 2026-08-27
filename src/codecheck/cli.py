@@ -11,6 +11,7 @@ from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as package_version
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlsplit, urlunsplit
 
 import typer
 from rich.console import Console
@@ -319,6 +320,27 @@ def _run_tiers(
 
 def _sanitize_slug(value: str) -> str:
     return "".join(c for c in value if c.isalnum() or c in ("-", "_"))
+
+
+def _display_repo_url(repo_url: str) -> str:
+    """Strip any embedded userinfo (a credential, e.g.
+    `https://user:token@github.com/org/repo.git`) out of a URL before it's
+    stored in `ReviewReport.repo_path` -- `_validate_clone_url` doesn't reject
+    credentials in an HTTPS URL (it only blocks argument-injection/transport-
+    helper shapes), and `redact._is_url_like` leaves a URL-shaped repo_path
+    untouched on the assumption it has nothing local-identifying to scrub, so
+    a credential embedded in --repo-url would otherwise reach every report
+    format unredacted (CodeRabbit review). The original repo_url (with any
+    credentials still intact) is used for the actual `git clone` -- only the
+    report-facing copy is stripped. SSH's scp-like `git@host:org/repo.git`
+    syntax has no userinfo component to strip (no "://", so urlsplit doesn't
+    treat "git@host" as netloc) and is returned unchanged.
+    """
+    parts = urlsplit(repo_url)
+    if not parts.scheme or "@" not in parts.netloc:
+        return repo_url
+    host = parts.netloc.rsplit("@", 1)[-1]
+    return urlunsplit((parts.scheme, host, parts.path, parts.query, parts.fragment))
 
 
 def _repo_label(repo_path: Path, repo_url: str | None) -> str:
@@ -758,8 +780,9 @@ def diff(
             # clone's directory name (codecheck-clone-xxxxx) means nothing
             # to a report reader. Only a genuinely local run (--repo-path,
             # or --pr <number> against an existing local checkout) shows
-            # the local filesystem path.
-            repo_path=repo_url or str(source_repo_path),
+            # the local filesystem path. _display_repo_url strips any
+            # embedded credential before it reaches the report.
+            repo_path=_display_repo_url(repo_url) if repo_url else str(source_repo_path),
             mode="diff",
             base_ref=report_base_ref,
             head_ref=report_head_ref,
@@ -899,8 +922,8 @@ def audit(
         report = ReviewReport(
             # See the matching comment in diff() -- the repo's own remote
             # URL when one was given, not a local temp clone's meaningless
-            # directory name.
-            repo_path=repo_url or str(effective_repo_path),
+            # directory name, with any embedded credential stripped.
+            repo_path=_display_repo_url(repo_url) if repo_url else str(effective_repo_path),
             mode="audit",
             base_ref=None,
             head_ref=None,

@@ -254,6 +254,32 @@ def test_xlsx_report_neutralizes_formula_injection_in_untrusted_fields():
         assert str(cell.value).startswith("'")
 
 
+def test_xlsx_report_neutralizes_formula_injection_in_report_controlled_fields():
+    # regression (CodeRabbit): `codecheck render` loads a ReviewReport from an
+    # arbitrary JSON file via ReviewReport.from_dict/Finding.from_dict, not
+    # necessarily one codecheck itself produced -- mode/base_ref/head_ref/
+    # tiers_run and a Finding's check_id/source/tier all bypassed
+    # _write_text_cell (plain ws.append), so a leading =/+/-/@ in any of them
+    # would round-trip into a live formula cell.
+    f = Finding(
+        check_id="=EVIL()", tier="+T", source="-S", severity=Severity.LOW,
+        title="t", explanation="e", file="a.py", line_start=1,
+    )
+    report = ReviewReport(
+        repo_path="/repo", mode="=BAD", base_ref="+B", head_ref="-H",
+        generated_at=datetime(2026, 7, 30, tzinfo=timezone.utc),
+        tiers_run=["@cloud"], findings=[f],
+    )
+    wb = render_xlsx(report)
+    for ws in wb.worksheets:
+        for row in ws.iter_rows():
+            for cell in row:
+                if isinstance(cell.value, str):
+                    assert not cell.value.startswith(("=", "+", "-", "@")), (
+                        ws.title, cell.coordinate, cell.value
+                    )
+
+
 def test_xlsx_report_normal_values_are_untouched():
     wb = render_xlsx(make_report())
     ws = wb["Findings"]

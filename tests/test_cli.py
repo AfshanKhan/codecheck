@@ -9,6 +9,7 @@ from typer.testing import CliRunner
 
 from codecheck.cli import (
     _claim_unique_run_dir,
+    _display_repo_url,
     _finish,
     _repo_label,
     _report_basename,
@@ -80,6 +81,32 @@ def test_repo_label_from_repo_url_ssh():
 
 def test_repo_label_falls_back_to_local_dir_name(sandbox_repo: Path):
     assert _repo_label(sandbox_repo, None) == "sandbox"
+
+
+def test_display_repo_url_strips_embedded_credentials():
+    # regression (CodeRabbit): _validate_clone_url doesn't reject credentials
+    # in an HTTPS URL, and a URL-shaped repo_path is left unredacted by
+    # --redact (nothing local-identifying about a plain remote URL) -- so a
+    # credential embedded in --repo-url would otherwise reach every report
+    # format unredacted.
+    assert (
+        _display_repo_url("https://user:secretpass@github.com/org/repo.git")
+        == "https://github.com/org/repo.git"
+    )
+
+
+def test_display_repo_url_leaves_ssh_scp_syntax_untouched():
+    # git@host:org/repo.git has no userinfo component to strip (no "://", so
+    # urlsplit never treats "git@host" as netloc) -- its "git@" is the SSH
+    # transport user, not a secret.
+    assert _display_repo_url("git@github.com:org/repo.git") == "git@github.com:org/repo.git"
+
+
+def test_display_repo_url_leaves_credential_free_urls_untouched():
+    assert (
+        _display_repo_url("https://github.com/org/repo.git")
+        == "https://github.com/org/repo.git"
+    )
 
 
 def test_report_basename_uses_pr_number_when_present():

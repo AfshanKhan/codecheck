@@ -134,8 +134,9 @@ After either command, you'll see a table directly in your terminal, like this:
 - **Check** is an ID you can search for if you want more detail (`RULE-002`
   means house rule #2 — see "What does each tier actually check?" below).
 - Four report files are also saved for you, every time, in their own
-  timestamped subdirectory of `reports/` (`reports/<repo>[_pr<N>]_<mode>_<timestamp>/`,
-  e.g. `reports/codecheck_pr12_20260814_161000/`) — never loose files mixed
+  timestamped subdirectory of `reports/` (`reports/<repo>_pr<N>_<timestamp>/`
+  for a `--pr` run, `reports/<repo>_<mode>_<timestamp>/` otherwise), e.g.
+  `reports/codecheck_pr12_20260814_161000/` — never loose files mixed
   together across every run: a `.md` (readable, good for pasting into a PR
   description or Slack), a `.json` (for other tools to read), a `.docx` (for
   sharing with someone who'd rather open Word), and a `.xlsx` (for

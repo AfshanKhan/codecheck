@@ -194,11 +194,14 @@ free and fast enough to just re-run in full every time.
 ### Report filenames
 
 Every run (`diff` or `audit`) gets its own subdirectory inside `--output-dir`
-(default `./reports`), named `<repo>[_pr<N>]_<mode>_<timestamp>`, e.g.
-`./reports/codecheck_pr12_diff_20260814_161000/`. Four files land inside it —
+(default `./reports`), named `<repo>_pr<N>_<timestamp>` for a `--pr` run or
+`<repo>_<mode>_<timestamp>` otherwise (never both — the PR number replaces
+the mode in the name, it isn't appended alongside it), e.g.
+`./reports/codecheck_pr12_20260814_161000/` or
+`./reports/codecheck_diff_20260814_161000/`. Four files land inside it —
 a `.json`, a `.md`, a `.docx`, and a `.xlsx`, same underlying findings, four
 formats, each named after the directory they're in
-(`codecheck_pr12_diff_20260814_161000.json`, etc.). Runs are never mixed
+(`codecheck_pr12_20260814_161000.json`, etc.). Runs are never mixed
 together loose in one flat directory — `--output-dir` fills up with one
 subdirectory per run instead of four files per run all in the same place,
 which turns unreadable fast once there's more than a couple of runs sitting
@@ -221,9 +224,13 @@ partial directory from an earlier interrupted run can't get silently reused.
 Any failure during this process — a directory-name collision, a non-collision
 I/O error (permission denied, disk full), or a reporter raising once writing
 actual content starts — deletes the whole run directory (whatever did or
-didn't get written into it) rather than leaving it behind. A crashed or
-failed run never leaves a permanently unusable, empty-looking report sitting
-at a directory name no later run can ever reclaim.
+didn't get written into it) rather than leaving it behind. This rollback is
+a normal Python exception handler, though, not a crash-proof guarantee: a
+process kill or forced termination (SIGKILL, power loss) partway through can
+still leave an empty or partial run directory that no later run can reclaim
+(the atomic-create in the next run just sees "already exists" and skips to
+`-2`, `-3`, ...) — a handled failure never leaves stale files behind, but an
+unhandled one bypassing Python entirely still can.
 
 The `.xlsx` report is the one built for filtering and sorting rather than
 reading top to bottom: a "Findings" sheet with every finding as its own row

@@ -699,7 +699,8 @@ report.
 All four file reporters are always written on every run — there's no flag to
 suppress them. `cli._finish()` builds a shared basename for all four via
 `_report_basename()` — see "Report filenames" in [CLI Reference](CLI-Reference.md)
-for the exact naming convention (`<repo>[_pr<N>]_<mode>_<timestamp>`, since the
+for the exact naming convention (`<repo>_pr<N>_<timestamp>` for a `--pr` run,
+`<repo>_<mode>_<timestamp>` otherwise — never both suffixes at once, since the
 previous static `report.json`/`report.md` silently overwrote the prior run's
 report on every invocation). `cli._write_reports()` (the claim-then-write
 logic shared by `_finish` and `render`) is what actually performs the write —

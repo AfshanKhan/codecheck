@@ -22,7 +22,7 @@ import re
 from codecheck.checks.base import HouseCheck
 from codecheck.models import Finding, Severity
 
-_HTML_TAG_RE = re.compile(r"<(input|button)[\s>]", re.IGNORECASE)
+_HTML_TAG_RE = re.compile(r"<(input|button)[\s/>]", re.IGNORECASE)
 
 
 class JsHardcodedHtmlCheck(HouseCheck):
@@ -42,6 +42,19 @@ class JsHardcodedHtmlCheck(HouseCheck):
                 continue
             if changed_lines is not None and lineno not in changed_lines:
                 continue
+            if file_path.endswith(".html"):
+                explanation = (
+                    "This is a raw <input>/<button> tag in a Jinja template, not something "
+                    "generated through a DocType field. Frappe isn't managing it -- no "
+                    "validation, no CSRF handling, nothing tying it back to a DocType field."
+                )
+            else:
+                explanation = (
+                    "This builds a raw <input>/<button> tag by hand instead of using "
+                    "Frappe's field/dialog APIs (frm.add_field, frappe.ui.Dialog, etc.). "
+                    "Hand-built HTML skips Frappe's built-in styling, events, and "
+                    "accessibility handling."
+                )
             findings.append(
                 Finding(
                     check_id=self.check_id,
@@ -49,12 +62,7 @@ class JsHardcodedHtmlCheck(HouseCheck):
                     source="house",
                     severity=self.severity,
                     title=self.title,
-                    explanation=(
-                        "This builds a raw <input>/<button> tag by hand instead of using "
-                        "Frappe's field/dialog APIs (frm.add_field, frappe.ui.Dialog, etc.). "
-                        "Hand-built HTML skips Frappe's built-in styling, events, and "
-                        "accessibility handling."
-                    ),
+                    explanation=explanation,
                     file=file_path,
                     line_start=lineno,
                     line_end=lineno,

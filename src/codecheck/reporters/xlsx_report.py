@@ -69,11 +69,18 @@ def _write_summary_sheet(ws: Worksheet, report: ReviewReport) -> None:
     # source (a cloned --repo-url/--pr's own path) -- text-formatted via
     # _write_text_cell like the Findings sheet's free-text columns.
     tiers_display = ", ".join(f"{t} ({tier_description(t)})" for t in report.tiers_run) or "-"
-    rows = [
+    # mode/base_ref/head_ref/tiers_display all ultimately trace back to
+    # ReviewReport.from_dict (the `render` command loads a report from a JSON
+    # file, which isn't necessarily one codecheck itself produced) -- text
+    # cells like Findings' free-text columns, not plain ws.append (CodeRabbit
+    # review).
+    text_rows = [
         ("Mode", report.mode),
         ("Base ref", report.base_ref or "-"),
         ("Head ref", report.head_ref or "-"),
         ("Tiers run", tiers_display),
+    ]
+    other_rows = [
         ("Generated at", format_ist(report.generated_at)),
         ("Files reviewed", len(report.files_reviewed)),
         ("Duration (s)", round(report.duration_seconds, 1)),
@@ -81,9 +88,13 @@ def _write_summary_sheet(ws: Worksheet, report: ReviewReport) -> None:
     ]
     ws.append(("Repo", None))
     _write_text_cell(ws, 1, 2, report.repo_path)
-    for row in rows:
+    for label, value in text_rows:
+        row = ws.max_row + 1
+        ws.append((label, None))
+        _write_text_cell(ws, row, 2, value)
+    for row in other_rows:
         ws.append(row)
-    for cell in ws["A"][: len(rows) + 1]:
+    for cell in ws["A"][: len(text_rows) + len(other_rows) + 1]:
         cell.font = Font(bold=True)
 
     ws.append([])
@@ -113,7 +124,10 @@ def _write_summary_sheet(ws: Worksheet, report: ReviewReport) -> None:
     for check_id in sorted(by_check, key=lambda c: -len(by_check[c])):
         findings = by_check[check_id]
         worst = max(findings, key=lambda f: f.severity.rank).severity
-        ws.append([check_id, findings[0].source, len(findings), worst.value.upper()])
+        ws.append([None, None, len(findings), worst.value.upper()])
+        row = ws.max_row
+        _write_text_cell(ws, row, 1, check_id)
+        _write_text_cell(ws, row, 2, findings[0].source)
 
     sources = sorted({f.source for f in report.findings})
     if sources:
@@ -124,7 +138,14 @@ def _write_summary_sheet(ws: Worksheet, report: ReviewReport) -> None:
             cell.fill = _HEADER_FILL
             cell.font = _HEADER_FONT
         for s in sources:
-            ws.append([s, source_description(s)])
+            # source_description() falls back to echoing the raw source
+            # string back unchanged for a source it doesn't recognize --
+            # same untrusted-input concern as `s` itself, so both columns
+            # need the text-cell treatment.
+            ws.append([None, None])
+            row = ws.max_row
+            _write_text_cell(ws, row, 1, s)
+            _write_text_cell(ws, row, 2, source_description(s))
 
     if report.skipped:
         ws.append([])
@@ -159,20 +180,25 @@ def _write_findings_sheet(ws: Worksheet, report: ReviewReport) -> None:
             None,  # File -- written below via _write_text_cell
             f.line_start,
             f.severity.value.upper(),
-            f.check_id,
-            f.source,
-            f.tier,
+            None,  # Check ID -- written below via _write_text_cell
+            None,  # Source -- written below via _write_text_cell
+            None,  # Tier -- written below via _write_text_cell
             None,  # Title -- written below via _write_text_cell
             None,  # Explanation -- written below via _write_text_cell
             None,  # Suggestion -- written below via _write_text_cell
         ])
         row = ws.max_row
-        # File/Title/Explanation/Suggestion can all contain text derived from
-        # an untrusted repo's own content (a file path, or a finding's own
-        # title/explanation/suggestion, some of it LLM-read from file
-        # content) -- text-formatted so a leading =/+/-/@ never gets
-        # evaluated as a formula when the report is opened.
+        # File/Check ID/Source/Tier/Title/Explanation/Suggestion can all
+        # contain text derived from an untrusted source -- repo content for
+        # File/Title/Explanation/Suggestion, or (since `codecheck render`
+        # loads a report from an arbitrary JSON file via Finding.from_dict,
+        # not necessarily one codecheck itself produced) Check ID/Source/Tier
+        # too (CodeRabbit review). Text-formatted so a leading =/+/-/@ never
+        # gets evaluated as a formula when the report is opened.
         _write_text_cell(ws, row, 1, f.file)
+        _write_text_cell(ws, row, 4, f.check_id)
+        _write_text_cell(ws, row, 5, f.source)
+        _write_text_cell(ws, row, 6, f.tier)
         _write_text_cell(ws, row, 7, f.title)
         _write_text_cell(ws, row, 8, f.explanation)
         _write_text_cell(ws, row, 9, f.suggestion or "")
