@@ -85,6 +85,7 @@ def _write_summary_sheet(ws: Worksheet, report: ReviewReport) -> None:
         ("Files reviewed", len(report.files_reviewed)),
         ("Duration (s)", round(report.duration_seconds, 1)),
         ("Total findings", len(report.findings)),
+        ("Compliance %", report.compliance_percentage()),
     ]
     ws.append(("Repo", None))
     _write_text_cell(ws, 1, 2, report.repo_path)

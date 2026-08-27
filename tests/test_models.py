@@ -91,3 +91,69 @@ def test_review_report_from_dict_drops_malformed_findings_not_the_whole_report()
     data["findings"].append("not even a dict")
     report = ReviewReport.from_dict(data)
     assert len(report.findings) == 2  # the two well-formed ones survive
+
+
+def test_compliance_percentage_is_100_for_a_clean_run():
+    report = ReviewReport(
+        repo_path="/r", mode="diff", base_ref="m", head_ref="h",
+        generated_at=datetime(2026, 7, 30, tzinfo=timezone.utc), tiers_run=["rules"],
+        files_reviewed=["a.py", "b.py"],
+    )
+    assert report.compliance_percentage() == 100.0
+
+
+def test_compliance_percentage_is_100_when_nothing_was_reviewed():
+    # no files_reviewed -- avoid a division by zero, and there's nothing to
+    # be non-compliant about, so treat it the same as a clean run rather
+    # than 0%.
+    report = ReviewReport(
+        repo_path="/r", mode="diff", base_ref="m", head_ref="h",
+        generated_at=datetime(2026, 7, 30, tzinfo=timezone.utc), tiers_run=["rules"],
+    )
+    assert report.compliance_percentage() == 100.0
+
+
+def test_compliance_percentage_weights_by_severity():
+    def report_with(severity: Severity) -> ReviewReport:
+        finding = Finding(
+            check_id="RULE-001", tier="rules", source="house", severity=severity,
+            title="t", explanation="e", file="a.py", line_start=1,
+        )
+        return ReviewReport(
+            repo_path="/r", mode="diff", base_ref="m", head_ref="h",
+            generated_at=datetime(2026, 7, 30, tzinfo=timezone.utc), tiers_run=["rules"],
+            findings=[finding], files_reviewed=["a.py", "b.py"],
+        )
+
+    # 1 CRITICAL on 1 of 2 files costs that file its entire (capped) credit --
+    # 50% overall, same as a full FAIL on half the files reviewed.
+    assert report_with(Severity.CRITICAL).compliance_percentage() == 50.0
+    # A LOW finding costs proportionally less.
+    assert report_with(Severity.LOW).compliance_percentage() == 87.5
+
+
+def test_compliance_percentage_caps_per_file_penalty_at_full_credit():
+    # regression: multiple findings piling up on one file must not drag that
+    # file's credit below zero (which would need an even worse-scoring
+    # second file to "cancel out"), the same way FAIL never scores worse
+    # than FAIL in the audit-tool scheme this was adapted from.
+    findings = [
+        Finding(
+            check_id="RULE-001", tier="rules", source="house", severity=Severity.CRITICAL,
+            title="t", explanation="e", file="a.py", line_start=i,
+        )
+        for i in range(1, 6)  # 5 CRITICAL findings, way past a single file's max weight
+    ]
+    report = ReviewReport(
+        repo_path="/r", mode="diff", base_ref="m", head_ref="h",
+        generated_at=datetime(2026, 7, 30, tzinfo=timezone.utc), tiers_run=["rules"],
+        findings=findings, files_reviewed=["a.py", "b.py"],
+    )
+    # a.py is capped at 0 credit (not negative), b.py is untouched (full
+    # credit) -- 50%, not less.
+    assert report.compliance_percentage() == 50.0
+
+
+def test_compliance_percentage_included_in_to_dict():
+    report = make_report()
+    assert report.to_dict()["compliance_percentage"] == report.compliance_percentage()

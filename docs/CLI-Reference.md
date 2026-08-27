@@ -262,6 +262,29 @@ didn't run the review themselves, so:
   tiers/sources actually present in that run), so a report doesn't assume
   the reader already knows codecheck's own internal vocabulary.
 
+### Compliance percentage
+
+Every report format shows a single 0-100% **Compliance** score alongside the
+finding counts, computed by `ReviewReport.compliance_percentage()`: each
+reviewed file starts with full credit and loses points for every finding on
+it, weighted by severity (`CRITICAL` costs more than `LOW`), floored at zero
+per file so one badly-flagged file can't drag the whole run's score below
+what it actually earned once other files are clean. A run with no findings
+on any reviewed file is 100%; a run that reviewed nothing is also 100% (there's
+nothing to be non-compliant about, and it avoids a division by zero).
+
+It counts every finding regardless of tier/source (house rules, ruff,
+eslint, semgrep, LLM) — a real violation counts the same no matter which
+tier caught it. This is adapted from a separate audit tool
+(frappe-audit-tool)'s "Weighted Compliance %", which grades a fixed
+checklist of PASS/PARTIAL/FAIL checks per category (High/Medium/Low weighted
+3/2/1). codecheck has no such fixed checklist — it only records violations,
+with no "checked this, found nothing" record to count as a PASS — so the
+adaptation uses `files_reviewed` as the graded unit instead (each file's
+credit degrading continuously from full to zero, rather than three discrete
+PASS/PARTIAL/FAIL steps) and extends the weight scale to codecheck's five
+severities (`CRITICAL`=4, `HIGH`=3, `MEDIUM`=2, `LOW`=1, `INFO`=0.5).
+
 ### Named gate profiles (`--gate`)
 
 `thresholds.fail_on_severity` (default `high`) controls the exit-code gate —
