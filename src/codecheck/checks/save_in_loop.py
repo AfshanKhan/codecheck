@@ -89,6 +89,20 @@ class SaveInLoopCheck(HouseCheck):
                 )
 
         for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.Call) and isinstance(child.func, ast.Lambda):
+                # An immediately-invoked lambda ((lambda: d.save())()) runs
+                # its body right away as part of this call -- not deferred
+                # at all, unlike an ordinary lambda merely defined and
+                # passed around for later (caught by CodeRabbit review).
+                lam = child.func
+                for default in _default_value_exprs(lam):
+                    self._walk(default, next_depth, file_path, changed_lines, out)
+                self._walk(lam.body, next_depth, file_path, changed_lines, out)
+                for arg in child.args:
+                    self._walk(arg, next_depth, file_path, changed_lines, out)
+                for kw in child.keywords:
+                    self._walk(kw.value, next_depth, file_path, changed_lines, out)
+                continue
             # Only special-case a nested function/lambda's body once we're
             # actually inside a loop (next_depth > 0) -- outside of any
             # loop, descending into a function's body normally is exactly

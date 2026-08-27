@@ -41,22 +41,36 @@ def _line_of(content: str, needle: str) -> int:
     return content.count("\n", 0, idx) + 1 if idx != -1 else 1
 
 
+_DEFAULT_KEY_RE = re.compile(r'"default"')
+
+
 def _default_value_line(content: str, fieldname: str) -> int:
     """Line of this field's own "default" key -- not its "fieldname" key.
     A diff that only touches the default *value* itself (the fieldname line
     unchanged) still counts as touching the field the finding is about
     (caught by CodeRabbit review; same shape as the RULE-018/RULE-015 fixes
-    elsewhere in this codebase). Searches for "default" starting from this
-    field's own "fieldname" occurrence, so it lands within this field's own
-    JSON object rather than a different field's.
+    elsewhere in this codebase).
+
+    Picks whichever "default" occurrence in the whole file sits *nearest*
+    (by character distance) to this field's own "fieldname" occurrence,
+    rather than only searching forward from it -- Frappe's real
+    `frappe.as_json()` sorts a dict's keys alphabetically, so "default"
+    commonly sorts *before* "fieldname" within the same field object, which
+    a forward-only search would miss entirely (also caught by CodeRabbit
+    review, after the first fix). Not a full JSON-position-aware parser --
+    just a best-effort heuristic like the rest of this text-based line
+    lookup -- but a real field's own "default" key is virtually always the
+    textually closest one to its own "fieldname" key, since adjacent
+    fields' keys sit meaningfully farther away in the file.
     """
     fname_idx = content.find(f'"fieldname": "{fieldname}"')
     if fname_idx == -1:
         return _line_of(content, f'"fieldname": "{fieldname}"')
-    default_idx = content.find('"default"', fname_idx)
-    if default_idx == -1:
+    matches = list(_DEFAULT_KEY_RE.finditer(content))
+    if not matches:
         return content.count("\n", 0, fname_idx) + 1
-    return content.count("\n", 0, default_idx) + 1
+    nearest = min(matches, key=lambda m: abs(m.start() - fname_idx))
+    return content.count("\n", 0, nearest.start()) + 1
 
 
 class DoctypeJsonSyntaxCheck(HouseCheck):

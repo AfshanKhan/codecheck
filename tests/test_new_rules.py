@@ -136,6 +136,63 @@ def test_json_blob_finding_anchored_on_default_value_line_not_fieldname_line():
     assert findings[0].line_start == default_line
 
 
+def test_json_blob_finding_anchored_correctly_when_default_key_sorts_before_fieldname():
+    # regression (CodeRabbit, round 2): the fix above searched forward from
+    # "fieldname" for the next "default" -- but Frappe's real
+    # frappe.as_json() sorts a dict's keys alphabetically, so "default"
+    # (d) commonly sorts *before* "fieldname" (f) within the same field
+    # object. A forward-only search misses it entirely and falls back to
+    # the wrong line. Now picks whichever "default" is textually nearest
+    # to "fieldname", in either direction.
+    content = (
+        "{\n"
+        '  "fields": [\n'
+        "   {\n"
+        '    "default": "{\\"a\\": 1}",\n'
+        '    "fieldname": "notes",\n'
+        '    "fieldtype": "Text"\n'
+        "   }\n"
+        "  ],\n"
+        '  "name": "Sales Order"\n'
+        "}\n"
+    )
+    default_line = 4
+    fieldname_line = 5
+    findings = DoctypeJsonBlobFieldCheck().check_file(_JSON_PATH, content, {default_line})
+    assert len(findings) == 1
+    assert findings[0].line_start == default_line
+    assert DoctypeJsonBlobFieldCheck().check_file(_JSON_PATH, content, {fieldname_line}) == []
+
+
+def test_json_blob_finding_picks_correct_fields_default_among_several():
+    # A multi-field file where an unrelated earlier/later field's own
+    # "default" shouldn't be picked over this field's own nearby one.
+    content = (
+        "{\n"
+        '  "fields": [\n'
+        "   {\n"
+        '    "default": "plain",\n'
+        '    "fieldname": "title",\n'
+        '    "fieldtype": "Data"\n'
+        "   },\n"
+        "   {\n"
+        '    "default": "{\\"a\\": 1}",\n'
+        '    "fieldname": "notes",\n'
+        '    "fieldtype": "Text"\n'
+        "   },\n"
+        "   {\n"
+        '    "default": "another plain",\n'
+        '    "fieldname": "summary",\n'
+        '    "fieldtype": "Text"\n'
+        "   }\n"
+        "  ]\n"
+        "}\n"
+    )
+    findings = DoctypeJsonBlobFieldCheck().check_file(_JSON_PATH, content, None)
+    assert len(findings) == 1
+    assert findings[0].line_start == 9  # "notes"'s own "default" line
+
+
 # RULE-024: blocking network call inside a doc-event hook
 def test_blocking_http_call_in_doc_event_flagged():
     content = (
@@ -179,6 +236,20 @@ def test_http_call_in_nested_function_default_value_flagged():
         "    def validate(self):\n"
         "        def inner(value=requests.get('https://example.com')):\n"
         "            pass\n"
+    )
+    findings = BlockingHttpCallInDocEventCheck().check_file("a.py", content, None)
+    assert len(findings) == 1
+    assert findings[0].check_id == "RULE-024"
+
+
+def test_http_call_in_immediately_invoked_lambda_flagged():
+    # regression (CodeRabbit): an immediately-invoked lambda's body runs
+    # right away as part of the call -- unlike an ordinary lambda merely
+    # defined and passed around, its body was wrongly treated as deferred.
+    content = (
+        "class SalesOrder:\n"
+        "    def validate(self):\n"
+        "        (lambda: requests.get('https://example.com'))()\n"
     )
     findings = BlockingHttpCallInDocEventCheck().check_file("a.py", content, None)
     assert len(findings) == 1
@@ -264,6 +335,21 @@ def test_save_in_nested_function_default_value_flagged():
     findings = SaveInLoopCheck().check_file("a.py", content, None)
     assert len(findings) == 1
     assert findings[0].check_id == "RULE-026"
+
+
+def test_save_in_immediately_invoked_lambda_flagged():
+    # regression (CodeRabbit): an immediately-invoked lambda's body runs
+    # right away as part of the call, unlike an ordinary lambda merely
+    # defined and passed around for later.
+    content = "for d in docs:\n    (lambda: d.save())()\n"
+    findings = SaveInLoopCheck().check_file("a.py", content, None)
+    assert len(findings) == 1
+    assert findings[0].check_id == "RULE-026"
+
+
+def test_save_in_non_invoked_lambda_not_flagged():
+    content = "for d in docs:\n    f = lambda: d.save()\n"
+    assert SaveInLoopCheck().check_file("a.py", content, None) == []
 
 
 # RULE-027: frappe.call() promise chain could use async/await

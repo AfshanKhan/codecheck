@@ -58,10 +58,29 @@ def _iter_own_scope(node: ast.AST):
     `def helper(value=requests.get(url)): ...` inside a doc-event hook
     really does make a blocking call every time that hook runs, even though
     `helper` itself is never called (caught by CodeRabbit review).
+
+    An immediately-invoked lambda (`(lambda: requests.get(url))()`) is a
+    second exception -- its body runs right away as part of that call, not
+    deferred at all, so it's walked in full rather than treated like an
+    ordinary lambda merely defined and passed around for later (also caught
+    by CodeRabbit review).
     """
     for child in ast.iter_child_nodes(node):
         yield child
-        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        if isinstance(child, ast.Call) and isinstance(child.func, ast.Lambda):
+            lam = child.func
+            for default in _default_value_exprs(lam):
+                yield default
+                yield from _iter_own_scope(default)
+            yield lam.body
+            yield from _iter_own_scope(lam.body)
+            for arg in child.args:
+                yield arg
+                yield from _iter_own_scope(arg)
+            for kw in child.keywords:
+                yield kw.value
+                yield from _iter_own_scope(kw.value)
+        elif isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
             for decorator in child.decorator_list:
                 yield decorator
                 yield from _iter_own_scope(decorator)
