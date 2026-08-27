@@ -185,7 +185,18 @@ class CommentedOutPythonCodeCheck(HouseCheck):
         i = 0
         n = len(lines)
         while i < n:
-            if not lines[i].strip().startswith("#"):
+            # A blank `#` line is never itself the start of a new candidate
+            # -- without this, one sitting right before an unrelated
+            # statement got absorbed into *that* statement's block (its
+            # empty text parses harmlessly, so the match still succeeds),
+            # reporting a finding range that visually claims to start on a
+            # blank line above code it has nothing to do with (caught by
+            # Graphite review). The separate continuation-lookahead below
+            # (absorbing a blank line between a matched suite and its own
+            # elif/else/except/finally) is unaffected -- that's a different
+            # code path that indexes into `lines` directly, not this entry
+            # check.
+            if not lines[i].strip().startswith("#") or not _dehash(lines[i], "#").strip():
                 i += 1
                 continue
             matched_end = None

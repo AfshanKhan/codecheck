@@ -535,10 +535,16 @@ def test_commented_out_python_if_else_merges_across_a_blank_comment_line():
 
 def test_commented_out_python_if_block_not_merged_with_unrelated_code_after_blank_line():
     # A blank comment line followed by genuinely unrelated code (not a
-    # continuation clause) must not be swallowed into the previous match.
+    # continuation clause) must not be swallowed into the previous match --
+    # and the blank line itself shouldn't be attributed to the unrelated
+    # statement's own finding range either (regression, Graphite review: an
+    # earlier version let the blank line become the *start* of the second
+    # finding, since its empty text parses harmlessly as part of a larger
+    # block -- reporting a range that visually claims to start on a blank
+    # line above code it has nothing to do with).
     content = "# if x:\n#     do_a()\n#\n# y = 5\n"
     findings = CommentedOutPythonCodeCheck().check_file("a.py", content, None)
-    assert [(f.line_start, f.line_end) for f in findings] == [(1, 2), (3, 4)]
+    assert [(f.line_start, f.line_end) for f in findings] == [(1, 2), (4, 4)]
 
 
 def test_commented_out_python_try_except_finally_merges_into_one_finding():
