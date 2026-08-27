@@ -3,6 +3,16 @@ client scripts, excluding the framework's own sanctioned entry points
 ($wrapper, frm.fields_dict) -- Frappe scripts are expected to work through the
 frm/dialog APIs rather than reaching into the DOM directly.
 
+The "sanctioned entry point" exemption only applies when it's the argument
+being wrapped, e.g. `$($wrapper)` or `$(frm.fields_dict.my_field.$wrapper)`
+-- an earlier version exempted any line containing the substring "$wrapper"
+*anywhere*, which also matched a genuinely raw jQuery call wrapping a
+different object that merely has a same-named property, e.g.
+`$(field.$wrapper).find('.control-label').css({...})` (confirmed as a real
+miss comparing against a separate audit tool on a real repo: this is
+exactly the kind of direct-DOM-styling RULE-014 exists to catch, and the
+old substring check silently suppressed it).
+
 Ported from frappe-pr-reviewer's js_analyzer.py.
 """
 
@@ -14,7 +24,7 @@ from codecheck.checks.base import HouseCheck
 from codecheck.models import Finding, Severity
 
 _JQUERY_RE = re.compile(r"(?<![\w$])(?:\$|jQuery)\s*\(")
-_SAFE_PATTERNS = ("$wrapper", "frm.fields_dict")
+_SAFE_CALL_RE = re.compile(r"(?<![\w$])(?:\$|jQuery)\s*\(\s*(?:\$wrapper|frm\.fields_dict)\b")
 
 
 class JsJqueryDomCheck(HouseCheck):
@@ -32,7 +42,7 @@ class JsJqueryDomCheck(HouseCheck):
         for lineno, line in enumerate(content.splitlines(), start=1):
             if not _JQUERY_RE.search(line):
                 continue
-            if any(safe in line for safe in _SAFE_PATTERNS):
+            if _SAFE_CALL_RE.search(line):
                 continue
             if changed_lines is not None and lineno not in changed_lines:
                 continue
