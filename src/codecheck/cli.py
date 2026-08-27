@@ -323,24 +323,27 @@ def _sanitize_slug(value: str) -> str:
 
 
 def _display_repo_url(repo_url: str) -> str:
-    """Strip any embedded userinfo (a credential, e.g.
-    `https://user:token@github.com/org/repo.git`) out of a URL before it's
-    stored in `ReviewReport.repo_path` -- `_validate_clone_url` doesn't reject
+    """Strip anything credential-shaped out of a URL before it's stored in
+    `ReviewReport.repo_path` -- `_validate_clone_url` doesn't reject
     credentials in an HTTPS URL (it only blocks argument-injection/transport-
     helper shapes), and `redact._is_url_like` leaves a URL-shaped repo_path
     untouched on the assumption it has nothing local-identifying to scrub, so
     a credential embedded in --repo-url would otherwise reach every report
-    format unredacted (CodeRabbit review). The original repo_url (with any
+    format unredacted. That covers not just embedded userinfo
+    (`https://user:token@host/repo.git`) but a token in the query string or
+    fragment too (e.g. `https://host/org/repo.git?access_token=...`) -- the
+    query/fragment are dropped unconditionally, not just when userinfo is
+    also present (CodeRabbit review). The original repo_url (with any
     credentials still intact) is used for the actual `git clone` -- only the
     report-facing copy is stripped. SSH's scp-like `git@host:org/repo.git`
     syntax has no userinfo component to strip (no "://", so urlsplit doesn't
     treat "git@host" as netloc) and is returned unchanged.
     """
     parts = urlsplit(repo_url)
-    if not parts.scheme or "@" not in parts.netloc:
+    if not parts.scheme:
         return repo_url
     host = parts.netloc.rsplit("@", 1)[-1]
-    return urlunsplit((parts.scheme, host, parts.path, parts.query, parts.fragment))
+    return urlunsplit((parts.scheme, host, parts.path, "", ""))
 
 
 def _repo_label(repo_path: Path, repo_url: str | None) -> str:

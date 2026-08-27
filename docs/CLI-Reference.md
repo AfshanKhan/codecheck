@@ -220,17 +220,19 @@ directory-create, not a check-then-write) — the whole run's worth of files
 sits behind one atomic claim now, rather than four separate per-extension
 claims — so two `codecheck` processes finishing in the same second against
 the same repo/PR/mode can't both win the same directory, and a leftover
-partial directory from an earlier interrupted run can't get silently reused.
-Any failure during this process — a directory-name collision, a non-collision
-I/O error (permission denied, disk full), or a reporter raising once writing
-actual content starts — deletes the whole run directory (whatever did or
-didn't get written into it) rather than leaving it behind. This rollback is
-a normal Python exception handler, though, not a crash-proof guarantee: a
-process kill or forced termination (SIGKILL, power loss) partway through can
-still leave an empty or partial run directory that no later run can reclaim
-(the atomic-create in the next run just sees "already exists" and skips to
-`-2`, `-3`, ...) — a handled failure never leaves stale files behind, but an
-unhandled one bypassing Python entirely still can.
+partial directory from an earlier interrupted run can't get silently reused
+(a directory-name collision on claim just moves on to `-2`, `-3`, ... — it
+doesn't touch or delete anything). Once a directory is actually claimed,
+though, a *later* failure while writing into it — a non-collision I/O error
+(permission denied, disk full), or a reporter raising once writing actual
+content starts — does roll back: the whole run directory (whatever did or
+didn't get written into it) is removed rather than left behind. That
+rollback is a normal Python exception handler on a best-effort delete,
+though, not a crash-proof guarantee: a process kill or forced termination
+(SIGKILL, power loss) partway through, or the delete itself hitting an I/O
+error, can still leave an empty or partial run directory that no later run
+can reclaim (the atomic-create in the next run just sees "already exists"
+and skips to `-2`, `-3`, ...).
 
 The `.xlsx` report is the one built for filtering and sorting rather than
 reading top to bottom: a "Findings" sheet with every finding as its own row

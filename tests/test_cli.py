@@ -109,6 +109,25 @@ def test_display_repo_url_leaves_credential_free_urls_untouched():
     )
 
 
+def test_display_repo_url_strips_token_in_query_string():
+    # regression (CodeRabbit): a token can arrive as a query parameter
+    # instead of userinfo, e.g. GitHub's own
+    # https://github.com/org/repo.git?access_token=... pattern -- the
+    # original fix only stripped query/fragment when userinfo was ALSO
+    # present, so a query-only token slipped through untouched.
+    assert (
+        _display_repo_url("https://github.com/org/repo.git?access_token=secret")
+        == "https://github.com/org/repo.git"
+    )
+
+
+def test_display_repo_url_strips_credentials_query_and_fragment_together():
+    assert (
+        _display_repo_url("https://user:pass@github.com/org/repo.git?token=secret#frag")
+        == "https://github.com/org/repo.git"
+    )
+
+
 def test_report_basename_uses_pr_number_when_present():
     generated_at = datetime(2026, 8, 14, 16, 10, 0, tzinfo=timezone.utc)
     assert _report_basename("org_repo", 12, "diff", generated_at) == "org_repo_pr12_20260814_161000"

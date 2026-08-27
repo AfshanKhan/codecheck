@@ -43,12 +43,14 @@ class JsHardcodedHtmlCheck(HouseCheck):
             if changed_lines is not None and lineno not in changed_lines:
                 continue
             if file_path.endswith(".html"):
+                title = "Hardcoded <input>/<button> HTML in template"
                 explanation = (
                     "This is a raw <input>/<button> tag in a Jinja template, not something "
                     "generated through a DocType field. Frappe isn't managing it -- no "
                     "validation, no CSRF handling, nothing tying it back to a DocType field."
                 )
             else:
+                title = self.title
                 explanation = (
                     "This builds a raw <input>/<button> tag by hand instead of using "
                     "Frappe's field/dialog APIs (frm.add_field, frappe.ui.Dialog, etc.). "
@@ -61,7 +63,7 @@ class JsHardcodedHtmlCheck(HouseCheck):
                     tier="rules",
                     source="house",
                     severity=self.severity,
-                    title=self.title,
+                    title=title,
                     explanation=explanation,
                     file=file_path,
                     line_start=lineno,
