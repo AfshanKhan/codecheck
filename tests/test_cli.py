@@ -602,6 +602,31 @@ def test_audit_repo_url_clones_and_reviews(fake_origin_and_clone: Path, tmp_path
     assert _report_json_path(output_dir).exists()
 
 
+def test_audit_repo_url_report_shows_the_url_not_the_local_clone_path(
+    fake_origin_and_clone: Path, tmp_path: Path
+):
+    # regression: repo_path used to always be the local temp clone's own
+    # directory (codecheck-clone-xxxxx), meaningless to anyone reading the
+    # report -- it should be the --repo-url the user actually passed.
+    bare = fake_origin_and_clone.parent / "origin.git"
+    output_dir = tmp_path / "reports"
+
+    result = runner.invoke(
+        app, ["audit", "--repo-url", str(bare), "--output-dir", str(output_dir)]
+    )
+    assert result.exit_code == 0
+    data = json.loads(_report_json_path(output_dir).read_text())
+    assert data["repo_path"] == str(bare)
+    assert "codecheck-clone" not in data["repo_path"]
+
+
+def test_audit_local_repo_path_report_shows_the_local_path(sandbox_repo: Path, tmp_path: Path):
+    output_dir = tmp_path / "reports"
+    runner.invoke(app, ["audit", "--repo-path", str(sandbox_repo), "--output-dir", str(output_dir)])
+    data = json.loads(_report_json_path(output_dir).read_text())
+    assert data["repo_path"] == str(sandbox_repo.resolve())
+
+
 class _FakeReviewer:
     """Duck-types the Reviewer interface (.review(), .skipped_files) so
     _run_llm_tier's resume wiring can be tested without a real HTTP client.

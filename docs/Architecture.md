@@ -705,6 +705,39 @@ report on every invocation). `cli._write_reports()` (the claim-then-write
 logic shared by `_finish` and `render`) is what actually performs the write —
 see "Re-rendering a report" below.
 
+### Making a report readable to someone who didn't run it
+
+[`reporters/glossary.py`](../src/codecheck/reporters/glossary.py) is the one
+place that owns two things every human-facing reporter (console/markdown/
+docx/xlsx — not JSON, see below) renders into its own format, so the wording
+never drifts out of sync between them:
+
+- **`format_ist(dt)`** — every `generated_at` is always produced internally
+  as `datetime.now(timezone.utc)`; this converts it to `"27 Aug 2026, 12:16
+  PM IST"` for display. JSON is the one exception: it keeps the raw UTC
+  ISO-8601 string untouched, since `ReviewReport.from_dict()` parses that
+  field back via `datetime.fromisoformat()` for `render`/`compare`/
+  `--resume-from` — JSON is documented as "for other tools to read," and
+  swapping its timestamp format would silently break every consumer of it.
+- **`tier_description(tier)`** / **`source_description(source)`** — a
+  first-time reader has no way to already know what `tiers_run: rules` means,
+  or what the `(house)`/`(ruff)`/... tag after a check ID refers to. Each
+  human-facing reporter renders a short "what does this mean" line/section
+  using these, listing only the sources actually present in `report.findings`
+  (not every source codecheck knows about, most of which won't be relevant to
+  a given run).
+
+`report.repo_path` is the repo's own remote URL (`--repo-url`, or the URL
+`--pr` was given as) whenever one was actually passed — not the local temp
+clone's directory (`codecheck-clone-xxxxx`), which means nothing to a report
+reader and used to be what every report showed regardless of how the repo was
+sourced. Only a genuinely local run (`--repo-path`, or `--pr <number>`
+against an already-cloned local checkout) shows a local filesystem path.
+`redact.py`'s `_is_url_like()` guards `--redact` accordingly — a public
+remote URL isn't a local path with a username to scrub, so `--redact` leaves
+it exactly as-is instead of replacing it with the `<local repo>` placeholder
+like a genuine local path.
+
 ## Redaction, re-rendering, and comparing reports
 
 Three small, independent modules sit on top of `ReviewReport` for the
@@ -902,6 +935,7 @@ src/codecheck/
 ├── frappe_db.py                # FrappeDbConnection -- read-only connection to a live Frappe site's DB, for RULE-019
 └── reporters/
     ├── console.py, json_report.py, markdown_report.py, docx_report.py, xlsx_report.py
+    └── glossary.py                 # format_ist() + tier/source description lookups, shared by the above (not json_report.py)
 tests/                        # pytest, CLI-level tests via typer.testing.CliRunner
 ```
 

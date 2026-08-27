@@ -765,7 +765,13 @@ def diff(
         _maybe_suggest_fixes(suggest_fixes, cfg, findings, targets, review_repo_path, skipped)
 
         report = ReviewReport(
-            repo_path=str(source_repo_path),
+            # The repo's own remote URL when one was actually given
+            # (--repo-url, or the URL --pr was passed as) -- a local temp
+            # clone's directory name (codecheck-clone-xxxxx) means nothing
+            # to a report reader. Only a genuinely local run (--repo-path,
+            # or --pr <number> against an existing local checkout) shows
+            # the local filesystem path.
+            repo_path=repo_url or str(source_repo_path),
             mode="diff",
             base_ref=report_base_ref,
             head_ref=report_head_ref,
@@ -903,7 +909,10 @@ def audit(
         _maybe_suggest_fixes(suggest_fixes, cfg, findings, targets, effective_repo_path, skipped)
 
         report = ReviewReport(
-            repo_path=str(effective_repo_path),
+            # See the matching comment in diff() -- the repo's own remote
+            # URL when one was given, not a local temp clone's meaningless
+            # directory name.
+            repo_path=repo_url or str(effective_repo_path),
             mode="audit",
             base_ref=None,
             head_ref=None,

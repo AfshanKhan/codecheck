@@ -230,6 +230,24 @@ is written Text-formatted with any leading `=`/`+`/`-`/`@` neutralized, so a
 report built from an untrusted `--repo-url`/`--pr` can't smuggle a formula
 that runs when someone just opens the file in Excel.
 
+Every report format aside from `.json` is meant to be readable by someone who
+didn't run the review themselves, so:
+
+- **`Repo`** shows the actual `--repo-url` (or the URL `--pr` was given as)
+  when one was passed — not a local temp clone's meaningless directory name
+  — and only falls back to a local filesystem path for a genuinely local run
+  (`--repo-path`, or `--pr <number>` against an existing local checkout).
+  `--redact` leaves a remote URL untouched (nothing local-identifying about
+  a public URL) and only replaces an actual local path with a placeholder.
+- **`Generated`** is shown in IST (`27 Aug 2026, 12:16 PM IST`), not a raw
+  UTC ISO-8601 timestamp. `.json`'s `generated_at` field is the one
+  exception, kept as the machine-readable UTC string `render`/`compare`/
+  `--resume-from` parse back — see [Architecture](Architecture.md#making-a-report-readable-to-someone-who-didnt-run-it).
+- **`Tiers run`** and every check's `(house)`/`(ruff)`/... source tag get a
+  one-line "what does this mean" explanation next to them (only for the
+  tiers/sources actually present in that run), so a report doesn't assume
+  the reader already knows codecheck's own internal vocabulary.
+
 ### Named gate profiles (`--gate`)
 
 `thresholds.fail_on_severity` (default `high`) controls the exit-code gate —

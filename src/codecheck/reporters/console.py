@@ -8,6 +8,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from codecheck.models import SEVERITY_COLOR, ReviewReport, Severity
+from codecheck.reporters.glossary import format_ist, source_description, tier_description
 
 
 def print_report(report: ReviewReport, console: Console) -> None:
@@ -58,3 +59,9 @@ def _print_summary(report: ReviewReport, console: Console) -> None:
         f"\n[bold]{len(report.findings)} finding(s)[/bold] across "
         f"{len(report.by_file())} file(s) — {summary}"
     )
+    tiers_display = ", ".join(f"{t} ({tier_description(t)})" for t in report.tiers_run)
+    console.print(f"[dim]Generated {format_ist(report.generated_at)} — tiers run: {tiers_display}[/dim]")
+    sources = sorted({f.source for f in report.findings})
+    if sources:
+        legend = ", ".join(f"{s} = {source_description(s)}" for s in sources)
+        console.print(f"[dim]Check sources: {legend}[/dim]")

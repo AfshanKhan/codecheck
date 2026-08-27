@@ -21,6 +21,17 @@ from codecheck.models import Finding, ReviewReport
 
 _PLACEHOLDER = "<local repo>"
 
+# `report.repo_path` is a remote URL, not a local filesystem path, whenever
+# the review came from --repo-url or a --pr URL -- nothing local-identifying
+# about a public (or already-authenticated-to) remote URL, so it's left
+# exactly as-is rather than being replaced with the placeholder like a real
+# local path is.
+_URL_LIKE_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.\-]*://|^[\w.\-]+@[\w.\-]+:")
+
+
+def _is_url_like(value: str) -> bool:
+    return bool(_URL_LIKE_RE.match(value))
+
 # Matches an absolute POSIX or Windows path so it can be replaced wherever one
 # shows up inside free-form text (e.g. a linter's own error message embedded
 # in a `skipped` entry), not just the dedicated repo_path field. The leading
@@ -110,8 +121,11 @@ def redact_report(report: ReviewReport) -> ReviewReport:
     strings. Does not mutate the input.
     """
     real_path = report.repo_path
-    repo_name = Path(real_path).name if real_path else ""
-    display = f"{_PLACEHOLDER} ({repo_name})" if repo_name else _PLACEHOLDER
+    if real_path and _is_url_like(real_path):
+        display = real_path  # already a public/shareable remote URL
+    else:
+        repo_name = Path(real_path).name if real_path else ""
+        display = f"{_PLACEHOLDER} ({repo_name})" if repo_name else _PLACEHOLDER
     return dataclasses.replace(
         report,
         repo_path=display,

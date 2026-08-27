@@ -42,6 +42,16 @@ def test_console_report_runs_without_error():
     assert "finding(s)" in output
 
 
+def test_console_report_shows_ist_timestamp_and_source_legend():
+    console = Console(record=True, width=100)
+    print_report(make_report(), console)
+    output = console.export_text()
+    # make_report()'s generated_at is 2026-07-30T00:00:00 UTC == 05:30 AM IST
+    assert "30 Jul 2026, 05:30 AM IST" in output
+    assert "tiers run: rules" in output
+    assert "house = one of codecheck's own built-in rules" in output
+
+
 def test_console_report_no_findings():
     console = Console(record=True, width=100)
     empty = ReviewReport(
@@ -83,6 +93,15 @@ def test_markdown_report_contains_table_and_file_headers():
     assert "## `app/api.py`" in md
     assert "RULE-002" in md
     assert "| Line | Severity | Check | Title |" in md
+
+
+def test_markdown_report_shows_repo_ist_timestamp_and_source_legend():
+    md = render_markdown(make_report())
+    assert "**Repo:**" in md
+    assert "30 Jul 2026, 05:30 AM IST" in md
+    assert "`rules`" in md
+    assert "**house** = one of codecheck's own built-in rules" in md
+    assert "**ruff** = the ruff Python linter" in md
     assert "big_file.py" in md
 
 
@@ -118,6 +137,15 @@ def test_docx_report_contains_findings_and_summary():
     assert "RULE-002" in text
     assert "big_file.py" in text  # skipped section
     assert "1" in text  # high-severity count
+
+
+def test_docx_report_shows_ist_timestamp_and_source_legend():
+    doc = render_docx(make_report())
+    text = _docx_text(doc)
+    assert "30 Jul 2026, 05:30 AM IST" in text
+    assert "How to read the Check column" in text
+    assert "one of codecheck's own built-in rules" in text
+    assert "the ruff Python linter" in text
 
 
 def test_docx_report_no_findings():
@@ -170,6 +198,16 @@ def test_xlsx_report_summary_sheet_has_counts():
     assert "RULE-002" in values  # per-check breakdown
     assert "HIGH" in values
     assert "big_file.py: too large for cloud tier" in values  # skipped section
+
+
+def test_xlsx_report_shows_ist_timestamp_and_source_legend():
+    wb = render_xlsx(make_report())
+    ws = wb["Summary"]
+    values = [cell.value for row in ws.iter_rows() for cell in row if cell.value is not None]
+    assert "30 Jul 2026, 05:30 AM IST" in values
+    assert any(isinstance(v, str) and v.startswith("rules (") for v in values)
+    assert "one of codecheck's own built-in rules (RULE-0xx)" in values
+    assert "the ruff Python linter" in values
 
 
 def test_xlsx_report_no_findings():

@@ -17,6 +17,7 @@ from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
 
 from codecheck.models import ReviewReport, Severity
+from codecheck.reporters.glossary import format_ist, source_description, tier_description
 
 _FORMULA_TRIGGERS = ("=", "+", "-", "@", "\t", "\r")
 
@@ -67,12 +68,13 @@ def _write_summary_sheet(ws: Worksheet, report: ReviewReport) -> None:
     # repo_path is the one summary value that can reflect an untrusted
     # source (a cloned --repo-url/--pr's own path) -- text-formatted via
     # _write_text_cell like the Findings sheet's free-text columns.
+    tiers_display = ", ".join(f"{t} ({tier_description(t)})" for t in report.tiers_run) or "-"
     rows = [
         ("Mode", report.mode),
         ("Base ref", report.base_ref or "-"),
         ("Head ref", report.head_ref or "-"),
-        ("Tiers run", ", ".join(report.tiers_run) or "-"),
-        ("Generated at", report.generated_at.isoformat()),
+        ("Tiers run", tiers_display),
+        ("Generated at", format_ist(report.generated_at)),
         ("Files reviewed", len(report.files_reviewed)),
         ("Duration (s)", round(report.duration_seconds, 1)),
         ("Total findings", len(report.findings)),
@@ -101,7 +103,7 @@ def _write_summary_sheet(ws: Worksheet, report: ReviewReport) -> None:
 
     ws.append([])
     header_row = ws.max_row + 1
-    ws.append(["Check", "Count", "Highest severity"])
+    ws.append(["Check", "Source", "Count", "Highest severity"])
     for cell in ws[header_row]:
         cell.fill = _HEADER_FILL
         cell.font = _HEADER_FONT
@@ -111,7 +113,18 @@ def _write_summary_sheet(ws: Worksheet, report: ReviewReport) -> None:
     for check_id in sorted(by_check, key=lambda c: -len(by_check[c])):
         findings = by_check[check_id]
         worst = max(findings, key=lambda f: f.severity.rank).severity
-        ws.append([check_id, len(findings), worst.value.upper()])
+        ws.append([check_id, findings[0].source, len(findings), worst.value.upper()])
+
+    sources = sorted({f.source for f in report.findings})
+    if sources:
+        ws.append([])
+        header_row = ws.max_row + 1
+        ws.append(["Source", "What it is"])
+        for cell in ws[header_row]:
+            cell.fill = _HEADER_FILL
+            cell.font = _HEADER_FONT
+        for s in sources:
+            ws.append([s, source_description(s)])
 
     if report.skipped:
         ws.append([])
@@ -122,7 +135,7 @@ def _write_summary_sheet(ws: Worksheet, report: ReviewReport) -> None:
             ws.append([None])
             _write_text_cell(ws, ws.max_row, 1, entry)
 
-    _autosize_columns(ws, [22, 60, 18])
+    _autosize_columns(ws, [22, 60, 18, 18])
 
 
 _FINDING_HEADERS = [
