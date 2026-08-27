@@ -17,10 +17,7 @@ _SEVERITY_EMOJI = {
 
 
 def _md_inline(text: str) -> str:
-    """Neutralize Markdown injection from untrusted text (LLM-generated titles,
-    attacker-controlled file names) used in a table cell. These reports are meant
-    to be pasted into a PR description or Slack, so links/images/raw HTML and
-    table-structure breakage (`|`, newlines) must not survive."""
+    """Neutralize Markdown injection from untrusted text used in a table cell."""
     text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     for ch in "\\`*_[]()~|":
         text = text.replace(ch, "\\" + ch)
@@ -28,9 +25,8 @@ def _md_inline(text: str) -> str:
 
 
 def _md_code(text: str) -> str:
-    """Sanitize untrusted text for use inside a `code span`: a code span can't be
-    backslash-escaped, so a stray backtick would break out of it (and a newline
-    out of the line entirely)."""
+    """Sanitize untrusted text for use inside a `code span` -- can't be
+    backslash-escaped, so a stray backtick would break out of it."""
     return text.replace("`", "'").replace("\r", " ").replace("\n", " ")
 
 

@@ -1,9 +1,5 @@
-"""RULE-012/RULE-013: flag leftover console.log() and debugger; statements in
-client-script JS. console.log is debug noise; debugger; is worse -- it halts
-execution for anyone with devtools open, including end users.
-
-Ported from frappe-pr-reviewer's js_analyzer.py.
-"""
+"""RULE-012/RULE-013: flag leftover console.log() and debugger; statements
+in client-script JS."""
 
 from __future__ import annotations
 

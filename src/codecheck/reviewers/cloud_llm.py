@@ -1,18 +1,9 @@
-"""Tier 3: cloud LLM reviewer. Calls a hosted LLM API with the diff plus full file
-content per changed file, forcing structured JSON output via tool-calling so we
-never have to regex-scrape free text.
+"""Tier 3: cloud LLM reviewer. Calls a hosted LLM API with the diff plus full
+file content per changed file, forcing structured JSON output via tool-calling.
 
-Two backends:
-
-- `AnthropicCloudReviewer` — the Anthropic Messages API (tool-use), its own
-  small per-file loop since the request/response shape doesn't match OpenAI's.
-- `OpenAICompatibleCloudReviewer` — built on the shared
-  `reviewers.openai_protocol.OpenAIProtocolReviewer` (also used by the local LLM
-  tier): any OpenAI-compatible chat-completions endpoint (function-calling).
-  Groq, Mistral, Cerebras, and OpenRouter all offer genuinely free API keys (no
-  prepaid balance) on this protocol, plus any custom endpoint via
-  provider="openai_compatible" + base_url.
-
+Two backends: `AnthropicCloudReviewer` (Anthropic Messages API, its own loop)
+and `OpenAICompatibleCloudReviewer` (built on the shared
+reviewers.openai_protocol, for Groq/Mistral/Cerebras/OpenRouter/custom).
 `build_cloud_reviewer()` picks the right one from config.cloud.provider.
 """
 
@@ -95,11 +86,8 @@ _OPENAI_COMPATIBLE_PRESETS: dict[str, dict[str, str]] = {
 
 
 def exceeds_audit_cap(targets: list[ReviewTarget], config: CloudConfig, force: bool) -> int | None:
-    """Whole-repo audits can mean one cloud API call per file in the repo, so this
-    is a safety rail against an accidental huge bill. Returns the eligible file
-    count if it exceeds config.audit_file_cap and force wasn't passed (the caller
-    should refuse to run cloud review), or None if it's fine to proceed.
-    """
+    """Returns the eligible file count if it exceeds config.audit_file_cap and
+    force wasn't passed, else None."""
     eligible = [t for t in targets if t.status != "deleted"]
     if not force and len(eligible) > config.audit_file_cap:
         return len(eligible)
@@ -134,8 +122,6 @@ class AnthropicCloudReviewer(Reviewer):
                 "anthropic-version": _ANTHROPIC_VERSION,
                 "content-type": "application/json",
             },
-            # was hard-coded to 60.0 -- silently ignored cloud.request_timeout_seconds,
-            # so raising the config value past 60s had no effect for this provider.
             timeout=getattr(self.config, "request_timeout_seconds", 120.0),
         )
 
@@ -146,9 +132,7 @@ class AnthropicCloudReviewer(Reviewer):
         on_progress: Callable[[str, str], None] | None = None,
     ) -> list[Finding]:
         """on_progress, if given, is called as on_progress(file_path, outcome)
-        right after each file is processed -- see OpenAIProtocolReviewer.review
-        for why (live per-file visibility instead of a single spinner).
-        """
+        after each file is processed."""
         self.skipped_files = []
         client = self._get_client()
         findings: list[Finding] = []
@@ -252,10 +236,8 @@ def _anthropic_finding_from_raw(raw: dict, file_path: str, index: int) -> Findin
 
 
 class OpenAICompatibleCloudReviewer(OpenAIProtocolReviewer):
-    """Any OpenAI-compatible chat-completions endpoint: the free-tier hosted
-    providers in _OPENAI_COMPATIBLE_PRESETS, or a fully custom endpoint via
-    provider="openai_compatible" + cloud.base_url.
-    """
+    """Any OpenAI-compatible chat-completions endpoint: a free-tier preset,
+    or a custom one via provider="openai_compatible" + cloud.base_url."""
 
     tier = "cloud_llm"
     name = "cloud_llm"

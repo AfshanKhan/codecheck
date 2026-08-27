@@ -1,18 +1,9 @@
-"""Resolves which device will actually serve a given LM Studio model — this
-machine, or a remote device connected via LM Link — before we send it real
-work. Shells out to the `lms` CLI (`lms link status --json`, `lms ps --json`);
-if that's unavailable or inconclusive, the caller should treat the result as
-"can't confirm this won't run locally" rather than assume it's safe.
+"""Resolves which device will actually serve a given LM Studio model -- this
+machine, or a remote device connected via LM Link. Shells out to the `lms`
+CLI. `set_preferred_device()` lets the caller pick explicitly when a model
+is loaded on more than one device.
 
-Also supports the case where the same model is loaded on more than one device
-at once — LM Studio picks one silently (we confirmed this against a real
-setup), so `set_preferred_device()` lets the caller make that choice explicit
-via `lms link set-preferred-device`, which we verified actually controls
-routing.
-
-This is deliberately separate from reviewers/local_llm.py: it's a pre-flight
-UX/confirmation concern for the CLI, not part of the reviewer's request logic.
-"""
+Separate from reviewers/local_llm.py: this is a pre-flight CLI concern."""
 
 from __future__ import annotations
 
@@ -32,10 +23,8 @@ class DeviceCandidate:
 
 @dataclass
 class ModelLocation:
-    # True = will run on this machine, False = confirmed on a single remote
-    # LM Link device, None = couldn't be determined or is ambiguous (see
-    # is_ambiguous) -- callers should treat None as "can't confirm this won't
-    # run locally."
+    # True = this machine, False = confirmed single remote device, None =
+    # undetermined/ambiguous.
     is_local: bool | None
     description: str
     device_name: str | None = None
@@ -83,10 +72,7 @@ def resolve_model_location(model_id: str) -> ModelLocation:
     if ps_error:
         return ModelLocation(is_local=None, description=f"could not query local model status: {ps_error}")
 
-    # `lms ps --json` lists every model loaded anywhere on the LM Link network,
-    # not just this machine -- each entry's deviceIdentifier is null/absent for
-    # a local model and set to a remote device's id otherwise. Without this
-    # check, a model loaded only on a linked remote gets misread as also local.
+    # deviceIdentifier is null/absent for a local model, set for a remote one.
     is_local_loaded = any(
         (entry.get("identifier") == model_id or entry.get("modelKey") == model_id)
         and not entry.get("deviceIdentifier")
@@ -130,10 +116,8 @@ def resolve_model_location(model_id: str) -> ModelLocation:
 
 
 def set_preferred_device(device_identifier: str) -> tuple[bool, str]:
-    """Sets LM Studio's LM Link preferred device — a persistent app setting,
-    not scoped to this run; there's no `lms` command to read/restore the prior
-    value, so callers should tell the user this is a lasting change.
-    """
+    """Sets LM Studio's LM Link preferred device -- a persistent app
+    setting, not scoped to this run."""
     if shutil.which("lms") is None:
         return False, "lms CLI not found"
     try:

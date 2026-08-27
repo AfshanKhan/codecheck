@@ -1,13 +1,6 @@
-"""Shared OpenAI-compatible chat-completions protocol: the request shape, the
-forced-tool-call JSON schema, and the per-file skip/loop logic used by every
-reviewer that speaks this protocol — the cloud tier's free/OpenAI-compatible
-backends (Groq, Mistral, Cerebras, OpenRouter, custom) and the local LLM tier
-(LM Studio, Ollama, or any other local OpenAI-compatible server).
-
-Concrete subclasses only need to set tier/name/check_id_prefix and implement
-_resolved_base_url()/_resolved_api_key_env() — everything else (the request,
-the tool-call parsing, the skip-not-crash per-file loop) is shared here.
-"""
+"""Shared OpenAI-compatible chat-completions protocol: request shape,
+forced-tool-call JSON schema, and per-file skip/loop logic used by every
+cloud/local reviewer that speaks this protocol."""
 
 from __future__ import annotations
 
@@ -30,10 +23,8 @@ _MAX_RETRY_DELAY_SECONDS = 60.0
 
 
 def _parse_retry_after(response: httpx.Response) -> float | None:
-    """The Retry-After header on a 429 is usually a plain integer number of
-    seconds -- confirmed this is what Groq actually sends. The HTTP-date form
-    (RFC 7231's other option) isn't handled; falls back to backoff for that.
-    """
+    """Parses a plain-integer-seconds Retry-After header. The HTTP-date form
+    isn't handled; falls back to backoff for that."""
     value = response.headers.get("retry-after")
     if value is None:
         return None
@@ -46,28 +37,9 @@ def _parse_retry_after(response: httpx.Response) -> float | None:
 def post_with_retry(
     client: httpx.Client, url: str, json_payload: dict, max_retries: int = DEFAULT_MAX_RETRIES
 ) -> httpx.Response:
-    """POST with automatic retry-with-backoff on HTTP 429 (rate limited).
-
-    Confirmed necessary against a real rate-limited Groq account (free tier,
-    12k tokens/minute): without this, most of a repo's files were left
-    unreviewed after a single audit pass, and simply re-running the whole
-    command didn't help either -- targets are processed in a fixed order, so
-    a fresh retry just re-hits the same first few files and stalls at the
-    same point every time. This makes a single `codecheck` invocation wait
-    out the rate limit itself and complete unattended, rather than requiring
-    a human to notice the skips and manually re-invoke the command (that
-    cross-invocation case is still covered separately by
-    `codecheck.resume` / `--resume-from`, e.g. if a run is interrupted).
-
-    Honors the server's Retry-After header (seconds) when present, but never
-    waits longer than _MAX_RETRY_DELAY_SECONDS regardless -- a malicious or
-    misconfigured server returning an enormous Retry-After (or Retry-After
-    were fed straight to time.sleep uncapped) could otherwise stall the
-    review indefinitely, since only the fallback backoff had the cap applied.
-
-    Any non-429 HTTP error is raised immediately without retrying, since
-    retrying a 400/404/etc. would just get the same result again.
-    """
+    """POST with automatic retry-with-backoff on HTTP 429. Honors the
+    server's Retry-After header, capped at _MAX_RETRY_DELAY_SECONDS. Any
+    non-429 error is raised immediately."""
     delay = _INITIAL_RETRY_DELAY_SECONDS
     attempt = 0
     while True:
@@ -129,9 +101,8 @@ OPENAI_FINDINGS_FUNCTION = {
 
 
 def safe_int(value, default: int | None) -> int | None:
-    """LLM output doesn't always follow the JSON schema's declared types exactly
-    (e.g. a line number as a string) — coerce, or fall back rather than crash.
-    """
+    """Coerces a loosely-typed LLM value (e.g. a line number as a string) or
+    falls back rather than crashing."""
     if value is None:
         return default
     try:
@@ -153,11 +124,7 @@ def build_user_message(target: ReviewTarget, content: str) -> str:
 
 
 def format_http_error(e: httpx.HTTPError) -> str:
-    """httpx.HTTPError's str() alone omits the response body, which is usually
-    where the actual reason lives (rate limit details, invalid request
-    explanation, etc.) -- confirmed against a real 400 from Groq where the
-    exception message alone gave no indication of the cause.
-    """
+    """Includes the response body -- httpx.HTTPError's str() alone omits it."""
     if isinstance(e, httpx.HTTPStatusError):
         body = e.response.text.strip()
         if body:
@@ -169,13 +136,8 @@ _DIFF_LINE_TOLERANCE = 2
 
 
 def within_diff_scope(target: ReviewTarget, finding: Finding) -> bool:
-    """Mirrors rules_engine's line-scoping: in diff mode, only findings on (or
-    within a small tolerance of) an actually-changed line are kept. The system
-    prompt already asks the model to self-limit to changed lines, but that's
-    advisory only -- confirmed against a real cloud request that the model can
-    and does report findings on untouched lines anyway, so this enforces it
-    programmatically instead of trusting compliance.
-    """
+    """In diff mode, only findings on (or near) an actually-changed line are
+    kept -- enforced programmatically, not just via the prompt."""
     if target.changed_lines is None:
         return True  # audit mode: every line is in scope
     end = finding.line_end or finding.line_start
@@ -186,11 +148,8 @@ def within_diff_scope(target: ReviewTarget, finding: Finding) -> bool:
 
 
 def _extract_findings_from_content(content: str | None) -> list[dict] | None:
-    """Strict json.loads fallback for servers that serialize the tool call into
-    `content` instead of `tool_calls` (observed with Ollama). Returns None if
-    content is missing or doesn't parse to exactly the shape we expect —
-    callers should treat None as "no fallback available," not an error.
-    """
+    """Strict json.loads fallback for a tool call serialized into `content`.
+    Returns None if it doesn't parse to exactly the expected shape."""
     if not content:
         return None
     try:
@@ -253,9 +212,6 @@ class OpenAIProtocolReviewer(Reviewer):
             api_key = os.environ.get(key_env)
             if api_key:
                 headers["authorization"] = f"Bearer {api_key}"
-        # request_timeout_seconds is on both CloudConfig and LocalConfig, with
-        # different defaults -- CPU-only local inference confirmed to
-        # legitimately need minutes, not the 120s that's plenty for hosted APIs.
         timeout = getattr(self.config, "request_timeout_seconds", 120.0)
         return httpx.Client(headers=headers, timeout=timeout)
 
@@ -269,17 +225,7 @@ class OpenAIProtocolReviewer(Reviewer):
                 {"role": "user", "content": build_user_message(target, content)},
             ],
             "tools": [{"type": "function", "function": OPENAI_FINDINGS_FUNCTION}],
-            # "required" rather than forcing this specific function by name: some
-            # OpenAI-compatible servers (e.g. LM Studio) reject the object-form
-            # tool_choice and only accept none/auto/required. Since we only ever
-            # register one tool, "required" has the same effect here.
             "tool_choice": "required",
-            # Without an explicit cap, a server with no sane default (confirmed
-            # with llama-server, which otherwise let a 7B model ramble past
-            # 6000+ tokens without ever calling the tool) can generate
-            # indefinitely and blow past the client timeout. Groq/LM
-            # Studio/Ollama all had reasonable defaults and never needed this,
-            # but nothing in the OpenAI spec guarantees one.
             "max_tokens": 4096,
         }
 
@@ -324,13 +270,8 @@ class OpenAIProtocolReviewer(Reviewer):
                 return [], "tool call 'findings' contained a non-object element"
             return findings, None
 
-        # Some OpenAI-compatible servers (observed with Ollama) don't reliably
-        # populate tool_calls even with tool_choice="required" -- the model
-        # follows the schema correctly but the call ends up serialized as JSON
-        # text in `content` instead. This is a strict json.loads of the whole
-        # field, not regex-scraping of free-form prose, so it stays within the
-        # "never parse prose" intent: if it doesn't parse cleanly to our exact
-        # shape, we fall through to the normal skip below rather than guessing.
+        # Some servers serialize the tool call into `content` instead of
+        # tool_calls -- strict json.loads, no prose-scraping.
         findings = _extract_findings_from_content(message.get("content"))
         if findings is not None:
             return findings, None
@@ -360,11 +301,7 @@ class OpenAIProtocolReviewer(Reviewer):
         on_progress: Callable[[str, str], None] | None = None,
     ) -> list[Finding]:
         """on_progress, if given, is called as on_progress(file_path, outcome)
-        right after each file is processed -- lets the caller show live
-        per-file progress instead of a single spinner for the whole tier,
-        which otherwise gives no visibility into a long run (e.g. one that's
-        working through retries -- see post_with_retry) until it's all over.
-        """
+        after each file is processed."""
         self.skipped_files = []
         client = self._get_client()
         findings: list[Finding] = []

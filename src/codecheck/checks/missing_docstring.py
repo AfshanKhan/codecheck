@@ -1,14 +1,5 @@
-"""RULE-033: suggest a docstring on a function/method that doesn't have one --
-INFO severity, since this is a readability suggestion, not a correctness or
-security issue; easy to silence project-wide via rules.disabled_checks if
-it's too noisy for a given codebase.
-
-Skips private (`_leading_underscore`) and dunder (`__init__`, `__repr__`,
-...) names -- their purpose is usually obvious from the name and signature
-alone, and a mandatory docstring on every private helper would make this
-check far noisier than useful. Not in the tool this was ported from; added
-here as a deliberate reduction in false-positive volume.
-"""
+"""RULE-033: suggest a docstring on a function/method that doesn't have one.
+INFO severity. Skips private (`_leading_underscore`) and dunder names."""
 
 from __future__ import annotations
 

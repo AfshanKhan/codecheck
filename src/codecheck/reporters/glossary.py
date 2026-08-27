@@ -1,37 +1,20 @@
-"""Shared, single-source-of-truth text for the bits of a report a first-time
-reader has no way to already know: what "Tiers run" means, and what the
-"(house)"/"(ruff)"/... label after a check ID actually refers to. Every
-reporter (console/markdown/docx/xlsx) renders this same content into its own
-native format rather than each writing its own wording, so the explanation
-never drifts out of sync between formats.
+"""Shared text for report glossary bits: what "Tiers run" means, and what
+the "(house)"/"(ruff)"/... source label refers to. Every reporter renders
+this same content so it never drifts out of sync.
 
-Also the one place `generated_at` (always stored as a UTC-aware datetime --
-`datetime.now(timezone.utc)` at review time) gets converted to a human
-timezone for *display*. This is a display-only concern: the JSON report
-keeps `generated_at` as the raw UTC ISO-8601 string, since that's the
-machine-readable format `ReviewReport.from_dict()` parses back via
-`datetime.fromisoformat()` for `render`/`compare`/`--resume-from` -- swapping
-it for a localized string there would break every consumer of that field,
-for a report format that's documented as "for other tools to read," not for
-a person to read directly.
-"""
+Also the one place `generated_at` gets converted to a human timezone for
+display -- the JSON report keeps it as raw UTC ISO-8601 for other tools."""
 
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-# India Standard Time -- fixed +05:30 offset, no DST, so a plain fixed-offset
-# timezone (not a zoneinfo lookup, which would need the system tzdata to be
-# present) is both correct and dependency-free.
+# India Standard Time -- fixed +05:30 offset, no DST.
 IST = timezone(timedelta(hours=5, minutes=30), name="IST")
 
 
 def format_ist(dt: datetime) -> str:
-    """E.g. "27 Aug 2026, 12:16 PM IST" -- readable at a glance, unlike a raw
-    ISO-8601 UTC-with-microseconds string. `dt` is assumed UTC-aware (every
-    `generated_at` codecheck itself produces is); a naive datetime (e.g. from
-    a hand-edited report) is treated as already UTC rather than raising.
-    """
+    """E.g. "27 Aug 2026, 12:16 PM IST". A naive datetime is treated as UTC."""
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(IST).strftime("%d %b %Y, %I:%M %p IST")
@@ -43,10 +26,7 @@ TIER_DESCRIPTIONS = {
     "cloud_llm": "an AI model reviewed the code too, via a cloud provider",
 }
 
-# Matches the `source` value every Finding actually carries -- see
-# reviewers/rules_engine.py (house/ruff/eslint/semgrep) and
-# reviewers/openai_protocol.py (source=self.name, resolving to
-# cloud_llm/local_llm for those two tiers).
+# Matches the `source` value every Finding actually carries.
 SOURCE_DESCRIPTIONS = {
     "house": "one of codecheck's own built-in rules (RULE-0xx)",
     "ruff": "the ruff Python linter",

@@ -1,16 +1,7 @@
 """RULE-034: flag a function parameter with a boolean default value --
-`def notify(user, send_email=True)` reads fine at the definition, but a call
-site like `notify(user, False)` tells the reader nothing about what `False`
-means without going and looking up the signature. Splitting into two
-differently-named functions (or using a keyword-only flag, at minimum) makes
-call sites self-documenting.
-
-Diff scope is checked against each default value's own line, not the `def`
-line -- a diff on a multiline signature that only touches the
-`send_email=True` line itself (the `def notify(` line unchanged) still
-counts as touching it, same shape as the RULE-018/RULE-015 fixes elsewhere
-in this codebase (caught by CodeRabbit review).
-"""
+`notify(user, False)` at the call site tells the reader nothing without
+looking up the signature. Diff scope is checked against each default
+value's own line, not the `def` line."""
 
 from __future__ import annotations
 

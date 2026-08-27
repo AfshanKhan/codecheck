@@ -26,9 +26,7 @@ class JsClientScriptLengthCheck(HouseCheck):
         length = len(lines)
         if length <= _MAX_LINES:
             return []
-        # Whole-file concern -- there's no single "offending line," so this
-        # is only worth reporting if the diff touches the file at all
-        # (any changed line counts, not just line 1).
+        # Whole-file concern -- reported if the diff touches the file at all.
         if changed_lines is not None and not changed_lines:
             return []
         return [

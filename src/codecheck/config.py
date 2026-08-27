@@ -16,28 +16,17 @@ class RulesConfig(BaseModel):
     house_rules: bool = True
     test_coverage: bool = True
     secrets_scan: bool = True
-    # Check IDs to drop from the final report regardless of which sub-runner
-    # produced them (a house rule, or a linter's own code like "RUFF-F401") --
-    # for a check that's noisy or not relevant to a given project, without
-    # having to disable that whole sub-runner.
+    # Check IDs to drop from the final report regardless of source.
     disabled_checks: list[str] = []
     # Dotted import paths ("your_package.module:YourCheckClass") to extra
-    # HouseCheck subclasses to run alongside the built-in ones -- lets a team
-    # add project-specific rules without forking codecheck itself. Each must
-    # be importable from wherever `codecheck` runs and instantiable with no
-    # arguments. A path that fails to import/instantiate is reported as a
-    # skipped sub-runner, not a crash.
+    # HouseCheck subclasses to run alongside the built-in ones.
     extra_checks: list[str] = []
 
 
 class SuggestionsConfig(BaseModel):
-    # Caps the fix-suggestion pass (--suggest-fixes) to at most this many
-    # findings per run, highest-severity first -- it's an extra LLM call per
-    # finding, so an unbounded run on a large diff could be slow and costly.
+    # Caps the fix-suggestion pass to at most this many findings per run.
     max_per_run: int = 5
-    # Check IDs to never send to the LLM for a suggestion (e.g. a check whose
-    # finding already includes everything needed to fix it, or one covering
-    # something too sensitive to hand to a cloud provider).
+    # Check IDs to never send to the LLM for a suggestion.
     exclude_checks: list[str] = []
 
 
@@ -65,9 +54,7 @@ class LocalConfig(BaseModel):
     # Local servers usually need no auth; set this only if yours does.
     api_key_env: str | None = None
     max_file_lines: int = 2000
-    # Higher than the cloud default: confirmed against a real llama-server on
-    # CPU that a single request can legitimately take minutes (~23 tok/s x
-    # max_tokens). Raise further for slower hardware.
+    # Higher than the cloud default -- CPU inference can take minutes.
     request_timeout_seconds: float = 300.0
 
 

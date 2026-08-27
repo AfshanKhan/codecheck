@@ -1,30 +1,10 @@
 """RULE-035: flag an `.env` file present in the checkout that isn't covered
-by any `.gitignore` -- `.env` files conventionally hold real secrets (API
-keys, DB passwords). This is deliberately a presence check, not a
-`git ls-files`-backed tracked-status check: catching an `.env` before
-`.gitignore` covers it (whether or not it's been committed yet) is at least
-as valuable as catching one after the fact, and avoids depending on git
-state (a bare working tree, no `.git` at all when scanning a plain
-directory) that a filesystem scan doesn't need. The explanation text
-reflects this -- "if it's tracked by git," not an assertion that it is.
+by any `.gitignore`. A presence check, not a tracked-status check.
 
-A repo-wide filesystem scan, not a per-file content check -- it needs to see
-the whole tree (every `.env` under repo_path, plus every `.gitignore` that
-could cover it) at once, which the HouseCheck interface (one file's content
-at a time) has no way to provide. Implemented as its own SubRunner, the same
-shape as RULE-017 (TestCoverageRunner) and RULE-019
-(FrappeDbFieldCheckRunner) -- and, like RULE-019, duck-types the SubRunner
-interface (is_available/run/name) instead of importing the ABC from
-rules_engine.py, to avoid a circular import (that module imports this one to
-wire the runner in).
-
-Doesn't try to detect secrets *inside* file content beyond this -- RULE-009/
-RULE-016 (hardcoded_credential.py / js_hardcoded_credential.py) already flag
-a hardcoded-looking secret literal wherever it appears in reviewed source;
-this specifically covers the "wrong file present at all" case those can't,
-since an ignored (or not-yet-committed) `.env` file's *content* is never
-something those per-file checks would see in a diff.
-"""
+A repo-wide filesystem scan, not a per-file content check -- implemented as
+its own SubRunner (duck-typed, to avoid a circular import with
+rules_engine.py). Doesn't detect secrets inside file content -- RULE-009/
+RULE-016 already cover that."""
 
 from __future__ import annotations
 

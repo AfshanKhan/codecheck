@@ -1,11 +1,5 @@
-"""Excel (.xlsx) reporter -- the same findings as the other reporters, but in
-a shape a reviewer can actually filter and sort in a spreadsheet instead of
-scrolling a flat markdown table: a "Findings" sheet with a header-row
-AutoFilter (severity/check/file dropdowns, no manual setup needed) plus a
-frozen header row, and a "Summary" sheet breaking counts down by severity and
-by check ID so it's obvious at a glance which check is generating the most
-noise/signal in a given run.
-"""
+"""Excel (.xlsx) reporter: a "Findings" sheet with AutoFilter and a frozen
+header row, plus a "Summary" sheet breaking counts down by severity/check."""
 
 from __future__ import annotations
 
@@ -24,18 +18,8 @@ _FORMULA_TRIGGERS = ("=", "+", "-", "@", "\t", "\r")
 
 def _sanitize(value):
     """Neutralizes a leading formula-trigger character (=, +, -, @, tab, CR)
-    on a string value -- a Finding's title/explanation/file/suggestion can
-    contain text derived from an untrusted repo's tree or an LLM's read of
-    file content, and Excel evaluates a cell starting with one of these as a
-    formula when the file is opened (the well-known "CSV/spreadsheet
-    injection" class of vulnerability -- a `=HYPERLINK(...)`-style payload
-    in a finding title could otherwise run when someone just opens the
-    report). Prefixing with an apostrophe is the conventional visual marker
-    for "treat as text"; the actual enforcement is each such cell's
-    `number_format` being forced to Text in `_write_text_cell` below, so
-    Excel never evaluates it as a formula regardless of leading character,
-    even for a trigger this specific list doesn't happen to cover.
-    """
+    against CSV/spreadsheet injection. The apostrophe is a visual marker;
+    `_write_text_cell`'s Text number_format is what actually enforces it."""
     if isinstance(value, str) and value[:1] in _FORMULA_TRIGGERS:
         return "'" + value
     return value
@@ -65,15 +49,9 @@ def _autosize_columns(ws: Worksheet, widths: list[int]) -> None:
 
 def _write_summary_sheet(ws: Worksheet, report: ReviewReport) -> None:
     ws.title = "Summary"
-    # repo_path is the one summary value that can reflect an untrusted
-    # source (a cloned --repo-url/--pr's own path) -- text-formatted via
-    # _write_text_cell like the Findings sheet's free-text columns.
     tiers_display = ", ".join(f"{t} ({tier_description(t)})" for t in report.tiers_run) or "-"
-    # mode/base_ref/head_ref/tiers_display all ultimately trace back to
-    # ReviewReport.from_dict (the `render` command loads a report from a JSON
-    # file, which isn't necessarily one codecheck itself produced) -- text
-    # cells like Findings' free-text columns, not plain ws.append (CodeRabbit
-    # review).
+    # These can all be untrusted (from `codecheck render` on a hand-edited
+    # report.json) -- text cells, not plain ws.append.
     text_rows = [
         ("Mode", report.mode),
         ("Base ref", report.base_ref or "-"),
@@ -139,10 +117,8 @@ def _write_summary_sheet(ws: Worksheet, report: ReviewReport) -> None:
             cell.fill = _HEADER_FILL
             cell.font = _HEADER_FONT
         for s in sources:
-            # source_description() falls back to echoing the raw source
-            # string back unchanged for a source it doesn't recognize --
-            # same untrusted-input concern as `s` itself, so both columns
-            # need the text-cell treatment.
+            # source_description() echoes an unrecognized source back
+            # unchanged -- both columns need the text-cell treatment.
             ws.append([None, None])
             row = ws.max_row
             _write_text_cell(ws, row, 1, s)
@@ -189,13 +165,8 @@ def _write_findings_sheet(ws: Worksheet, report: ReviewReport) -> None:
             None,  # Suggestion -- written below via _write_text_cell
         ])
         row = ws.max_row
-        # File/Check ID/Source/Tier/Title/Explanation/Suggestion can all
-        # contain text derived from an untrusted source -- repo content for
-        # File/Title/Explanation/Suggestion, or (since `codecheck render`
-        # loads a report from an arbitrary JSON file via Finding.from_dict,
-        # not necessarily one codecheck itself produced) Check ID/Source/Tier
-        # too (CodeRabbit review). Text-formatted so a leading =/+/-/@ never
-        # gets evaluated as a formula when the report is opened.
+        # All of these can be untrusted -- text-formatted so a leading
+        # =/+/-/@ never gets evaluated as a formula.
         _write_text_cell(ws, row, 1, f.file)
         _write_text_cell(ws, row, 4, f.check_id)
         _write_text_cell(ws, row, 5, f.source)

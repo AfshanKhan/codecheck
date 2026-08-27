@@ -74,13 +74,8 @@ ALL_CHECKS: list[HouseCheck] = [
 
 def load_extra_checks(dotted_paths: list[str]) -> tuple[list[HouseCheck], list[str]]:
     """Dynamically imports and instantiates each "module.submodule:ClassName"
-    path, for `rules.extra_checks` in config.yaml -- lets a project add its
-    own HouseCheck subclasses without forking codecheck to add them to
-    ALL_CHECKS directly. Returns (loaded_checks, error_messages); a path that
-    fails to import, isn't a HouseCheck subclass, or can't be instantiated
-    with no arguments is reported as an error string rather than raised, so
-    one bad entry doesn't take down every built-in check along with it.
-    """
+    path from `rules.extra_checks`. Returns (loaded_checks, error_messages);
+    a bad entry is reported, not raised."""
     checks: list[HouseCheck] = []
     errors: list[str] = []
     for dotted_path in dotted_paths:

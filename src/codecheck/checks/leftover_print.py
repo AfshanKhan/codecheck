@@ -1,9 +1,6 @@
-"""RULE-007: flag leftover print() calls -- almost always debug output that
-should use frappe.logger()/frappe.log_error() instead, since print() goes
-nowhere useful in a web request (server stdout, not the site's log).
-
-Ported from frappe-pr-reviewer's python_analyzer.py.
-"""
+"""RULE-007: flag leftover print() calls -- use frappe.logger()/
+frappe.log_error() instead, since print() goes nowhere useful in a web
+request."""
 
 from __future__ import annotations
 

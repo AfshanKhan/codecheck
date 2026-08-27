@@ -1,9 +1,6 @@
-"""RULE-006: flag frappe.throw()/frappe.msgprint() calls whose message is a raw
-(untranslated) string literal, f-string, or concatenation instead of being
-wrapped in _() -- the Frappe i18n helper.
-
-Ported from frappe-pr-reviewer's python_analyzer.py.
-"""
+"""RULE-006: flag frappe.throw()/frappe.msgprint() calls whose message is a
+raw (untranslated) string literal, f-string, or concatenation instead of
+being wrapped in _()."""
 
 from __future__ import annotations
 

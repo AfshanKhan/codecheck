@@ -1,15 +1,6 @@
-"""RULE-027: suggest async/await over a frappe.call() Promise chain --
-`.then()` callback chains are harder to read and to add error handling to
-than an `async function` using `await frappe.call(...)`. A suggestion, not a
-correctness issue, so this stays LOW severity.
-
-Whole-file heuristic (mirrors the tool this was ported from): if a file uses
-both frappe.call and .then(, and never uses the `async` keyword anywhere,
-it's a reasonable bet the file is written in promise-chain style throughout.
-Doesn't try to pair a specific .then() with the frappe.call() it follows --
-a file-level suggestion this loose isn't precise enough to anchor at one
-line with confidence.
-"""
+"""RULE-027: suggest async/await over a frappe.call() Promise chain.
+Whole-file heuristic: flags a file using both frappe.call and .then( that
+never uses `async`."""
 
 from __future__ import annotations
 

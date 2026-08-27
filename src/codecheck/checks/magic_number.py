@@ -1,13 +1,6 @@
 """RULE-032: flag a numeric literal used directly in a calculation or
-comparison instead of a named constant -- 0, 1, -1, 2, and 100 are exempted
-as self-explanatory in context (indices, increments, percentages); anything
-else (a discount rate, a batch size, a timeout) reads better as an
-UPPERCASE_CONSTANT that documents what the number means and gives future
-callers one place to change it.
-
-Assignments to an UPPERCASE name are exempt outright -- that's the constant
-declaration itself, not a magic-number use.
-"""
+comparison instead of a named constant. 0, 1, -1, 2, and 100 are exempted
+as self-explanatory. Assignments to an UPPERCASE name are exempt outright."""
 
 from __future__ import annotations
 
@@ -33,12 +26,7 @@ def _numeric_literal(node: ast.expr) -> tuple[bool, float | int | None]:
 def _is_uppercase_target(node: ast.Assign | ast.AnnAssign) -> bool:
     if isinstance(node, ast.AnnAssign):
         return isinstance(node.target, ast.Name) and node.target.id.isupper()
-    # Every target must itself be an uppercase Name -- filtering out
-    # non-Name targets *before* checking, rather than requiring each one to
-    # pass, let all() vacuously return True on an empty generator for an
-    # attribute/subscript target like `settings.limit = total * 4837`,
-    # wrongly treating it as a constant declaration and suppressing a real
-    # magic number (caught by CodeRabbit review).
+    # Every target must itself be an uppercase Name (not an attribute/subscript).
     return bool(node.targets) and all(
         isinstance(t, ast.Name) and t.id.isupper() for t in node.targets
     )

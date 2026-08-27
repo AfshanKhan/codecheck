@@ -1,22 +1,12 @@
-"""RULE-019: flag a reference to a DocType field that doesn't actually exist
-in a live Frappe site's schema -- something no purely static analysis can
-ever know (a field could be renamed, removed, or simply never existed, and
-the code would still look syntactically fine). Only runs when
-`--frappe-db-config` is given; see docs/Configuration.md.
+"""RULE-019: flag a reference to a DocType field that doesn't exist in a
+live Frappe site's schema. Only runs when --frappe-db-config is given.
 
-Detects the statically-resolvable cases: `frappe.db.get_value`/`set_value`
-with a literal doctype and a literal fieldname (or list of fieldnames), and
-`frappe.get_all`/`get_list` with a literal doctype and a literal `fields=[...]`
-list. A field name that isn't a plain identifier (contains ".", "(", or " as "
--- a child-table-qualified reference, a SQL function call, or an alias) is
-left alone; those aren't verifiable this way, and guessing would risk a false
-positive on a genuinely valid, just-not-plain-field expression.
+Detects `frappe.db.get_value`/`set_value` and `frappe.get_all`/`get_list`
+calls with a literal doctype and literal fieldname(s). A non-plain field
+name (contains ".", "(", or " as ") is left alone.
 
-Not a HouseCheck: it needs a live database connection to judge anything,
-which the HouseCheck interface (file content only) has no way to provide.
-Implemented as its own SubRunner (FrappeDbFieldCheckRunner below), wired in by
-cli.py only when a working --frappe-db-config connection was established.
-"""
+Implemented as a SubRunner, not a HouseCheck, since it needs a live DB
+connection."""
 
 from __future__ import annotations
 
@@ -39,11 +29,7 @@ def _string_value(node: ast.expr) -> str | None:
 
 def _is_plain_fieldname(name: str) -> bool:
     """Excludes anything that isn't a bare field reference: a child-table-
-    qualified name ("customer.customer_name"), a SQL function/expression
-    ("count(name)"), an alias ("name as party"), or a wildcard ("*") -- none
-    of those are a single field's existence question, and guessing at one
-    from the fragment risks a false positive.
-    """
+    qualified name, a SQL function/expression, an alias, or a wildcard."""
     if not name or name == "*":
         return False
     lowered = name.lower()
@@ -74,9 +60,7 @@ def _is_frappe_attr(func: ast.expr, name: str) -> bool:
 
 def _extract_field_references(tree: ast.AST) -> list[tuple[str, str, ast.expr]]:
     """Returns (doctype, fieldname, node) triples for every statically-
-    resolvable field reference found -- `node` is used for the finding's line
-    number, pointing at the fieldname literal itself rather than the whole call.
-    """
+    resolvable field reference found."""
     results: list[tuple[str, str, ast.expr]] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -116,12 +100,8 @@ def _extract_field_references(tree: ast.AST) -> list[tuple[str, str, ast.expr]]:
 
 
 class FrappeDbFieldCheckRunner:
-    """Duck-types rules_engine.SubRunner's interface (is_available/run/name)
-    without importing that ABC, deliberately -- rules_engine.py imports this
-    module to wire the runner in, so importing SubRunner back from there
-    would create a circular import. Nothing in RulesEngineReviewer.review()
-    actually isinstance-checks against SubRunner, only calls these methods.
-    """
+    """Duck-types rules_engine.SubRunner's interface without importing that
+    ABC, to avoid a circular import."""
 
     check_id = "RULE-019"
     title = "Reference to a field that doesn't exist on this DocType"

@@ -1,20 +1,7 @@
-"""RULE-024/RULE-025: flag blocking work done inside a Frappe document
-lifecycle hook (validate, before_save, before_insert, after_insert,
-on_update, on_submit, on_cancel, on_trash) -- these run synchronously inside
-the request that saved/submitted the document, so anything slow in them
-makes the user wait on it directly.
-
-RULE-024 covers outbound HTTP calls (requests.*, urllib.request.urlopen).
-RULE-025 covers synchronous PDF generation (frappe.get_pdf/get_print,
-pdf.make/get_pdf). Both point at the same fix: frappe.enqueue() to move the
-work to a background job instead of blocking the save/submit request.
-
-Only looks at calls in the doc-event method's own scope (not a nested
-function/lambda's body) -- the same "own scope, not the whole subtree"
-distinction RULE-003 (whitelist_permission_check.py) uses, since a blocking
-call inside a nested helper that's never actually called from the hook
-shouldn't count.
-"""
+"""RULE-024/RULE-025: flag blocking work inside a Frappe document lifecycle
+hook (validate, before_save, on_update, ...). RULE-024 covers outbound HTTP
+calls; RULE-025 covers synchronous PDF generation. Fix: frappe.enqueue().
+Only looks at calls in the hook method's own scope, not nested functions."""
 
 from __future__ import annotations
 
