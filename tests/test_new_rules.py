@@ -425,6 +425,95 @@ def test_js_prose_comment_not_flagged():
     assert CommentedOutJsCodeCheck().check_file("a.js", content, None) == []
 
 
+def test_commented_out_multiline_python_sql_flagged():
+    # regression (found comparing against a separate audit tool on a real
+    # repo): a commented-out multi-line f-string SQL query doesn't parse on
+    # its first line alone ("data = frappe.db.sql(f\"\"\"SELECT ..." is an
+    # unterminated string by itself), so the original single-line-only
+    # check missed it entirely. Now grows the window one comment line at a
+    # time until the accumulated block parses as a complete statement.
+    content = (
+        "def get_data():\n"
+        '\t# data = frappe.db.sql(f"""SELECT COUNT(ymt.name) as \'pending\'\n'
+        "\t# \t\t\t\tFROM `tabYP Mobilization Table` ymt\n"
+        "\t# \t\t\t\tWHERE ymt.date IS NULL\n"
+        '\t# \t\t\t\tAND ymt.docstatus != 2""", as_dict=1)\n'
+        "\tcondition = ''\n"
+    )
+    findings = CommentedOutPythonCodeCheck().check_file("a.py", content, None)
+    assert len(findings) == 1
+    assert findings[0].line_start == 2
+    assert findings[0].line_end == 5
+
+
+def test_commented_out_python_consecutive_single_line_statements_not_merged():
+    # Two separate, unrelated one-line disabled statements shouldn't be
+    # merged into a single multi-line finding just because they're adjacent.
+    content = "x = 1\n# y = 2\n# z = 3\n"
+    findings = CommentedOutPythonCodeCheck().check_file("a.py", content, None)
+    assert [(f.line_start, f.line_end) for f in findings] == [(2, 2), (3, 3)]
+
+
+def test_commented_out_python_multiline_prose_not_flagged():
+    content = (
+        "# This function calculates the total\n"
+        "# revenue for the given quarter and\n"
+        "# returns it as a formatted string.\n"
+    )
+    assert CommentedOutPythonCodeCheck().check_file("a.py", content, None) == []
+
+
+def test_commented_out_python_diff_scope_covers_the_whole_block():
+    content = (
+        "def f():\n"
+        "\t# result = some_func(a,\n"
+        "\t#     b,\n"
+        "\t#     c)\n"
+    )
+    # A diff touching only the middle line of the block still counts as
+    # touching the finding it belongs to -- the block isn't a complete
+    # statement until all three lines are joined.
+    findings = CommentedOutPythonCodeCheck().check_file("a.py", content, {3})
+    assert len(findings) == 1
+    assert (findings[0].line_start, findings[0].line_end) == (2, 4)
+    assert CommentedOutPythonCodeCheck().check_file("a.py", content, {99}) == []
+
+
+def test_commented_out_multiline_js_call_flagged():
+    content = (
+        "// frappe.call({\n"
+        '//     method: "some.method",\n'
+        "//     args: {x: 1},\n"
+        "// });\n"
+    )
+    findings = CommentedOutJsCodeCheck().check_file("a.js", content, None)
+    assert len(findings) == 1
+    assert findings[0].line_start == 1
+    assert findings[0].line_end == 4
+
+
+def test_commented_out_js_consecutive_single_line_calls_not_merged():
+    content = "// doSomething();\n// doSomethingElse();\n"
+    findings = CommentedOutJsCodeCheck().check_file("a.js", content, None)
+    assert [(f.line_start, f.line_end) for f in findings] == [(1, 1), (2, 2)]
+
+
+def test_commented_out_js_unclosed_bracket_gives_up_not_flagged():
+    # A block whose opening bracket never closes within the comment run
+    # (it trails off into unrelated prose) shouldn't be force-matched.
+    content = (
+        "// frappe.call({\n"
+        "// this comment rambles on and never\n"
+        "// actually closes the bracket at all\n"
+    )
+    assert CommentedOutJsCodeCheck().check_file("a.js", content, None) == []
+
+
+def test_commented_out_js_multiline_prose_not_flagged():
+    content = "// This function calculates the total\n// revenue and returns it\n"
+    assert CommentedOutJsCodeCheck().check_file("a.js", content, None) == []
+
+
 # RULE-032: magic numbers
 def test_magic_number_in_comparison_flagged():
     content = "if amount > 4837:\n    pass\n"
