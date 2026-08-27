@@ -9,6 +9,7 @@ from codecheck.reporters.console import print_report
 from codecheck.reporters.docx_report import render_docx, write_docx_report
 from codecheck.reporters.json_report import write_json_report
 from codecheck.reporters.markdown_report import render_markdown, write_markdown_report
+from codecheck.reporters.xlsx_report import render_xlsx, write_xlsx_report
 
 
 def make_report() -> ReviewReport:
@@ -133,6 +134,93 @@ def test_write_docx_report(tmp_path: Path):
     write_docx_report(make_report(), output_path)
     assert output_path.exists()
     assert output_path.stat().st_size > 0
+
+
+def test_xlsx_report_has_summary_and_findings_sheets():
+    wb = render_xlsx(make_report())
+    assert wb.sheetnames == ["Summary", "Findings"]
+
+    findings_ws = wb["Findings"]
+    header = [c.value for c in findings_ws[1]]
+    assert header == [
+        "File", "Line", "Severity", "Check ID", "Source", "Tier",
+        "Title", "Explanation", "Suggestion",
+    ]
+    # 2 findings + 1 header row
+    assert findings_ws.max_row == 3
+    rows = [tuple(c.value for c in row) for row in findings_ws.iter_rows(min_row=2)]
+    files = [r[0] for r in rows]
+    assert "app/api.py" in files
+    # highest severity first
+    assert rows[0][2] == "HIGH"
+
+
+def test_xlsx_report_findings_sheet_has_autofilter_and_frozen_header():
+    wb = render_xlsx(make_report())
+    findings_ws = wb["Findings"]
+    assert findings_ws.auto_filter.ref == "A1:I3"
+    assert findings_ws.freeze_panes == "A2"
+
+
+def test_xlsx_report_summary_sheet_has_counts():
+    wb = render_xlsx(make_report())
+    ws = wb["Summary"]
+    values = [cell.value for row in ws.iter_rows() for cell in row if cell.value is not None]
+    assert "app/api.py" not in values  # summary doesn't list individual findings
+    assert "RULE-002" in values  # per-check breakdown
+    assert "HIGH" in values
+    assert "big_file.py: too large for cloud tier" in values  # skipped section
+
+
+def test_xlsx_report_no_findings():
+    empty = ReviewReport(
+        repo_path="/repo", mode="diff", base_ref="main", head_ref=None,
+        generated_at=datetime(2026, 7, 30, tzinfo=timezone.utc), tiers_run=["rules"],
+    )
+    wb = render_xlsx(empty)
+    findings_ws = wb["Findings"]
+    assert findings_ws.max_row == 1  # header only
+    assert findings_ws.auto_filter.ref is None  # nothing to filter
+
+
+def test_write_xlsx_report(tmp_path: Path):
+    output_path = tmp_path / "report.xlsx"
+    write_xlsx_report(make_report(), output_path)
+    assert output_path.exists()
+    assert output_path.stat().st_size > 0
+
+
+def test_xlsx_report_neutralizes_formula_injection_in_untrusted_fields():
+    # A Finding's file/title/explanation/suggestion can carry text derived
+    # from an untrusted repo's tree or an LLM's read of file content --
+    # Excel evaluates a cell starting with =/+/-/@ as a formula when the
+    # file is opened (CSV/spreadsheet injection). Every such cell must be
+    # both apostrophe-prefixed and Text-formatted, not just one or the
+    # other, since only the format is what's actually enforced by Excel.
+    f = Finding(
+        check_id="RULE-002", tier="rules", source="house", severity=Severity.HIGH,
+        title='=HYPERLINK("http://evil.com","click")', explanation="+cmd|/c calc!A1",
+        file="-1+1.py", line_start=1, suggestion="@SUM(1,1)",
+    )
+    report = ReviewReport(
+        repo_path="/repo", mode="diff", base_ref="m", head_ref="h",
+        generated_at=datetime(2026, 7, 30, tzinfo=timezone.utc),
+        tiers_run=["rules"], findings=[f],
+    )
+    wb = render_xlsx(report)
+    ws = wb["Findings"]
+    row = [ws.cell(row=2, column=c) for c in (1, 7, 8, 9)]  # File, Title, Explanation, Suggestion
+    for cell in row:
+        assert cell.number_format == "@"
+        assert not str(cell.value).startswith(("=", "+", "-", "@"))
+        assert str(cell.value).startswith("'")
+
+
+def test_xlsx_report_normal_values_are_untouched():
+    wb = render_xlsx(make_report())
+    ws = wb["Findings"]
+    files = [row[0].value for row in ws.iter_rows(min_row=2)]
+    assert "app/api.py" in files
 
 
 def _injection_report() -> ReviewReport:

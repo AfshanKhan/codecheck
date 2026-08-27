@@ -683,9 +683,21 @@ report.
   (a core dependency, not optional — pure-Python/lxml, no BYO-tool story like
   ruff/eslint/semgrep) for sharing with someone who'd rather open Word than a
   `.md` file.
+- [`reporters/xlsx_report.py`](../src/codecheck/reporters/xlsx_report.py) —
+  a "Findings" sheet (one row per finding, header-row AutoFilter and a frozen
+  header already set) and a "Summary" sheet (counts by severity and by check
+  ID), via `openpyxl` (also a core dependency). Built for filtering/sorting
+  in a spreadsheet rather than reading top to bottom — the gap this fills
+  relative to the other three, all read-only/scroll formats. Every cell that
+  can hold text derived from the reviewed repo itself (a file path, or a
+  finding's title/explanation/suggestion) is Text-formatted with a leading
+  `=`/`+`/`-`/`@` neutralized (`_sanitize()`/`_write_text_cell()`) — Excel
+  evaluates a cell starting with one of those as a formula when the file is
+  opened otherwise, and a `--repo-url`/`--pr` review's findings can contain
+  text derived from a repo you don't control.
 
-All three file reporters are always written on every run — there's no flag to
-suppress them. `cli._finish()` builds a shared basename for all three via
+All four file reporters are always written on every run — there's no flag to
+suppress them. `cli._finish()` builds a shared basename for all four via
 `_report_basename()` — see "Report filenames" in [CLI Reference](CLI-Reference.md)
 for the exact naming convention (`<repo>[_pr<N>]_<mode>_<timestamp>`, since the
 previous static `report.json`/`report.md` silently overwrote the prior run's
@@ -889,7 +901,7 @@ src/codecheck/
 │       # than via the no-argument HouseCheck instantiation the registry assumes.
 ├── frappe_db.py                # FrappeDbConnection -- read-only connection to a live Frappe site's DB, for RULE-019
 └── reporters/
-    ├── console.py, json_report.py, markdown_report.py, docx_report.py
+    ├── console.py, json_report.py, markdown_report.py, docx_report.py, xlsx_report.py
 tests/                        # pytest, CLI-level tests via typer.testing.CliRunner
 ```
 

@@ -29,6 +29,7 @@ from codecheck.reporters.console import print_report
 from codecheck.reporters.docx_report import write_docx_report
 from codecheck.reporters.json_report import write_json_report
 from codecheck.reporters.markdown_report import write_markdown_report
+from codecheck.reporters.xlsx_report import write_xlsx_report
 from codecheck.resume import (
     already_succeeded_paths,
     compute_file_hash,
@@ -349,28 +350,28 @@ def _report_basename(repo_label: str, pr_number: int | None, mode: str, generate
     return f"{repo_label}_{suffix}_{timestamp}"
 
 
-_REPORT_EXTENSIONS = (".json", ".md", ".docx")
+_REPORT_EXTENSIONS = (".json", ".md", ".docx", ".xlsx")
 
 
 def _claim_unique_basename(output_dir: Path, basename: str) -> str:
     """The timestamp in `basename` only has second resolution, so two runs for
     the same repo/PR/mode finishing within the same second would otherwise
-    collide and silently overwrite each other's reports. Reserves all three
-    `<candidate>.{json,md,docx}` paths with an atomic exclusive-create
+    collide and silently overwrite each other's reports. Reserves all four
+    `<candidate>.{json,md,docx,xlsx}` paths with an atomic exclusive-create
     (O_CREAT | O_EXCL) each, not a check-then-write -- an exists() check
     followed by a later write has a TOCTOU gap two concurrent codecheck
     processes could both pass, still overwriting the same paths. Claiming
     only the `.json` path isn't enough either: a partial leftover (e.g. an
-    interrupted prior run, or the `.json` deleted by hand) could leave `.md`/
-    `.docx` behind with no matching `.json`, and a claim scoped to `.json`
-    alone would then silently overwrite them. If any one of the three is
+    interrupted prior run, or the `.json` deleted by hand) could leave one of
+    the others behind with no matching `.json`, and a claim scoped to `.json`
+    alone would then silently overwrite them. If any one of the four is
     already taken, whatever this candidate did manage to claim is rolled back
     before moving on to the next suffix, so a candidate is only ever
-    considered "won" once all three are actually free. A non-collision I/O
-    error (permission denied, disk full, ...) on the 2nd/3rd extension gets
-    the same rollback treatment, then re-raises rather than silently trying
-    the next suffix -- an error like that will likely fail identically for
-    every candidate, so swallowing it and looping would just leave a trail of
+    considered "won" once all four are actually free. A non-collision I/O
+    error (permission denied, disk full, ...) on a later extension gets the
+    same rollback treatment, then re-raises rather than silently trying the
+    next suffix -- an error like that will likely fail identically for every
+    candidate, so swallowing it and looping would just leave a trail of
     empty, permanently-claimed files behind for no benefit.
     """
     candidate = basename
@@ -397,11 +398,12 @@ def _claim_unique_basename(output_dir: Path, basename: str) -> str:
 
 def _write_reports(
     report: ReviewReport, output_dir: Path, repo_label: str, pr_number: int | None = None
-) -> tuple[Path, Path, Path]:
-    """Claims a unique basename and writes the .json/.md/.docx trio for
-    `report`. Shared by `_finish` (a live diff/audit run) and the `render`
-    command (re-rendering a prior run's .json with no checks re-run), so both
-    get the exact same collision-safe, all-or-nothing write behavior.
+) -> tuple[Path, Path, Path, Path]:
+    """Claims a unique basename and writes the .json/.md/.docx/.xlsx quartet
+    for `report`. Shared by `_finish` (a live diff/audit run) and the
+    `render` command (re-rendering a prior run's .json with no checks
+    re-run), so both get the exact same collision-safe, all-or-nothing write
+    behavior.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
     basename = _claim_unique_basename(
@@ -410,10 +412,12 @@ def _write_reports(
     json_path = output_dir / f"{basename}.json"
     md_path = output_dir / f"{basename}.md"
     docx_path = output_dir / f"{basename}.docx"
+    xlsx_path = output_dir / f"{basename}.xlsx"
     try:
         write_json_report(report, json_path)
         write_markdown_report(report, md_path)
         write_docx_report(report, docx_path)
+        write_xlsx_report(report, xlsx_path)
     except BaseException:
         # A reporter raising here would otherwise leave this basename
         # permanently claimed by empty/partial files -- no future run could
@@ -422,10 +426,10 @@ def _write_reports(
         # empty or truncated report. Free the name back up instead: delete
         # whatever got claimed/written for this basename and let the
         # original error propagate.
-        for path in (json_path, md_path, docx_path):
+        for path in (json_path, md_path, docx_path, xlsx_path):
             path.unlink(missing_ok=True)
         raise
-    return json_path, md_path, docx_path
+    return json_path, md_path, docx_path, xlsx_path
 
 
 def _finish(
@@ -440,8 +444,12 @@ def _finish(
     print_report(report, console)
 
     report_to_write = redact_report(report) if redact else report
-    json_path, md_path, docx_path = _write_reports(report_to_write, output_dir, repo_label, pr_number)
-    console.print(f"\n[dim]Reports written to {json_path}, {md_path}, and {docx_path}[/dim]")
+    json_path, md_path, docx_path, xlsx_path = _write_reports(
+        report_to_write, output_dir, repo_label, pr_number
+    )
+    console.print(
+        f"\n[dim]Reports written to {json_path}, {md_path}, {docx_path}, and {xlsx_path}[/dim]"
+    )
 
     fail_threshold = Severity(cfg.thresholds.fail_on_severity)
     if report.findings_at_or_above(fail_threshold):
@@ -948,8 +956,10 @@ def render(
     repo_label = _sanitize_slug(Path(report.repo_path).name) or "repo"
     if redact:
         report = redact_report(report)
-    json_path, md_path, docx_path = _write_reports(report, output_dir, repo_label)
-    console.print(f"[dim]Reports written to {json_path}, {md_path}, and {docx_path}[/dim]")
+    json_path, md_path, docx_path, xlsx_path = _write_reports(report, output_dir, repo_label)
+    console.print(
+        f"[dim]Reports written to {json_path}, {md_path}, {docx_path}, and {xlsx_path}[/dim]"
+    )
     raise typer.Exit(code=0)
 
 
