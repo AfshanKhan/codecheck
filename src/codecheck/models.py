@@ -32,9 +32,7 @@ class Severity(str, Enum):
 
     @classmethod
     def parse(cls, value: str | None) -> "Severity":
-        """Case-insensitive parse with a MEDIUM fallback for anything unrecognized —
-        LLM output doesn't reliably match a JSON schema's enum casing/values.
-        """
+        """Case-insensitive parse with a MEDIUM fallback for anything unrecognized."""
         if not value:
             return cls.MEDIUM
         try:
@@ -59,14 +57,8 @@ SEVERITY_COLOR = {
     Severity.CRITICAL: "bold red",
 }
 
-# Per-severity weight for ReviewReport.compliance_percentage() -- a
-# proportional extension of the High=3/Medium=2/Low=1 scheme a separate
-# audit tool (frappe-audit-tool) uses for its own "Weighted Compliance %".
-# _MAX_FILE_WEIGHT (== the CRITICAL weight) is the per-file cap: one
-# CRITICAL-equivalent's worth of findings on a single file already costs it
-# all its credit, the same way that tool's FAIL gives a check zero credit
-# regardless of how badly it failed -- a file doesn't go "worse than zero"
-# just because it happens to have five HIGH findings instead of two.
+# Per-severity weight for ReviewReport.compliance_percentage().
+# _MAX_FILE_WEIGHT (== the CRITICAL weight) is the per-file penalty cap.
 SEVERITY_WEIGHT = {
     Severity.CRITICAL: 4.0,
     Severity.HIGH: 3.0,
@@ -79,11 +71,8 @@ _MAX_FILE_WEIGHT = SEVERITY_WEIGHT[Severity.CRITICAL]
 
 @dataclass
 class ReviewTarget:
-    """A file to review, whether it came from a diff or a whole-repo scan.
-
-    `changed_lines=None` means every line in the file is in scope (whole-repo
-    audit mode); a concrete set means only those lines are in scope (diff mode).
-    """
+    """A file to review. changed_lines=None means every line is in scope
+    (audit mode); a concrete set scopes to those lines (diff mode)."""
 
     path: str
     status: str  # "added" | "modified" | "deleted" | "renamed" | "scanned"
@@ -123,12 +112,8 @@ class Finding:
 
     @classmethod
     def from_dict(cls, data: dict) -> "Finding | None":
-        """Inverse of to_dict(), for tools that read back a previously-written
-        report (codecheck render / codecheck compare) rather than a live
-        review run. Returns None for a malformed entry -- e.g. a hand-edited
-        report.json missing a required field -- so a caller can skip it
-        rather than crash on it.
-        """
+        """Inverse of to_dict(). Returns None for a malformed entry so a
+        caller can skip it rather than crash."""
         check_id, file_path = data.get("check_id"), data.get("file")
         if not check_id or not file_path:
             return None
@@ -159,9 +144,7 @@ class ReviewReport:
     files_reviewed: list[str] = field(default_factory=list)
     duration_seconds: float = 0.0
     skipped: list[str] = field(default_factory=list)
-    # sha256 of each reviewed file's content at review time -- lets a later
-    # --resume-from run confirm a file hasn't changed before reusing its
-    # prior result, rather than trusting the path alone. See codecheck.resume.
+    # sha256 of each reviewed file's content, for --resume-from.
     file_hashes: dict[str, str] = field(default_factory=dict)
 
     def findings_at_or_above(self, severity: Severity) -> list[Finding]:
@@ -180,28 +163,10 @@ class ReviewReport:
         return counts
 
     def compliance_percentage(self) -> float:
-        """A single 0-100 score for "how clean is this run", weighted by
-        finding severity -- adapted from a separate audit tool
-        (frappe-audit-tool)'s "Weighted Compliance %", which grades a fixed
-        checklist of PASS/PARTIAL/FAIL checks per category and computes
-        weighted_score / weighted_max * 100 (High/Medium/Low weighted 3/2/1,
-        full credit for PASS, half for PARTIAL, none for FAIL).
-
-        codecheck has no such fixed checklist -- house/ruff/eslint/semgrep/
-        LLM findings are all just violations against an open-ended rule set,
-        with no corresponding "checked, found nothing" record to count as a
-        PASS. The natural unit codecheck *does* enumerate per run is
-        `files_reviewed`, so that's the "check" here: each reviewed file
-        starts with full credit (_MAX_FILE_WEIGHT) and loses that file's
-        findings' severity weight, floored at zero -- the same full-credit
-        -to-zero-credit spread as PASS-to-FAIL, just continuous instead of
-        three discrete steps, since codecheck has no PARTIAL/PASS state to
-        grade against.
-
-        Counts every finding regardless of source (house/ruff/eslint/
-        semgrep/LLM) -- a real violation is a real violation no matter which
-        tier caught it.
-        """
+        """A single 0-100 score, weighted by finding severity. Each reviewed
+        file starts with full credit (_MAX_FILE_WEIGHT) and loses its
+        findings' severity weight, floored at zero. Counts findings from
+        every source."""
         if not self.files_reviewed:
             return 100.0
         penalty_by_file: dict[str, float] = {}
@@ -235,13 +200,8 @@ class ReviewReport:
 
     @classmethod
     def from_dict(cls, data: dict) -> "ReviewReport":
-        """Inverse of to_dict() -- reconstructs a full ReviewReport from a
-        prior run's report.json, for `codecheck render` (re-render as
-        markdown/docx without re-running any checks) and `codecheck compare`
-        (diff two prior reports). Tolerant of a missing/malformed
-        generated_at (falls back to now) since this may be reading a report
-        written by an older codecheck version or edited by hand.
-        """
+        """Inverse of to_dict(). Tolerant of a missing/malformed generated_at
+        (falls back to now)."""
         generated_at_raw = data.get("generated_at")
         generated_at = None
         if isinstance(generated_at_raw, str) and generated_at_raw:

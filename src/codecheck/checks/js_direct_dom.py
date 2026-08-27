@@ -1,10 +1,6 @@
 """RULE-028: flag direct DOM manipulation in a Frappe client script --
-document.getElementById/querySelector, or setting .innerHTML -- reaching
-past the frm/dialog APIs the framework expects scripts to use. Distinct from
-RULE-014 (js_jquery_dom.py), which covers the jQuery-specific spelling of the
-same underlying concern ($(...)/jQuery(...)); this covers the vanilla-JS DOM
-APIs a script might use instead of (or alongside) jQuery.
-"""
+document.getElementById/querySelector, or setting .innerHTML. Distinct from
+RULE-014's jQuery-specific spelling of the same concern."""
 
 from __future__ import annotations
 

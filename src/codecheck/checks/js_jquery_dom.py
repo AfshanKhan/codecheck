@@ -1,26 +1,8 @@
 """RULE-014: flag raw jQuery DOM manipulation ($(...)/jQuery(...)) in Frappe
 client scripts, excluding the framework's own sanctioned entry points
-($wrapper, frm.fields_dict) -- Frappe scripts are expected to work through the
-frm/dialog APIs rather than reaching into the DOM directly.
-
-The "sanctioned entry point" exemption only applies when it's the argument
-being wrapped, e.g. `$($wrapper)` or `$(frm.fields_dict.my_field.$wrapper)`
--- an earlier version exempted any line containing the substring "$wrapper"
-*anywhere*, which also matched a genuinely raw jQuery call wrapping a
-different object that merely has a same-named property, e.g.
-`$(field.$wrapper).find('.control-label').css({...})` (confirmed as a real
-miss comparing against a separate audit tool on a real repo: this is
-exactly the kind of direct-DOM-styling RULE-014 exists to catch, and the
-old substring check silently suppressed it).
-
-The exemption is evaluated per jQuery call, not per line (CodeRabbit review):
-matching the safe pattern anywhere on the line used to suppress the whole
-line, so a genuinely unsafe call sharing a line with one sanctioned call --
-e.g. `$(field.$wrapper).find(...); $($wrapper).hide();` -- went unreported.
-Each `$(...)`/`jQuery(...)` match is now checked at its own position.
-
-Ported from frappe-pr-reviewer's js_analyzer.py.
-"""
+($wrapper, frm.fields_dict). The exemption applies only when the sanctioned
+reference is itself the argument being wrapped, checked per jQuery call
+rather than per line."""
 
 from __future__ import annotations
 

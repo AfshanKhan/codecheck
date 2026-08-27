@@ -26,9 +26,7 @@ def print_report(report: ReviewReport, console: Console) -> None:
 
             for f in findings:
                 color = SEVERITY_COLOR[f.severity]
-                # escape() untrusted fields (attacker-controlled file names,
-                # linter messages, LLM-generated titles) so they can't inject
-                # rich console markup — styling, or clickable [link=...] targets.
+                # escape() untrusted fields so they can't inject rich console markup.
                 table.add_row(
                     str(f.line_start),
                     f"[{color}]{f.severity.value.upper()}[/{color}]",

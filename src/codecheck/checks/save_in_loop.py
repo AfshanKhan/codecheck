@@ -1,21 +1,13 @@
-"""RULE-026: flag a `.save()` call inside a loop -- saving documents one at a
-time in a loop means one DB round-trip (plus all of Document.save()'s
-validation/hook overhead) per iteration. For a large dataset, Frappe's own
-bulk helpers (frappe.db.bulk_update(), or building a bulk insert) are
-dramatically faster since they collapse that into far fewer round-trips.
+"""RULE-026: flag a `.save()` call inside a `for`/`while` node -- prefer
+Frappe's bulk helpers (bulk_update, a bulk insert) instead. The write-side
+equivalent of RULE-004's read-side N+1 check. Note: this walks the whole
+loop node (body, but also its iterator/condition/orelse), not just the body
+that actually re-executes per iteration.
 
-Distinct from RULE-004 (n_plus_one_query.py), which flags *read* calls
-(get_value/get_all/...) in a loop -- this is the write-side equivalent.
-
-Doesn't descend into a nested function/lambda *body* defined inside a loop --
-a callback registered for later (`frappe.enqueue(deferred)`, an event
-handler, ...) doesn't actually run once per loop iteration just because it
-was *defined* once per iteration; only a call that's actually reached while
-the loop body itself executes counts (caught by CodeRabbit review). Its
-decorators and default-value expressions are the exception, since those
-genuinely do run immediately as part of defining it, once per iteration --
-same distinction blocking_call_in_doc_event.py's `_iter_own_scope` makes.
-"""
+Doesn't descend into a nested function/lambda's body defined inside a loop --
+only a call actually reached while walking the loop node counts, not one
+merely defined there. Decorators and default-value expressions are the
+exception, since those run immediately."""
 
 from __future__ import annotations
 
@@ -90,10 +82,7 @@ class SaveInLoopCheck(HouseCheck):
 
         for child in ast.iter_child_nodes(node):
             if isinstance(child, ast.Call) and isinstance(child.func, ast.Lambda):
-                # An immediately-invoked lambda ((lambda: d.save())()) runs
-                # its body right away as part of this call -- not deferred
-                # at all, unlike an ordinary lambda merely defined and
-                # passed around for later (caught by CodeRabbit review).
+                # An immediately-invoked lambda runs right away, not deferred.
                 lam = child.func
                 for default in _default_value_exprs(lam):
                     self._walk(default, next_depth, file_path, changed_lines, out)
@@ -104,13 +93,7 @@ class SaveInLoopCheck(HouseCheck):
                     self._walk(kw.value, next_depth, file_path, changed_lines, out)
                 continue
             # Only special-case a nested function/lambda's body once we're
-            # actually inside a loop (next_depth > 0) -- outside of any
-            # loop, descending into a function's body normally is exactly
-            # how a loop *inside* that function (e.g. validate()'s own
-            # body) gets found in the first place. Regression caught live:
-            # an earlier version of this fix applied the same skip
-            # unconditionally, which stopped finding a direct `d.save()`
-            # inside an ordinary `for` loop in a top-level method at all.
+            # already inside a loop (next_depth > 0).
             if next_depth > 0 and isinstance(child, _NESTED_SCOPE_TYPES):
                 if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     for decorator in child.decorator_list:

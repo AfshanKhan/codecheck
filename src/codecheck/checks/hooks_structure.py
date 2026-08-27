@@ -1,17 +1,6 @@
-"""RULE-020/RULE-021: Frappe app structure checks scoped to hooks.py -- the
-one file every Frappe app has that's meant to be pure declarative
-configuration, read by the framework itself at boot.
-
-RULE-020 flags hooks.py containing anything beyond simple assignments/
-expressions/imports at module level (a function, class, loop, or conditional)
--- logic living there runs on every app boot and is easy to miss during
-review, since hooks.py doesn't look like "real" code.
-
-RULE-021 flags a non-empty `override_doctype_class` assignment -- replacing a
-standard Frappe DocType's controller class app-wide is a sharp, easy-to-forget
-edge that can silently break on a framework upgrade; a doc_events hook is the
-narrower, safer way to extend the same lifecycle.
-"""
+"""RULE-020/RULE-021: Frappe app structure checks scoped to hooks.py.
+RULE-020 flags anything beyond simple assignments/expressions/imports at
+module level. RULE-021 flags a non-empty override_doctype_class assignment."""
 
 from __future__ import annotations
 
@@ -89,10 +78,7 @@ class DoctypeClassOverrideCheck(HouseCheck):
             if isinstance(node, ast.Assign):
                 targets, value = node.targets, node.value
             elif isinstance(node, ast.AnnAssign) and node.value is not None:
-                # An annotated assignment (override_doctype_class: dict =
-                # {...}) is just as real an override as a plain one -- the
-                # type annotation doesn't change what runs (caught by
-                # CodeRabbit review).
+                # An annotated assignment is just as real an override as a plain one.
                 targets, value = [node.target], node.value
             else:
                 continue

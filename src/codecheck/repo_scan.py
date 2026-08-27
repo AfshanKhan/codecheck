@@ -1,8 +1,6 @@
 """Whole-repo file discovery for audit mode: every git-tracked file, plus
-untracked files that aren't gitignored — the set a repo owner actually
-considers "their code." Each becomes a ReviewTarget with changed_lines=None,
-meaning every line in the file is in scope.
-"""
+untracked files that aren't gitignored. Each becomes a ReviewTarget with
+changed_lines=None."""
 
 from __future__ import annotations
 

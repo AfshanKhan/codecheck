@@ -1,13 +1,6 @@
-"""Opt-in second pass (`--suggest-fixes`) that asks an already-configured LLM
-tier for a short, targeted fix suggestion on findings that don't already have
-one -- most rules-tier findings (ruff, house rules) come with a title and
-explanation but no `suggestion` text. This is deliberately narrower than a
-full review pass: it answers one specific question ("how would you fix this
-exact, already-identified issue") per finding, instead of re-reading the
-whole file hunting for new problems -- cheaper, and the answer is scoped
-tightly enough that hallucinating a plausible-sounding but wrong fix is less
-likely than in an open-ended review.
-"""
+"""Opt-in second pass (`--suggest-fixes`) that asks an already-configured
+LLM tier for a short, targeted fix suggestion on findings that don't
+already have one."""
 
 from __future__ import annotations
 
@@ -63,15 +56,8 @@ def generate_suggestions(
     exclude_checks: set[str],
 ) -> tuple[int, list[str]]:
     """Fills in `.suggestion` in place on up to `max_suggestions` eligible
-    findings (no existing suggestion, not excluded, highest severity first),
-    using `reviewer` -- an already-constructed, already-available
-    OpenAIProtocolReviewer subclass instance (the cloud or local tier), reused
-    here purely for its client/auth/base_url/model, not its own review()
-    method. Returns (count actually filled in, skip-reason strings) -- a
-    per-finding failure here is recorded and moved past, never raised, since
-    a fix-suggestion pass failing shouldn't take down a run that already has
-    real findings to report.
-    """
+    findings, highest severity first. Returns (count filled in, skip-reason
+    strings) -- a per-finding failure is recorded and moved past, never raised."""
     targets = _eligible_findings(findings, targets_by_path, exclude_checks, max_suggestions)
     if not targets:
         return 0, []

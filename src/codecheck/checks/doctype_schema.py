@@ -1,23 +1,7 @@
-"""RULE-022/RULE-023: DocType JSON schema checks -- these run on a DocType's
-own definition file (module/doctype/<name>/<name>.json), not on application
-code, but the same per-file HouseCheck loop already scans every changed/
-audited file regardless of extension, so it's a natural fit.
-
-RULE-022 flags a DocType JSON file that isn't valid JSON at all -- this
-breaks `bench migrate` outright, so it's worth catching in review rather
-than at deploy time.
-
-RULE-023 flags a JSON blob (a string starting/ending with {}/[]) stored as
-the *default* value of an ordinary Data/Text/Long Text/Small Text field --
-a sign the field is really being used to hold structured data that belongs
-in a Table (child table) field instead, which Frappe can actually query and
-validate.
-
-Doesn't attempt the cross-file "does this DocType have a server-side
-validate() to match its client-side one" check some tools do here -- a
-HouseCheck only ever sees one file's content, with no way to look up a
-sibling .py/.js file; RULE-019 already covers spot-checking field references
-against a live schema for the cases that need more than one file's context.
+"""RULE-022/RULE-023: DocType JSON schema checks. RULE-022 flags a DocType
+JSON file that isn't valid JSON (breaks `bench migrate`). RULE-023 flags a
+JSON blob stored as a Data/Text field's default value -- it should be a
+Table (child table) field instead.
 """
 
 from __future__ import annotations

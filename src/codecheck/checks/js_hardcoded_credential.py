@@ -1,9 +1,6 @@
 """RULE-016: flag a JS variable/property assignment whose name looks like a
 secret (password, api_key, token, etc.) and whose value is a non-empty,
-non-placeholder string literal.
-
-Ported from frappe-pr-reviewer's js_analyzer.py.
-"""
+non-placeholder string literal."""
 
 from __future__ import annotations
 

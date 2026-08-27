@@ -1,7 +1,5 @@
-"""Tier 1: rules engine. Wraps ruff/eslint/semgrep/house-checks as sub-runners and
-normalizes their output into our Finding schema, filtered to lines touched by the
-diff (or unfiltered, in whole-repo audit mode where changed_lines is None).
-"""
+"""Tier 1: rules engine. Wraps ruff/eslint/semgrep/house-checks as sub-runners
+and normalizes their output into our Finding schema."""
 
 from __future__ import annotations
 
@@ -133,10 +131,8 @@ class EslintRunner(SubRunner):
     name = "eslint"
 
     def _binary(self, repo_path: Path) -> str | None:
-        # Deliberately PATH-only, never repo_path/node_modules/.bin/eslint: when
-        # auditing an untrusted repo (--repo-url, --pr), that binary is shipped
-        # by whoever wrote the repo, not by the user running codecheck -- running
-        # it would be arbitrary code execution under the attacker's control.
+        # PATH-only, never repo_path/node_modules/.bin/eslint -- avoids
+        # running an untrusted repo's own binary.
         return shutil.which("eslint")
 
     def is_available(self, repo_path: Path) -> tuple[bool, str | None]:
@@ -214,13 +210,7 @@ class SemgrepRunner(SubRunner):
 
         target_by_path = {t.path: t for t in live_targets}
         result = subprocess.run(
-            # --metrics=off: --config=auto necessarily reaches semgrep's registry
-            # to download rules (unavoidable if you want its ruleset), but it
-            # also sends anonymous scan telemetry by default -- confirmed to be
-            # a separate, disable-able behavior. Turned off since this tool
-            # documents itself as not sending your code's contents anywhere
-            # without you opting in, and telemetry isn't something users opted
-            # into here.
+            # --metrics=off disables semgrep's default anonymous telemetry.
             ["semgrep", "--config=auto", "--metrics=off", "--json", "--quiet", "--", *target_by_path.keys()],
             cwd=repo_path,
             capture_output=True,
@@ -263,23 +253,13 @@ class HouseRulesRunner(SubRunner):
     name = "house_rules"
 
     def __init__(self, extra_checks: list | None = None):
-        # Project-supplied checks (rules.extra_checks in config.yaml) run
-        # alongside the built-ins, sharing the exact same per-file loop below
-        # -- a HouseCheck doesn't know or care whether it's built-in or
-        # loaded from config, they're interchangeable.
+        # Project-supplied checks (rules.extra_checks) run alongside built-ins.
         self._checks = [*ALL_CHECKS, *(extra_checks or [])]
 
     def is_available(self, repo_path: Path) -> tuple[bool, str | None]:
         return True, None
 
     def run(self, targets: list[ReviewTarget], repo_path: Path) -> list[Finding]:
-        # .py for the AST-based checks, .js for the regex/line-based Frappe
-        # client-script checks, .json for the DocType schema checks
-        # (RULE-022/023), .html for the two markup-agnostic checks
-        # (RULE-010/011) that also scan Jinja templates -- each HouseCheck
-        # filters by its own extension/path pattern on top of this, so
-        # listing an extension here just makes a file eligible to be offered
-        # to every check, not a match on its own.
         py_targets = _filter_targets(targets, (".py", ".js", ".json", ".html"))
         findings: list[Finding] = []
         for target in py_targets:
@@ -294,13 +274,8 @@ class HouseRulesRunner(SubRunner):
 _APP_EXTENSIONS = (".py", ".js", ".jsx", ".ts", ".tsx")
 _TEST_MARKERS = ("def test_", "test(", "it(", "describe(")
 
-# A plain `"test" in path` substring match also fires on ordinary application
-# filenames like contest.tsx or latest.ts -- match test-file *conventions*
-# instead: a bare test.py / test_*.py / *_test.py module, a bare test.<ext> /
-# .test./.spec. / *_test.<ext> JS/TS file, or a path inside a
-# tests/__tests__ directory. (The bare "test.ext" and JS/TS "*_test.ext" forms
-# were added after Greptile caught the first version rejecting them --
-# test.py, test.tsx, and foo_test.js all being real, common test filenames.)
+# Matches test-file conventions, not just a "test" substring (which would
+# also match contest.tsx, latest.ts, ...).
 _PY_TEST_PATH_RE = re.compile(r"(^|/)(test(_[^/]+)?|[^/]+_test)\.py$")
 _JS_TEST_PATH_RE = re.compile(r"(^|/)(test|[^/]+\.(test|spec)|[^/]+_test)\.(js|jsx|ts|tsx)$")
 _TEST_DIR_RE = re.compile(r"(^|/)(tests?|__tests__)/")
@@ -324,12 +299,9 @@ def _added_line_count(diff_text: str) -> int:
 
 
 def _looks_like_real_test(target: ReviewTarget) -> bool:
-    """Mirrors pr_probe's PRAnalyzer.check_tests(): a test file only counts if
-    its diff has an actual test declaration, or -- when there's no patch to
-    inspect, or the patch is boilerplate (e.g. a stub `pass` body) -- a large
-    enough addition count or a real modification to give it the benefit of the
-    doubt.
-    """
+    """A test file counts if its diff has a test declaration; otherwise a
+    large enough added-line count, or (falling back) any modification with
+    at least one added line -- but not a bare boilerplate stub."""
     if any(marker in target.diff_text for marker in _TEST_MARKERS):
         return True
     additions = _added_line_count(target.diff_text)
@@ -342,12 +314,7 @@ def _looks_like_real_test(target: ReviewTarget) -> bool:
 
 class TestCoverageRunner(SubRunner):
     """Flags a diff that changes non-trivial application code but touches no
-    test file -- ported from pr_probe's PRAnalyzer.check_tests() heuristic
-    (a PR-metrics tool, not a code-review tool, but the same signal is a
-    useful house-rule-style finding here). Diff-only: in audit mode every
-    target has changed_lines=None and there's no single "this change" to
-    judge against, so it's a no-op there.
-    """
+    test file. Diff-only -- a no-op in audit mode."""
 
     name = "test_coverage"
 
@@ -402,16 +369,8 @@ class RulesEngineReviewer(Reviewer):
 
     def __init__(self, config: RulesConfig, frappe_db: FrappeDbConnection | None = None):
         self.config = config
-        # Sub-runners that were enabled but couldn't run (tool not installed, no
-        # eslint config, etc.), as (runner_name, reason) pairs. Populated by
-        # review(); surfaced by the CLI so an enabled-but-skipped linter isn't
-        # silently mistaken for "ran and found nothing."
+        # (runner_name, reason) pairs for sub-runners enabled but unable to run.
         self.skipped_runners: list[tuple[str, str]] = []
-        # A misconfigured entry in rules.extra_checks (bad path, import error,
-        # not a HouseCheck) is recorded here at construction time rather than
-        # raised -- review() folds these into skipped_runners on the first
-        # call, same visibility as any other skipped sub-runner, without
-        # taking the built-in checks down with it.
         extra_checks, extra_check_errors = load_extra_checks(config.extra_checks)
         self._extra_check_errors = extra_check_errors
         self._runners: list[SubRunner] = []
@@ -427,11 +386,6 @@ class RulesEngineReviewer(Reviewer):
             self._runners.append(TestCoverageRunner())
         if config.secrets_scan:
             self._runners.append(SecretsInRepoRunner())
-        # Only added when --frappe-db-config actually produced a live
-        # connection -- cli.py is responsible for constructing that
-        # connection (and closing it) since it owns the config/CLI-flag
-        # resolution and the process lifetime; RulesEngineReviewer just uses
-        # whatever it's handed.
         if frappe_db is not None:
             self._runners.append(FrappeDbFieldCheckRunner(frappe_db))
 

@@ -1,9 +1,5 @@
-"""RULE-004: flag Frappe DB/document-fetch calls made inside a loop body -- the
-classic N+1 query pattern (a single query pulled inside a loop instead of
-batched once before it).
-
-Ported from frappe-pr-reviewer's python_analyzer.py.
-"""
+"""RULE-004: flag Frappe DB/document-fetch calls made inside a loop body --
+the classic N+1 query pattern."""
 
 from __future__ import annotations
 
@@ -41,8 +37,7 @@ def _is_flagged_call(node: ast.Call) -> bool:
     func = node.func
     if not isinstance(func, ast.Attribute) or func.attr not in _FLAGGED_ATTRS:
         return False
-    # frappe.get_all(...) / frappe.db.get_value(...) / self.db_...(...) style calls only --
-    # a bare local function that happens to be named get_value() shouldn't count.
+    # Only frappe.get_all/db.get_value/self.db_... style calls, not a bare function.
     value = func.value
     if isinstance(value, ast.Name):
         return value.id in ("frappe", "db", "self")

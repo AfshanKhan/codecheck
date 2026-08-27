@@ -82,11 +82,8 @@ def _match_candidate(candidates: list, device: str):
 
 
 def _resolve_ambiguous_device(location, device: str | None, force_local: bool, skipped: list[str]):
-    """The same model can be loaded on more than one device at once (we
-    confirmed this against a real LM Link setup, and that LM Studio silently
-    picks one without telling the caller which). Returns the chosen candidate,
-    or None if none was chosen (caller should skip the local tier).
-    """
+    """Resolve which device to use when a model is loaded on more than one.
+    Returns the chosen candidate, or None to skip the local tier."""
     if device:
         chosen = _match_candidate(location.candidates, device)
         if chosen is None:
@@ -126,16 +123,8 @@ def _resolve_ambiguous_device(location, device: str | None, force_local: bool, s
 def _confirm_local_execution(
     cfg: Config, force_local: bool, device: str | None, skipped: list[str]
 ) -> bool:
-    """Before running the local tier, check which device will actually serve
-    cfg.local.model (this machine, a remote LM Link device, or ambiguously
-    both) and require confirmation/a choice if it isn't a confirmed single
-    remote device. Returns whether to proceed.
-
-    LM Link is an LM Studio-specific feature -- Ollama and generic
-    openai_compatible servers have no equivalent multi-device concept, so this
-    whole gate is skipped for them rather than forcing a confirmation prompt
-    that describes a scenario that can't actually happen.
-    """
+    """Confirm which device will run the local tier, prompting if it isn't a
+    confirmed single remote device. Returns whether to proceed."""
     if cfg.local.provider != "lm_studio":
         return True
 
@@ -185,11 +174,7 @@ def _confirm_local_execution(
 
 
 def _compute_current_file_hashes(targets: list[ReviewTarget], repo_path: Path) -> dict[str, str]:
-    """sha256 of each target's current content, keyed by path -- the signal
-    --resume-from uses to confirm a file hasn't changed since a prior run
-    before trusting that prior run's result for it. Deleted files (no
-    content) are simply absent, same as reviewers already treat them.
-    """
+    """sha256 of each target's current content, keyed by path, for --resume-from."""
     hashes = {}
     for target in targets:
         content = read_file_content(repo_path, target)
@@ -208,11 +193,8 @@ def _run_llm_tier(
     current_file_hashes: dict[str, str],
     status_message: str,
 ) -> tuple[list, list[str], int]:
-    """Runs one LLM tier's review(), skipping any target this tier already
-    succeeded on in prior_report (--resume-from) and merging that prior run's
-    findings back in for those files. Returns (findings, skip_entries,
-    resumed_count).
-    """
+    """Runs one LLM tier's review(), reusing prior_report's results for
+    targets it already succeeded on. Returns (findings, skip_entries, resumed_count)."""
     already_done: set[str] = set()
     if prior_report is not None:
         target_paths = {t.path for t in targets}
@@ -249,20 +231,10 @@ def _run_tiers(
     resume_from: Path | None = None,
     frappe_db: FrappeDbConnection | None = None,
 ) -> tuple[dict[str, list], list[str], list[str], dict[str, str]]:
-    """Runs the rules tier and (if available) the local and cloud LLM tiers over
-    the given targets. Returns (results_by_tier, tiers_run, skip_reasons,
-    current_file_hashes) -- the last is stashed on the produced ReviewReport
-    so a *later* run can validate against it via --resume-from.
-
-    resume_from, if given, points at a prior run's report.json: any file an
-    LLM tier already got a real (non-skipped) result for there is skipped
-    this run too, and that prior result is carried into the new report --
-    but only if the prior run was the same mode (diff vs audit) and the
-    file's content hasn't changed since; see already_succeeded_paths for why
-    path alone isn't a safe enough signal. Only files that were skipped last
-    time (rate limit, transient error, ...) get re-requested. The rules tier
-    always re-runs in full regardless, since it's free and fast.
-    """
+    """Runs the rules tier and (if available) the local and cloud LLM tiers.
+    Returns (results_by_tier, tiers_run, skip_reasons, current_file_hashes).
+    resume_from, if given, reuses a prior run's non-skipped LLM results for
+    unchanged files."""
     results: dict[str, list] = {}
     tiers_run: list[str] = []
     skipped: list[str] = []
@@ -323,22 +295,9 @@ def _sanitize_slug(value: str) -> str:
 
 
 def _display_repo_url(repo_url: str) -> str:
-    """Strip anything credential-shaped out of a URL before it's stored in
-    `ReviewReport.repo_path` -- `_validate_clone_url` doesn't reject
-    credentials in an HTTPS URL (it only blocks argument-injection/transport-
-    helper shapes), and `redact._is_url_like` leaves a URL-shaped repo_path
-    untouched on the assumption it has nothing local-identifying to scrub, so
-    a credential embedded in --repo-url would otherwise reach every report
-    format unredacted. That covers not just embedded userinfo
-    (`https://user:token@host/repo.git`) but a token in the query string or
-    fragment too (e.g. `https://host/org/repo.git?access_token=...`) -- the
-    query/fragment are dropped unconditionally, not just when userinfo is
-    also present (CodeRabbit review). The original repo_url (with any
-    credentials still intact) is used for the actual `git clone` -- only the
-    report-facing copy is stripped. SSH's scp-like `git@host:org/repo.git`
-    syntax has no userinfo component to strip (no "://", so urlsplit doesn't
-    treat "git@host" as netloc) and is returned unchanged.
-    """
+    """Strip userinfo/query/fragment out of a URL before it's stored in
+    ReviewReport.repo_path. SSH's scp-like git@host:org/repo.git syntax has
+    nothing to strip and is returned unchanged."""
     parts = urlsplit(repo_url)
     if not parts.scheme:
         return repo_url
@@ -348,11 +307,7 @@ def _display_repo_url(repo_url: str) -> str:
 
 def _repo_label(repo_path: Path, repo_url: str | None) -> str:
     """A short, filesystem-safe name for the reviewed repo, used in report
-    filenames. Prefers owner_repo parsed from --repo-url/--pr's URL over the
-    local directory name -- cloned repos land in a randomly-named temp dir
-    (see github_source.cloned_repo), so the directory name itself is useless
-    there.
-    """
+    filenames. Prefers owner_repo from --repo-url/--pr over the local dir name."""
     if repo_url:
         cleaned = repo_url.strip().rstrip("/")
         if cleaned.endswith(".git"):
@@ -376,25 +331,8 @@ def _report_basename(repo_label: str, pr_number: int | None, mode: str, generate
 
 
 def _claim_unique_run_dir(output_dir: Path, basename: str) -> Path:
-    """Each run gets its own subdirectory (`<output_dir>/<basename>/`)
-    holding its `.json`/`.md`/`.docx`/`.xlsx` quartet together, instead of
-    every run's four files landing loose in one shared `--output-dir` --
-    flat, all-runs-mixed-together directory listings turn unreadable fast
-    once there's more than a couple of runs sitting in the same place.
-
-    The timestamp in `basename` only has second resolution, so two runs for
-    the same repo/PR/mode finishing within the same second would otherwise
-    collide and silently overwrite each other's reports. `Path.mkdir()` (no
-    `exist_ok`) is itself an atomic exclusive-create at the OS level (it raises
-    FileExistsError if the directory already exists, the same guarantee the
-    old per-file O_CREAT | O_EXCL claim gave when there were four separate
-    files to individually reserve) -- not a check-then-write, since an
-    exists() check followed by a later write has a TOCTOU gap two concurrent
-    codecheck processes could both pass. A non-collision OSError (permission
-    denied, disk full, ...) re-raises rather than silently trying the next
-    suffix -- an error like that will likely fail identically for every
-    candidate.
-    """
+    """Atomically claim `<output_dir>/<basename>/`, appending -2, -3, ... on
+    collision. A non-collision OSError re-raises immediately."""
     candidate = basename
     suffix = 2
     while True:
@@ -411,17 +349,10 @@ def _write_reports(
     report: ReviewReport, output_dir: Path, repo_label: str, pr_number: int | None = None
 ) -> tuple[Path, Path, Path, Path]:
     """Claims a unique run directory and writes the .json/.md/.docx/.xlsx
-    quartet for `report` into it. Shared by `_finish` (a live diff/audit
-    run) and the `render` command (re-rendering a prior run's .json with no
-    checks re-run), so both get the exact same collision-safe,
-    all-or-nothing write behavior.
-    """
+    quartet for `report` into it. Shared by `_finish` and `render`."""
     output_dir.mkdir(parents=True, exist_ok=True)
     requested_basename = _report_basename(repo_label, pr_number, report.mode, report.generated_at)
     run_dir = _claim_unique_run_dir(output_dir, requested_basename)
-    # The actual claimed name, e.g. requested_basename + a "-2" suffix if it
-    # collided -- the four filenames inside always match their own
-    # containing directory's name, never the (possibly stale) requested one.
     basename = run_dir.name
     json_path = run_dir / f"{basename}.json"
     md_path = run_dir / f"{basename}.md"
@@ -433,13 +364,7 @@ def _write_reports(
         write_docx_report(report, docx_path)
         write_xlsx_report(report, xlsx_path)
     except BaseException:
-        # A reporter raising here would otherwise leave this run directory
-        # permanently claimed by an empty/partial one -- no future run could
-        # ever reuse this basename (the atomic mkdir claim in
-        # _claim_unique_run_dir sees it as "already exists" forever), and
-        # anyone opening it would find an empty or truncated report. Free it
-        # back up instead: delete the whole run directory (whatever did or
-        # didn't get written into it) and let the original error propagate.
+        # Free the claimed basename back up rather than leaving a partial run.
         shutil.rmtree(run_dir, ignore_errors=True)
         raise
     return json_path, md_path, docx_path, xlsx_path
@@ -470,11 +395,7 @@ def _finish(
     raise typer.Exit(code=0)
 
 
-# Named shorthands for thresholds.fail_on_severity, so a CI pipeline (or a
-# human) can dial the exit-code gate up or down without spelling out a raw
-# severity value or hand-editing config.yaml -- e.g. --gate strict on a
-# security-sensitive repo, --gate relaxed while a legacy codebase is still
-# working down a large backlog of MEDIUM-severity findings.
+# Named shorthands for thresholds.fail_on_severity.
 _GATE_PROFILES = {"strict": "medium", "standard": "high", "relaxed": "critical"}
 
 
@@ -498,23 +419,10 @@ def _maybe_suggest_fixes(
     repo_path: Path,
     skipped: list[str],
 ) -> None:
-    """--suggest-fixes: an opt-in second pass over the findings that already
-    came back from this run, asking whichever LLM tier is already configured
-    (cloud preferred over local, matching how both tiers can run together
-    elsewhere) for a short fix suggestion on each one that doesn't already
-    have one -- see codecheck.suggest for why this is a narrower, cheaper ask
-    than a full independent review.
-
-    Only an OpenAIProtocolReviewer subclass (OpenAICompatibleCloudReviewer,
-    LocalLLMReviewer) is usable here -- codecheck.suggest.generate_suggestions
-    is written against that shared _get_client()/_resolved_base_url()/
-    config.model interface. AnthropicCloudReviewer (cloud.provider="anthropic",
-    the default) is a separate implementation with none of those, so it's
-    deliberately excluded here rather than handed to generate_suggestions and
-    crashing with an AttributeError -- confirmed as a real bug via Greptile
-    review: the default cloud provider is exactly the one this would have
-    crashed on.
-    """
+    """--suggest-fixes: asks the configured LLM tier (cloud preferred) for a
+    short fix suggestion on each finding that doesn't already have one.
+    Only an OpenAIProtocolReviewer subclass is usable; AnthropicCloudReviewer
+    is excluded."""
     if not suggest_fixes:
         return
     reviewer = None
@@ -566,17 +474,9 @@ def _maybe_suggest_fixes(
 def _connect_frappe_db(
     frappe_db_config: Path | None, untrusted: bool, skipped: list[str]
 ) -> FrappeDbConnection | None:
-    """--frappe-db-config: opens a live connection to a Frappe site's database
-    (for RULE-019 and any future DB-verified checks) if a path was given.
-    Refuses outright when the review target is untrusted code (--repo-url or
-    --pr, not a local --repo-path) -- running live DB queries derived from
-    someone else's code while reviewing a fork/PR you don't control is a
-    materially different risk than reviewing your own local bench, and this
-    feature is only meant for the latter. A connection failure (bad path,
-    wrong credentials, DB unreachable) is recorded as a skip and returns
-    None, same as any other tier that couldn't run, rather than aborting the
-    whole review.
-    """
+    """Opens a live Frappe DB connection for RULE-019 if a path was given.
+    Refuses when the review target is untrusted (--repo-url/--pr). A
+    connection failure is recorded as a skip, not an abort."""
     if frappe_db_config is None:
         return None
     if untrusted:
@@ -756,9 +656,7 @@ def diff(
             raise typer.Exit(code=0)
 
         if cfg.cloud.enabled:
-            # A diff's size isn't inherently bounded when the diff/PR is
-            # attacker-controlled (the cloud tier makes one API call per changed
-            # file), so apply the same per-run file cap as `audit`.
+            # Apply the same per-run file cap as `audit`.
             capped_count = exceeds_audit_cap(targets, cfg.cloud, force=force_cloud)
             if capped_count is not None:
                 console.print(
@@ -778,13 +676,6 @@ def diff(
         _maybe_suggest_fixes(suggest_fixes, cfg, findings, targets, review_repo_path, skipped)
 
         report = ReviewReport(
-            # The repo's own remote URL when one was actually given
-            # (--repo-url, or the URL --pr was passed as) -- a local temp
-            # clone's directory name (codecheck-clone-xxxxx) means nothing
-            # to a report reader. Only a genuinely local run (--repo-path,
-            # or --pr <number> against an existing local checkout) shows
-            # the local filesystem path. _display_repo_url strips any
-            # embedded credential before it reaches the report.
             repo_path=_display_repo_url(repo_url) if repo_url else str(source_repo_path),
             mode="diff",
             base_ref=report_base_ref,
@@ -923,9 +814,6 @@ def audit(
         _maybe_suggest_fixes(suggest_fixes, cfg, findings, targets, effective_repo_path, skipped)
 
         report = ReviewReport(
-            # See the matching comment in diff() -- the repo's own remote
-            # URL when one was given, not a local temp clone's meaningless
-            # directory name, with any embedded credential stripped.
             repo_path=_display_repo_url(repo_url) if repo_url else str(effective_repo_path),
             mode="audit",
             base_ref=None,
@@ -968,14 +856,9 @@ def render(
         False, "--redact", help="Scrub locally-identifying details from the re-rendered reports."
     ),
 ):
-    """Re-render a prior run's .json report as markdown/docx, without re-running
-    any checks. Useful after upgrading codecheck (to get the newer reporter
-    output from an old report) or to produce a --redact copy of a report you
-    already have, without a full re-review."""
+    """Re-render a prior run's .json report as markdown/docx/xlsx, without
+    re-running any checks."""
     report = _load_report_file(report_json)
-    # Derive the filename label from the real repo_path before redacting --
-    # otherwise a --redact render's own filename would be built from the
-    # placeholder text instead of an actual repo name.
     repo_label = _sanitize_slug(Path(report.repo_path).name) or "repo"
     if redact:
         report = redact_report(report)
@@ -995,11 +878,8 @@ def compare(
         None, "--gate", help=f"Override thresholds.fail_on_severity via a named profile: {', '.join(_GATE_PROFILES)}."
     ),
 ):
-    """Compare two prior .json reports (e.g. a baseline audit vs. a later one
-    of the same repo) and show which findings are newly introduced vs.
-    resolved since the baseline. Exits 1 if any newly introduced finding is
-    at or above thresholds.fail_on_severity -- wire this into CI to catch a
-    codebase getting worse over time, not just a single run's snapshot."""
+    """Compare two prior .json reports and show newly-introduced vs. resolved
+    findings. Exits 1 if any new finding is at or above thresholds.fail_on_severity."""
     old = _load_report_file(old_report)
     new = _load_report_file(new_report)
     added, resolved = diff_reports(old, new)

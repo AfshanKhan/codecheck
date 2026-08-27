@@ -1,22 +1,11 @@
-"""RULE-003: flag @frappe.whitelist() methods that never call a permission check
-(check_permission()/has_permission()) or raise PermissionError anywhere in their
-body. Skips allow_guest=True endpoints, which are deliberately public.
+"""RULE-003: flag @frappe.whitelist() methods that never call a permission
+check (check_permission()/has_permission()) or raise PermissionError
+anywhere in their body. Skips allow_guest=True endpoints.
 
-Ported from frappe-pr-reviewer's python_analyzer.py, with fixes across a few
-rounds: the original only matched the substring "has_permission", missing the
-equally-valid check_permission() pattern (a Document instance method) --
-confirmed via a real false positive on indictranstech/casale_erp#89, where
-check_permission() was present but unrecognized. It also used a plain
-ast.walk() over the whole function, which both false-negatived (a permission
-check inside a nested helper that's never called shouldn't count) and, once
-naively fixed by not descending into any nested scope, false-positived the
-opposite way (a check inside a helper that IS called should still count). A
-flat, depth-independent name->def map fixed the reachability question but
-introduced a new bug on top: two same-named helpers at different nesting
-depths would resolve to whichever one happened to appear last in traversal
-order, not the one Python's own lexical scoping would actually pick.
-_has_permission_check() below resolves all of it together: reachability via
-the real call graph, name resolution via the real lexical scope chain.
+_has_permission_check() resolves reachability via the real call graph and
+name resolution via the real lexical scope chain, so a nested helper only
+counts if it's actually called, and a shadowed helper name resolves to the
+correct enclosing definition.
 """
 
 from __future__ import annotations
@@ -50,10 +39,7 @@ _NESTED_SCOPE_TYPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
 
 
 def _iter_own_scope(node: ast.AST):
-    """Like ast.walk(), but doesn't descend into a nested function/lambda's
-    body -- a permission check inside a nested helper that's never called
-    shouldn't count as protecting the outer whitelisted endpoint.
-    """
+    """Like ast.walk(), but doesn't descend into a nested function/lambda."""
     for child in ast.iter_child_nodes(node):
         yield child
         if not isinstance(child, _NESTED_SCOPE_TYPES):
@@ -83,16 +69,8 @@ def _permission_signal(node: ast.AST) -> bool:
 def _build_scope_info(
     func: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> tuple[dict[int, dict[str, ast.AST]], dict[int, ast.AST]]:
-    """Maps each nested scope (func itself, plus every nested function/
-    async-function within it) to its own directly-nested defs by name, and to
-    its immediately enclosing scope. Needed for correct name resolution: a
-    single flat name->def map picks whichever same-named definition happens
-    to appear last in traversal order, not the one Python's actual lexical
-    scoping would resolve to -- if two helpers share a name at different
-    nesting depths, that flat map can pick the wrong one in either direction
-    (an unprotected dead shadow masking a real check, or a protected shadow
-    hiding an actually-unprotected call site).
-    """
+    """Maps each nested scope to its own directly-nested defs by name, and
+    to its immediately enclosing scope, for correct lexical name resolution."""
     scope_own_defs: dict[int, dict[str, ast.AST]] = {id(func): {}}
     scope_parent: dict[int, ast.AST] = {}
 
@@ -121,14 +99,8 @@ def _called_names(node: ast.AST) -> set[str]:
 
 
 def _has_permission_check(func: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
-    """True if func's own body has a permission signal, or if (transitively)
-    it calls a nested helper that does. A nested helper that's defined but
-    never actually reachable by a call from func doesn't count, since dead
-    code can't be protecting anything. Name resolution walks the lexical
-    scope chain outward from each call site, same as Python's own closures --
-    not a flat lookup -- so a shadowed helper name resolves to the nearest
-    enclosing definition, not an arbitrary same-named one elsewhere.
-    """
+    """True if func's own body has a permission signal, or transitively calls
+    a nested helper that does. An unreachable helper doesn't count."""
     scope_own_defs, scope_parent = _build_scope_info(func)
     visited: set[int] = set()
 

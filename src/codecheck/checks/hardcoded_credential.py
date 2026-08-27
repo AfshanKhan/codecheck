@@ -1,9 +1,6 @@
 """RULE-009: flag a variable assignment where the name looks like a secret
-(password, api_key, token, etc.) and the value is a non-empty, non-placeholder
-string literal -- a likely hardcoded credential.
-
-Ported from frappe-pr-reviewer's python_analyzer.py.
-"""
+(password, api_key, token, etc.) and the value is a non-empty,
+non-placeholder string literal."""
 
 from __future__ import annotations
 

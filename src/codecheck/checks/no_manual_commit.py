@@ -1,9 +1,6 @@
-"""RULE-005: flag frappe.db.commit()/db.commit() calls. Frappe auto-commits at
-the end of a successful request; a manual commit mid-request can commit a
-partial transaction if something later in the same request fails.
-
-Ported from frappe-pr-reviewer's python_analyzer.py.
-"""
+"""RULE-005: flag frappe.db.commit()/db.commit() calls. Frappe auto-commits
+at the end of a successful request; a manual commit mid-request can commit
+a partial transaction if something later fails."""
 
 from __future__ import annotations
 

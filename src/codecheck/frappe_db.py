@@ -1,14 +1,9 @@
 """Read-only connection to a live Frappe site's database, for the opt-in
-`--frappe-db-config` checks (see checks/frappe_db_field_check.py). Reads
-connection details from a real site_config.json already sitting on disk --
-the same "reuse credentials you already have" approach codecheck already uses
-for git auth (see github_source.py) -- rather than prompting for or storing a
-password itself.
+`--frappe-db-config` checks. Reads connection details from a real
+site_config.json already on disk.
 
-Every query issued through FrappeDbConnection is a hardcoded SELECT against
-Frappe's own schema/metadata tables (tabDocType, tabDocField, tabCustom
-Field) with parameterized values; there is no path for arbitrary or
-user-supplied SQL to reach this module, and it never writes.
+Every query is a hardcoded, parameterized SELECT against Frappe's own
+schema/metadata tables; no path for user-supplied SQL, and it never writes.
 """
 
 from __future__ import annotations
@@ -19,16 +14,11 @@ from pathlib import Path
 
 class FrappeDbUnavailable(Exception):
     """Raised when a config/connection problem means the DB-backed checks
-    can't run this session -- callers should treat this as a graceful skip
-    (recorded in the report), not a reason to abort the whole run.
-    """
+    can't run this session -- treated as a graceful skip, not an abort."""
 
 
-# Fields Frappe attaches to every DocType automatically (defined in the
-# framework itself, not per-doctype in tabDocField/tabCustom Field) -- these
-# must never be flagged as "doesn't exist," or every single reference to
-# doc.name/doc.owner/doc.modified/etc. across a real codebase would be a
-# false positive.
+# Fields Frappe attaches to every DocType automatically -- never flagged as
+# "doesn't exist."
 META_FIELDS = frozenset(
     {
         "name",
@@ -107,13 +97,8 @@ class FrappeDbConnection:
         self._connection.close()
 
     def doctype_fields(self, doctype: str) -> frozenset[str] | None:
-        """Every real field name defined on `doctype` in this site right now
-        -- standard fields (tabDocField) + custom fields (tabCustom Field) +
-        the universal META_FIELDS. Returns None if `doctype` itself doesn't
-        exist in this site at all -- callers should treat that as "nothing to
-        judge here" (a typo'd *DocType* name is a different problem from a
-        typo'd field name), not as every field being missing.
-        """
+        """Every real field name on `doctype`: standard + custom fields +
+        META_FIELDS. Returns None if `doctype` itself doesn't exist."""
         if doctype in self._doctype_fields_cache:
             return self._doctype_fields_cache[doctype]
 

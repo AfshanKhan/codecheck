@@ -1,33 +1,12 @@
 """RULE-030/RULE-031: flag a comment (or contiguous run of comment lines)
-that looks like it's actually disabled code rather than an explanation --
-dead code left in a comment rots (nobody keeps it in sync with the code
-around it) and is what version control is for; if it's worth keeping, it
-belongs in git history, not a comment.
+that looks like disabled code rather than an explanation.
 
-RULE-030 (Python) tries to parse the comment's text as a Python statement --
-if it parses cleanly as something other than a single bare literal/name
-(a plain word, "TODO", "None", a number -- clearly prose, not code), it's
-almost certainly commented-out code, not an explanation. RULE-031 (JS) has no
-parser available, so it falls back to a smaller set of "looks like code"
-regexes (assignment, function call, control-flow keyword).
-
-Both look past a single line: a commented-out multi-line statement (a
-multi-line SQL string, a chained `frappe.call({...})`) doesn't parse (or
-match) on its own first line alone, so both grow the window one comment line
-at a time -- trying the accumulated block after each line -- until it either
-parses/matches as a complete statement or a line cap is hit (confirmed real
-gap: a commented-out multi-line f-string SQL query in a real audited repo
-was invisible to the original single-line-only version of this check, while
-a much noisier third-party tool's regex-only approach caught it, at the cost
-of a high false-positive rate on ordinary prose comments starting with a
-keyword-like word such as "return"). Growing the window only when the
-current one *doesn't* already match keeps the common single-line case
-exactly as precise as before -- it's tried at window size 1 first, same as
-always.
-
-Both skip common non-code comment conventions (shebang, encoding declarations,
-type: / noqa / pragma: directives) that would otherwise round-trip through
-the parser as valid-looking statements.
+RULE-030 (Python) parses the comment's text as a Python statement. RULE-031
+(JS) has no parser, so it falls back to "looks like code" regexes
+(assignment, function call, control-flow keyword). Both grow the window one
+comment line at a time to catch a multi-line statement, up to a line cap.
+Both skip common non-code comment conventions (shebang, encoding
+declarations, type:/noqa/pragma: directives).
 """
 
 from __future__ import annotations
@@ -48,24 +27,10 @@ def _looks_like_directive(text: str) -> bool:
 
 
 def _is_commented_python_code(text: str, allow_pass_fallback: bool = True) -> bool:
-    """text may be one line or several (already '#'-stripped, joined with
-    real newlines) -- ast.parse doesn't care either way. Uniformly
-    indenting every line by the same amount (rather than just the first)
-    is safe for a multi-line block: it preserves each line's indentation
-    *relative* to the others, which is all Python's own parser cares about,
-    and any extra whitespace that lands inside an open string/bracket is
-    harmless since we only care whether this parses, not its exact value.
-
-    `allow_pass_fallback=False` disables the "append a synthetic pass to a
-    colon-terminated header" shortcut -- the caller uses this while it's
-    still growing the window, so a genuinely present indented suite in the
-    following comment line(s) gets a chance to complete the statement for
-    real, rather than the header being accepted as "done" on its own and
-    its actual body ending up as a separate, fragmented finding (or missed
-    outright if the body isn't independently parseable on its own -- caught
-    by CodeRabbit review). The fallback is still used, as a last resort,
-    once growing is exhausted (see check_file below).
-    """
+    """text may be one line or several (already '#'-stripped). Uniformly
+    indents every line to preserve relative indentation, then tries to parse
+    as a statement. allow_pass_fallback=False disables appending a synthetic
+    `pass` to a colon-terminated header, used while still growing the window."""
     text = text.strip("\n")
     if not text.strip() or _looks_like_directive(text.lstrip().splitlines()[0]):
         return False
@@ -107,13 +72,9 @@ def _is_commented_js_code(text: str) -> bool:
 
 
 def _js_bracket_balance(text: str) -> int:
-    """Crude open-minus-close bracket count across the (already //-stripped)
-    text -- doesn't account for brackets inside string/regex literals, but
-    is only used to decide when to stop growing a candidate block, not to
-    decide whether it's code at all, so an occasional miscount just means
-    growing the window one line further or less than ideal, not a false
-    positive/negative on its own.
-    """
+    """Crude open-minus-close bracket count (doesn't account for brackets
+    inside string/regex literals) -- only used to decide when to stop
+    growing a candidate block."""
     balance = 0
     for ch in text:
         if ch in _BRACKETS:
@@ -127,13 +88,8 @@ _PY_CONTINUATION_KEYWORDS = ("elif", "else", "except", "finally")
 
 
 def _looks_like_continuation(text: str) -> bool:
-    """True if `text` (one already-'#'-stripped comment line) opens with
-    elif/else/except/finally -- a clause that can only ever appear as the
-    continuation of a *preceding* if/try statement, never parse as a
-    complete unit on its own. Requires the keyword to actually end there
-    (followed by nothing, a space, or a colon) so this doesn't misfire on
-    a variable named e.g. "elsewhere".
-    """
+    """True if text opens with elif/else/except/finally -- a clause that can
+    only continue a preceding if/try, never parse standalone."""
     stripped = text.lstrip()
     for kw in _PY_CONTINUATION_KEYWORDS:
         if stripped == kw or stripped.startswith((kw + " ", kw + ":")):
@@ -185,17 +141,7 @@ class CommentedOutPythonCodeCheck(HouseCheck):
         i = 0
         n = len(lines)
         while i < n:
-            # A blank `#` line is never itself the start of a new candidate
-            # -- without this, one sitting right before an unrelated
-            # statement got absorbed into *that* statement's block (its
-            # empty text parses harmlessly, so the match still succeeds),
-            # reporting a finding range that visually claims to start on a
-            # blank line above code it has nothing to do with (caught by
-            # Graphite review). The separate continuation-lookahead below
-            # (absorbing a blank line between a matched suite and its own
-            # elif/else/except/finally) is unaffected -- that's a different
-            # code path that indexes into `lines` directly, not this entry
-            # check.
+            # A blank `#` line is never itself the start of a new candidate.
             if not lines[i].strip().startswith("#") or not _dehash(lines[i], "#").strip():
                 i += 1
                 continue
@@ -204,24 +150,10 @@ class CommentedOutPythonCodeCheck(HouseCheck):
             j = i
             while j < n and (j - i) < _MAX_BLOCK_LINES and lines[j].strip().startswith("#"):
                 block.append(_dehash(lines[j], "#"))
-                # No pass-fallback while growing -- a colon-terminated header
-                # should only be accepted "as is" once there's genuinely no
-                # more comment lines to pull in as its real body.
                 if _is_commented_python_code("\n".join(block), allow_pass_fallback=False):
-                    # A complete, valid statement -- but if the very next
-                    # comment line is an elif/else/except/finally clause,
-                    # it can only belong to *this* statement (those never
-                    # parse standalone), so keep growing instead of
-                    # finalizing here. Otherwise a commented if/else ends
-                    # up reported as two fragments with the else/elif
-                    # header dropped entirely, since "else:" alone is a
-                    # SyntaxError with nothing before it to attach to
-                    # (caught by CodeRabbit review). A blank `#` line can
-                    # sit between the suite and its continuation clause (a
-                    # deliberate visual separator) -- skip past any of
-                    # those first, rather than only ever peeking at the
-                    # very next line, so the continuation is still found
-                    # (also caught by CodeRabbit review, on the fix above).
+                    # If the next comment line is an elif/else/except/finally
+                    # continuation, keep growing instead of finalizing here.
+                    # A blank line may separate the suite from its clause.
                     following = j + 1
                     while (
                         following < n
@@ -242,9 +174,8 @@ class CommentedOutPythonCodeCheck(HouseCheck):
                     break
                 j += 1
             else:
-                # Ran out of comment lines (or hit the cap) without a real
-                # match -- last resort: a header-only disabled statement
-                # (`# if x:` with no comment body ever shown) still counts.
+                # No match found before running out of lines/hitting the cap --
+                # last resort: a header-only statement still counts.
                 if block and _is_commented_python_code("\n".join(block), allow_pass_fallback=True):
                     matched_end = j - 1
             if matched_end is None:
@@ -294,20 +225,9 @@ class CommentedOutJsCodeCheck(HouseCheck):
             first_balance = _js_bracket_balance(first)
             is_open_candidate = bool(_JS_LINE_START_RE.match(first)) and first_balance > 0
             if is_open_candidate:
-                # An open multi-line block ("if (ready) {", "frappe.call({",
-                # "options = {", "return build(", "throw new Error(", ...) --
-                # checked *before* the generic single-line patterns below,
-                # not after: those matched on the keyword/call/assignment
-                # prefix alone regardless of whether the line's own brackets
-                # were balanced, so an open header got accepted as its own
-                # complete single-line finding and its real body (or closing
-                # brace) ended up as a separate, fragmented finding -- or
-                # dropped outright -- instead of one combined range (caught
-                # by CodeRabbit review, across several shapes: control-flow/
-                # declaration keywords first, then bare assignments and
-                # return/throw). Keep pulling in following comment lines and
-                # tracking bracket balance until it closes back out, up to
-                # the line cap.
+                # An open multi-line block ("if (ready) {", "frappe.call({", ...)
+                # -- pull in following comment lines, tracking bracket
+                # balance, until it closes or the line cap is hit.
                 balance = first_balance
                 j = i
                 while balance > 0 and j + 1 < n and (j + 1 - i) < _MAX_BLOCK_LINES:
@@ -318,16 +238,8 @@ class CommentedOutJsCodeCheck(HouseCheck):
                     balance += _js_bracket_balance(_dehash(lines[j], "//"))
                 if balance <= 0 and j > i:
                     matched_end = j
-            # A candidate identified as the start of a multi-line block that
-            # never actually closes (ran off into prose, or hit the line
-            # cap) shouldn't fall back to a single-line match either -- the
-            # keyword-prefix pattern below matches "const"/"if"/... alone
-            # regardless of what follows, so without this guard an unclosed
-            # candidate was still reported as its own (incomplete, partial)
-            # single-line finding, inconsistent with an unclosed
-            # identifier-call candidate ("frappe.call({" with no closing
-            # paren), which already correctly matched nothing at all (caught
-            # by CodeRabbit review).
+            # An open candidate that never closes shouldn't fall back to a
+            # single-line match either.
             if matched_end is None and not is_open_candidate and _is_commented_js_code(first):
                 matched_end = i
             if matched_end is None:

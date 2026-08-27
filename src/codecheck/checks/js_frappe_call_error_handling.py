@@ -1,29 +1,9 @@
 """RULE-015: flag frappe.call() invocations with no visible error-handling
 signal nearby -- no `error:`/`callback:` handler, no `.catch()`, and no
-`freeze: true` to block the UI while the request is in flight. Scans a fixed
-window of lines after the call, same heuristic as the source it's ported from.
-
-Ported from frappe-pr-reviewer's js_analyzer.py, with one fix: the original
-matched "frappe.call(" as a single contiguous substring on one line, missing
-the equally-common chained/multi-line call style a formatter (e.g. Prettier)
-produces --
-    frappe
-        .call({
--- where "frappe" and ".call(" land on different lines. Confirmed as a real
-gap via a live comparison against frappe-pr-reviewer on a real PR: it found
-two frappe.call() findings in a file written exactly this way, codecheck
-found zero. _CALL_RE now allows whitespace (including newlines) between
-"frappe" and ".call(", and matching runs over the whole file content instead
-of line-by-line so a match spanning two lines can actually be found.
-
-Second fix: diff scope is checked against the same window scanned for
-error-handling signals, not just the regex match's own span -- the match
-only extends up through the opening "(" (it can't safely balance-match the
-closing paren), so a diff that only touches the ".call(" line itself, or
-only an argument *inside* the call, would fall outside a match-span-only
-range and get skipped even though it's actively touching this call (two
-separate Greptile catches, same underlying shape as the RULE-018 fix below).
-"""
+`freeze: true`. Scans a fixed window of lines after the call. _CALL_RE
+allows whitespace (including newlines) between "frappe" and ".call(" to
+match a chained/multi-line call style. Diff scope is checked against the
+whole scanned window, not just the regex match's own span."""
 
 from __future__ import annotations
 
