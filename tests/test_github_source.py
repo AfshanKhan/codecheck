@@ -189,6 +189,19 @@ def test_parse_pr_url_returns_none_for_non_pr_urls(not_a_pr_url: str):
     assert parse_pr_url(not_a_pr_url) is None
 
 
+@pytest.mark.parametrize("file_url", ["file:///Users/john/secret-project", "FILE:///etc/passwd"])
+def test_cloned_repo_rejects_file_scheme_urls(file_url: str):
+    # regression (CodeRabbit): --repo-url exists to fetch an *untrusted
+    # remote* source, and a URL-shaped repo_path is left unredacted in the
+    # report (redact._is_url_like trusts it has nothing local-identifying to
+    # scrub) -- a file:// URL defeats both: it points at the local
+    # filesystem, and its local path would then leak into the report
+    # unredacted the same way a bare local path never would.
+    with pytest.raises(ValueError, match="file:// URLs are not allowed"):
+        with cloned_repo(file_url):
+            pass
+
+
 def test_validate_clone_url_allows_ordinary_urls_and_local_paths():
     for ok_url in (
         "https://github.com/org/repo.git",

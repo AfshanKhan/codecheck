@@ -11,6 +11,7 @@ import docx
 from docx.shared import Pt, RGBColor
 
 from codecheck.models import Finding, ReviewReport, Severity
+from codecheck.reporters.glossary import format_ist, source_description, tier_description
 
 _SEVERITY_COLOR = {
     Severity.CRITICAL: RGBColor(0xB4, 0x00, 0x00),
@@ -43,18 +44,19 @@ def render_docx(report: ReviewReport) -> docx.Document:
 
     p = doc.add_paragraph()
     p.alignment = 1
-    run = p.add_run(f"Generated: {report.generated_at.isoformat()}")
+    run = p.add_run(f"Generated: {format_ist(report.generated_at)}")
     run.italic = True
 
     doc.add_heading("Summary", level=1)
     table = doc.add_table(rows=0, cols=2)
     table.style = "Light Shading Accent 1"
+    tiers_display = ", ".join(f"{t} ({tier_description(t)})" for t in report.tiers_run) or "-"
     summary_rows = [
         ("Repo", report.repo_path),
         ("Mode", report.mode),
         ("Base ref", report.base_ref or "-"),
         ("Head ref", report.head_ref or "-"),
-        ("Tiers run", ", ".join(report.tiers_run) or "-"),
+        ("Tiers run", tiers_display),
         ("Files reviewed", str(len(report.files_reviewed))),
         ("Duration", f"{report.duration_seconds:.1f}s"),
     ]
@@ -66,6 +68,18 @@ def render_docx(report: ReviewReport) -> docx.Document:
         row_cells = table.add_row().cells
         row_cells[0].paragraphs[0].add_run(label).bold = True
         row_cells[1].paragraphs[0].add_run(value)
+
+    sources = sorted({f.source for f in report.findings})
+    if sources:
+        doc.add_heading("How to read the Check column", level=2)
+        doc.add_paragraph(
+            "Each finding is tagged CHECK-ID (source) -- the source in "
+            "parentheses is where that finding came from:"
+        )
+        for s in sources:
+            item = doc.add_paragraph(style="List Bullet")
+            item.add_run(s).bold = True
+            item.add_run(f" — {source_description(s)}")
 
     doc.add_heading("Findings", level=1)
     if not report.findings:

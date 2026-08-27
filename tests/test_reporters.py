@@ -9,6 +9,7 @@ from codecheck.reporters.console import print_report
 from codecheck.reporters.docx_report import render_docx, write_docx_report
 from codecheck.reporters.json_report import write_json_report
 from codecheck.reporters.markdown_report import render_markdown, write_markdown_report
+from codecheck.reporters.xlsx_report import render_xlsx, write_xlsx_report
 
 
 def make_report() -> ReviewReport:
@@ -39,6 +40,16 @@ def test_console_report_runs_without_error():
     assert "app/api.py" in output
     assert "RULE-002" in output
     assert "finding(s)" in output
+
+
+def test_console_report_shows_ist_timestamp_and_source_legend():
+    console = Console(record=True, width=100)
+    print_report(make_report(), console)
+    output = console.export_text()
+    # make_report()'s generated_at is 2026-07-30T00:00:00 UTC == 05:30 AM IST
+    assert "30 Jul 2026, 05:30 AM IST" in output
+    assert "tiers run: rules" in output
+    assert "house = one of codecheck's own built-in rules" in output
 
 
 def test_console_report_no_findings():
@@ -82,6 +93,15 @@ def test_markdown_report_contains_table_and_file_headers():
     assert "## `app/api.py`" in md
     assert "RULE-002" in md
     assert "| Line | Severity | Check | Title |" in md
+
+
+def test_markdown_report_shows_repo_ist_timestamp_and_source_legend():
+    md = render_markdown(make_report())
+    assert "**Repo:**" in md
+    assert "30 Jul 2026, 05:30 AM IST" in md
+    assert "`rules`" in md
+    assert "**house** = one of codecheck's own built-in rules" in md
+    assert "**ruff** = the ruff Python linter" in md
     assert "big_file.py" in md
 
 
@@ -119,6 +139,15 @@ def test_docx_report_contains_findings_and_summary():
     assert "1" in text  # high-severity count
 
 
+def test_docx_report_shows_ist_timestamp_and_source_legend():
+    doc = render_docx(make_report())
+    text = _docx_text(doc)
+    assert "30 Jul 2026, 05:30 AM IST" in text
+    assert "How to read the Check column" in text
+    assert "one of codecheck's own built-in rules" in text
+    assert "the ruff Python linter" in text
+
+
 def test_docx_report_no_findings():
     empty = ReviewReport(
         repo_path="/repo", mode="diff", base_ref="main", head_ref=None,
@@ -133,6 +162,129 @@ def test_write_docx_report(tmp_path: Path):
     write_docx_report(make_report(), output_path)
     assert output_path.exists()
     assert output_path.stat().st_size > 0
+
+
+def test_xlsx_report_has_summary_and_findings_sheets():
+    wb = render_xlsx(make_report())
+    assert wb.sheetnames == ["Summary", "Findings"]
+
+    findings_ws = wb["Findings"]
+    header = [c.value for c in findings_ws[1]]
+    assert header == [
+        "File", "Line", "Severity", "Check ID", "Source", "Tier",
+        "Title", "Explanation", "Suggestion",
+    ]
+    # 2 findings + 1 header row
+    assert findings_ws.max_row == 3
+    rows = [tuple(c.value for c in row) for row in findings_ws.iter_rows(min_row=2)]
+    files = [r[0] for r in rows]
+    assert "app/api.py" in files
+    # highest severity first
+    assert rows[0][2] == "HIGH"
+
+
+def test_xlsx_report_findings_sheet_has_autofilter_and_frozen_header():
+    wb = render_xlsx(make_report())
+    findings_ws = wb["Findings"]
+    assert findings_ws.auto_filter.ref == "A1:I3"
+    assert findings_ws.freeze_panes == "A2"
+
+
+def test_xlsx_report_summary_sheet_has_counts():
+    wb = render_xlsx(make_report())
+    ws = wb["Summary"]
+    values = [cell.value for row in ws.iter_rows() for cell in row if cell.value is not None]
+    assert "app/api.py" not in values  # summary doesn't list individual findings
+    assert "RULE-002" in values  # per-check breakdown
+    assert "HIGH" in values
+    assert "big_file.py: too large for cloud tier" in values  # skipped section
+
+
+def test_xlsx_report_shows_ist_timestamp_and_source_legend():
+    wb = render_xlsx(make_report())
+    ws = wb["Summary"]
+    values = [cell.value for row in ws.iter_rows() for cell in row if cell.value is not None]
+    assert "30 Jul 2026, 05:30 AM IST" in values
+    assert any(isinstance(v, str) and v.startswith("rules (") for v in values)
+    assert "one of codecheck's own built-in rules (RULE-0xx)" in values
+    assert "the ruff Python linter" in values
+
+
+def test_xlsx_report_no_findings():
+    empty = ReviewReport(
+        repo_path="/repo", mode="diff", base_ref="main", head_ref=None,
+        generated_at=datetime(2026, 7, 30, tzinfo=timezone.utc), tiers_run=["rules"],
+    )
+    wb = render_xlsx(empty)
+    findings_ws = wb["Findings"]
+    assert findings_ws.max_row == 1  # header only
+    assert findings_ws.auto_filter.ref is None  # nothing to filter
+
+
+def test_write_xlsx_report(tmp_path: Path):
+    output_path = tmp_path / "report.xlsx"
+    write_xlsx_report(make_report(), output_path)
+    assert output_path.exists()
+    assert output_path.stat().st_size > 0
+
+
+def test_xlsx_report_neutralizes_formula_injection_in_untrusted_fields():
+    # A Finding's file/title/explanation/suggestion can carry text derived
+    # from an untrusted repo's tree or an LLM's read of file content --
+    # Excel evaluates a cell starting with =/+/-/@ as a formula when the
+    # file is opened (CSV/spreadsheet injection). Every such cell must be
+    # both apostrophe-prefixed and Text-formatted, not just one or the
+    # other, since only the format is what's actually enforced by Excel.
+    f = Finding(
+        check_id="RULE-002", tier="rules", source="house", severity=Severity.HIGH,
+        title='=HYPERLINK("http://evil.com","click")', explanation="+cmd|/c calc!A1",
+        file="-1+1.py", line_start=1, suggestion="@SUM(1,1)",
+    )
+    report = ReviewReport(
+        repo_path="/repo", mode="diff", base_ref="m", head_ref="h",
+        generated_at=datetime(2026, 7, 30, tzinfo=timezone.utc),
+        tiers_run=["rules"], findings=[f],
+    )
+    wb = render_xlsx(report)
+    ws = wb["Findings"]
+    row = [ws.cell(row=2, column=c) for c in (1, 7, 8, 9)]  # File, Title, Explanation, Suggestion
+    for cell in row:
+        assert cell.number_format == "@"
+        assert not str(cell.value).startswith(("=", "+", "-", "@"))
+        assert str(cell.value).startswith("'")
+
+
+def test_xlsx_report_neutralizes_formula_injection_in_report_controlled_fields():
+    # regression (CodeRabbit): `codecheck render` loads a ReviewReport from an
+    # arbitrary JSON file via ReviewReport.from_dict/Finding.from_dict, not
+    # necessarily one codecheck itself produced -- mode/base_ref/head_ref/
+    # tiers_run and a Finding's check_id/source/tier all bypassed
+    # _write_text_cell (plain ws.append), so a leading =/+/-/@ in any of them
+    # would round-trip into a live formula cell.
+    f = Finding(
+        check_id="=EVIL()", tier="+T", source="-S", severity=Severity.LOW,
+        title="t", explanation="e", file="a.py", line_start=1,
+    )
+    report = ReviewReport(
+        repo_path="/repo", mode="=BAD", base_ref="+B", head_ref="-H",
+        generated_at=datetime(2026, 7, 30, tzinfo=timezone.utc),
+        tiers_run=["@cloud"], findings=[f],
+    )
+    wb = render_xlsx(report)
+    for ws in wb.worksheets:
+        for row in ws.iter_rows():
+            for cell in row:
+                if isinstance(cell.value, str):
+                    assert not cell.value.startswith(("=", "+", "-", "@")), (
+                        ws.title, cell.coordinate, cell.value
+                    )
+
+
+def test_xlsx_report_normal_values_are_untouched():
+    wb = render_xlsx(make_report())
+    ws = wb["Findings"]
+    files = [row[0].value for row in ws.iter_rows(min_row=2)]
+    assert "app/api.py" in files
 
 
 def _injection_report() -> ReviewReport:

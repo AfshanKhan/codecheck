@@ -13,6 +13,12 @@ miss comparing against a separate audit tool on a real repo: this is
 exactly the kind of direct-DOM-styling RULE-014 exists to catch, and the
 old substring check silently suppressed it).
 
+The exemption is evaluated per jQuery call, not per line (CodeRabbit review):
+matching the safe pattern anywhere on the line used to suppress the whole
+line, so a genuinely unsafe call sharing a line with one sanctioned call --
+e.g. `$(field.$wrapper).find(...); $($wrapper).hide();` -- went unreported.
+Each `$(...)`/`jQuery(...)` match is now checked at its own position.
+
 Ported from frappe-pr-reviewer's js_analyzer.py.
 """
 
@@ -40,9 +46,10 @@ class JsJqueryDomCheck(HouseCheck):
 
         findings = []
         for lineno, line in enumerate(content.splitlines(), start=1):
-            if not _JQUERY_RE.search(line):
+            jquery_matches = list(_JQUERY_RE.finditer(line))
+            if not jquery_matches:
                 continue
-            if _SAFE_CALL_RE.search(line):
+            if all(_SAFE_CALL_RE.match(line, match.start()) for match in jquery_matches):
                 continue
             if changed_lines is not None and lineno not in changed_lines:
                 continue

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import json
-import os
 import re
+import shutil
 import sys
 import time
 from contextlib import ExitStack
@@ -11,6 +11,7 @@ from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as package_version
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlsplit, urlunsplit
 
 import typer
 from rich.console import Console
@@ -29,6 +30,7 @@ from codecheck.reporters.console import print_report
 from codecheck.reporters.docx_report import write_docx_report
 from codecheck.reporters.json_report import write_json_report
 from codecheck.reporters.markdown_report import write_markdown_report
+from codecheck.reporters.xlsx_report import write_xlsx_report
 from codecheck.resume import (
     already_succeeded_paths,
     compute_file_hash,
@@ -320,6 +322,30 @@ def _sanitize_slug(value: str) -> str:
     return "".join(c for c in value if c.isalnum() or c in ("-", "_"))
 
 
+def _display_repo_url(repo_url: str) -> str:
+    """Strip anything credential-shaped out of a URL before it's stored in
+    `ReviewReport.repo_path` -- `_validate_clone_url` doesn't reject
+    credentials in an HTTPS URL (it only blocks argument-injection/transport-
+    helper shapes), and `redact._is_url_like` leaves a URL-shaped repo_path
+    untouched on the assumption it has nothing local-identifying to scrub, so
+    a credential embedded in --repo-url would otherwise reach every report
+    format unredacted. That covers not just embedded userinfo
+    (`https://user:token@host/repo.git`) but a token in the query string or
+    fragment too (e.g. `https://host/org/repo.git?access_token=...`) -- the
+    query/fragment are dropped unconditionally, not just when userinfo is
+    also present (CodeRabbit review). The original repo_url (with any
+    credentials still intact) is used for the actual `git clone` -- only the
+    report-facing copy is stripped. SSH's scp-like `git@host:org/repo.git`
+    syntax has no userinfo component to strip (no "://", so urlsplit doesn't
+    treat "git@host" as netloc) and is returned unchanged.
+    """
+    parts = urlsplit(repo_url)
+    if not parts.scheme:
+        return repo_url
+    host = parts.netloc.rsplit("@", 1)[-1]
+    return urlunsplit((parts.scheme, host, parts.path, "", ""))
+
+
 def _repo_label(repo_path: Path, repo_url: str | None) -> str:
     """A short, filesystem-safe name for the reviewed repo, used in report
     filenames. Prefers owner_repo parsed from --repo-url/--pr's URL over the
@@ -349,83 +375,74 @@ def _report_basename(repo_label: str, pr_number: int | None, mode: str, generate
     return f"{repo_label}_{suffix}_{timestamp}"
 
 
-_REPORT_EXTENSIONS = (".json", ".md", ".docx")
+def _claim_unique_run_dir(output_dir: Path, basename: str) -> Path:
+    """Each run gets its own subdirectory (`<output_dir>/<basename>/`)
+    holding its `.json`/`.md`/`.docx`/`.xlsx` quartet together, instead of
+    every run's four files landing loose in one shared `--output-dir` --
+    flat, all-runs-mixed-together directory listings turn unreadable fast
+    once there's more than a couple of runs sitting in the same place.
 
-
-def _claim_unique_basename(output_dir: Path, basename: str) -> str:
-    """The timestamp in `basename` only has second resolution, so two runs for
+    The timestamp in `basename` only has second resolution, so two runs for
     the same repo/PR/mode finishing within the same second would otherwise
-    collide and silently overwrite each other's reports. Reserves all three
-    `<candidate>.{json,md,docx}` paths with an atomic exclusive-create
-    (O_CREAT | O_EXCL) each, not a check-then-write -- an exists() check
-    followed by a later write has a TOCTOU gap two concurrent codecheck
-    processes could both pass, still overwriting the same paths. Claiming
-    only the `.json` path isn't enough either: a partial leftover (e.g. an
-    interrupted prior run, or the `.json` deleted by hand) could leave `.md`/
-    `.docx` behind with no matching `.json`, and a claim scoped to `.json`
-    alone would then silently overwrite them. If any one of the three is
-    already taken, whatever this candidate did manage to claim is rolled back
-    before moving on to the next suffix, so a candidate is only ever
-    considered "won" once all three are actually free. A non-collision I/O
-    error (permission denied, disk full, ...) on the 2nd/3rd extension gets
-    the same rollback treatment, then re-raises rather than silently trying
-    the next suffix -- an error like that will likely fail identically for
-    every candidate, so swallowing it and looping would just leave a trail of
-    empty, permanently-claimed files behind for no benefit.
+    collide and silently overwrite each other's reports. `Path.mkdir()` (no
+    `exist_ok`) is itself an atomic exclusive-create at the OS level (it raises
+    FileExistsError if the directory already exists, the same guarantee the
+    old per-file O_CREAT | O_EXCL claim gave when there were four separate
+    files to individually reserve) -- not a check-then-write, since an
+    exists() check followed by a later write has a TOCTOU gap two concurrent
+    codecheck processes could both pass. A non-collision OSError (permission
+    denied, disk full, ...) re-raises rather than silently trying the next
+    suffix -- an error like that will likely fail identically for every
+    candidate.
     """
     candidate = basename
     suffix = 2
     while True:
-        claimed: list[Path] = []
+        run_dir = output_dir / candidate
         try:
-            for ext in _REPORT_EXTENSIONS:
-                path = output_dir / f"{candidate}{ext}"
-                fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                os.close(fd)
-                claimed.append(path)
-            return candidate
+            run_dir.mkdir()
+            return run_dir
         except FileExistsError:
-            for path in claimed:
-                path.unlink(missing_ok=True)
             candidate = f"{basename}-{suffix}"
             suffix += 1
-        except OSError:
-            for path in claimed:
-                path.unlink(missing_ok=True)
-            raise
 
 
 def _write_reports(
     report: ReviewReport, output_dir: Path, repo_label: str, pr_number: int | None = None
-) -> tuple[Path, Path, Path]:
-    """Claims a unique basename and writes the .json/.md/.docx trio for
-    `report`. Shared by `_finish` (a live diff/audit run) and the `render`
-    command (re-rendering a prior run's .json with no checks re-run), so both
-    get the exact same collision-safe, all-or-nothing write behavior.
+) -> tuple[Path, Path, Path, Path]:
+    """Claims a unique run directory and writes the .json/.md/.docx/.xlsx
+    quartet for `report` into it. Shared by `_finish` (a live diff/audit
+    run) and the `render` command (re-rendering a prior run's .json with no
+    checks re-run), so both get the exact same collision-safe,
+    all-or-nothing write behavior.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
-    basename = _claim_unique_basename(
-        output_dir, _report_basename(repo_label, pr_number, report.mode, report.generated_at)
-    )
-    json_path = output_dir / f"{basename}.json"
-    md_path = output_dir / f"{basename}.md"
-    docx_path = output_dir / f"{basename}.docx"
+    requested_basename = _report_basename(repo_label, pr_number, report.mode, report.generated_at)
+    run_dir = _claim_unique_run_dir(output_dir, requested_basename)
+    # The actual claimed name, e.g. requested_basename + a "-2" suffix if it
+    # collided -- the four filenames inside always match their own
+    # containing directory's name, never the (possibly stale) requested one.
+    basename = run_dir.name
+    json_path = run_dir / f"{basename}.json"
+    md_path = run_dir / f"{basename}.md"
+    docx_path = run_dir / f"{basename}.docx"
+    xlsx_path = run_dir / f"{basename}.xlsx"
     try:
         write_json_report(report, json_path)
         write_markdown_report(report, md_path)
         write_docx_report(report, docx_path)
+        write_xlsx_report(report, xlsx_path)
     except BaseException:
-        # A reporter raising here would otherwise leave this basename
-        # permanently claimed by empty/partial files -- no future run could
-        # ever reuse it (the atomic claim in _claim_unique_basename sees them
-        # as "already exists" forever), and anyone opening one would find an
-        # empty or truncated report. Free the name back up instead: delete
-        # whatever got claimed/written for this basename and let the
-        # original error propagate.
-        for path in (json_path, md_path, docx_path):
-            path.unlink(missing_ok=True)
+        # A reporter raising here would otherwise leave this run directory
+        # permanently claimed by an empty/partial one -- no future run could
+        # ever reuse this basename (the atomic mkdir claim in
+        # _claim_unique_run_dir sees it as "already exists" forever), and
+        # anyone opening it would find an empty or truncated report. Free it
+        # back up instead: delete the whole run directory (whatever did or
+        # didn't get written into it) and let the original error propagate.
+        shutil.rmtree(run_dir, ignore_errors=True)
         raise
-    return json_path, md_path, docx_path
+    return json_path, md_path, docx_path, xlsx_path
 
 
 def _finish(
@@ -440,8 +457,12 @@ def _finish(
     print_report(report, console)
 
     report_to_write = redact_report(report) if redact else report
-    json_path, md_path, docx_path = _write_reports(report_to_write, output_dir, repo_label, pr_number)
-    console.print(f"\n[dim]Reports written to {json_path}, {md_path}, and {docx_path}[/dim]")
+    json_path, md_path, docx_path, xlsx_path = _write_reports(
+        report_to_write, output_dir, repo_label, pr_number
+    )
+    console.print(
+        f"\n[dim]Reports written to {json_path}, {md_path}, {docx_path}, and {xlsx_path}[/dim]"
+    )
 
     fail_threshold = Severity(cfg.thresholds.fail_on_severity)
     if report.findings_at_or_above(fail_threshold):
@@ -757,7 +778,14 @@ def diff(
         _maybe_suggest_fixes(suggest_fixes, cfg, findings, targets, review_repo_path, skipped)
 
         report = ReviewReport(
-            repo_path=str(source_repo_path),
+            # The repo's own remote URL when one was actually given
+            # (--repo-url, or the URL --pr was passed as) -- a local temp
+            # clone's directory name (codecheck-clone-xxxxx) means nothing
+            # to a report reader. Only a genuinely local run (--repo-path,
+            # or --pr <number> against an existing local checkout) shows
+            # the local filesystem path. _display_repo_url strips any
+            # embedded credential before it reaches the report.
+            repo_path=_display_repo_url(repo_url) if repo_url else str(source_repo_path),
             mode="diff",
             base_ref=report_base_ref,
             head_ref=report_head_ref,
@@ -895,7 +923,10 @@ def audit(
         _maybe_suggest_fixes(suggest_fixes, cfg, findings, targets, effective_repo_path, skipped)
 
         report = ReviewReport(
-            repo_path=str(effective_repo_path),
+            # See the matching comment in diff() -- the repo's own remote
+            # URL when one was given, not a local temp clone's meaningless
+            # directory name, with any embedded credential stripped.
+            repo_path=_display_repo_url(repo_url) if repo_url else str(effective_repo_path),
             mode="audit",
             base_ref=None,
             head_ref=None,
@@ -948,8 +979,10 @@ def render(
     repo_label = _sanitize_slug(Path(report.repo_path).name) or "repo"
     if redact:
         report = redact_report(report)
-    json_path, md_path, docx_path = _write_reports(report, output_dir, repo_label)
-    console.print(f"[dim]Reports written to {json_path}, {md_path}, and {docx_path}[/dim]")
+    json_path, md_path, docx_path, xlsx_path = _write_reports(report, output_dir, repo_label)
+    console.print(
+        f"[dim]Reports written to {json_path}, {md_path}, {docx_path}, and {xlsx_path}[/dim]"
+    )
     raise typer.Exit(code=0)
 
 

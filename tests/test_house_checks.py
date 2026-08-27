@@ -299,6 +299,45 @@ def test_js_hardcoded_html_still_ignores_other_extensions():
     assert JsHardcodedHtmlCheck().check_file("a.py", content, None) == []
 
 
+def test_js_hardcoded_html_matches_compact_self_closing_tag():
+    # regression (CodeRabbit): _HTML_TAG_RE required whitespace or '>'
+    # immediately after "input"/"button", so a compact self-closing tag with
+    # no space before the '/' -- e.g. <input/> -- was silently skipped.
+    content = "<input/>\n"
+    findings = JsHardcodedHtmlCheck().check_file("a.html", content, changed_lines={1})
+    assert len(findings) == 1
+    assert findings[0].check_id == "RULE-010"
+
+
+def test_js_hardcoded_html_explanation_is_template_specific_for_html_files():
+    # regression (CodeRabbit): the .html branch reused the .js explanation
+    # verbatim, recommending frm.add_field/frappe.ui.Dialog -- client-script
+    # APIs that don't apply to a Jinja template.
+    findings = JsHardcodedHtmlCheck().check_file("a.html", "<input/>\n", changed_lines={1})
+    assert "frm.add_field" not in findings[0].explanation
+    assert "Jinja template" in findings[0].explanation
+
+    js_findings = JsHardcodedHtmlCheck().check_file(
+        "a.js", '$el.append("<input/>");\n', changed_lines={1}
+    )
+    assert "frm.add_field" in js_findings[0].explanation
+
+
+def test_js_hardcoded_html_title_is_template_specific_for_html_files():
+    # regression (CodeRabbit): the explanation was branched per file type,
+    # but the title still always said "in client script" -- a report reader
+    # would see a Jinja-template finding titled as a client-script one, even
+    # though its own explanation talked about a template.
+    findings = JsHardcodedHtmlCheck().check_file("a.html", "<input/>\n", changed_lines={1})
+    assert "client script" not in findings[0].title
+    assert "template" in findings[0].title
+
+    js_findings = JsHardcodedHtmlCheck().check_file(
+        "a.js", '$el.append("<input/>");\n', changed_lines={1}
+    )
+    assert "client script" in js_findings[0].title
+
+
 def test_js_inline_style_flagged_in_html_template():
     content = '<div style="color: red;">text</div>\n'
     findings = JsInlineStyleCheck().check_file("a.html", content, changed_lines={1})
@@ -356,6 +395,18 @@ def test_js_jquery_dom_wrapping_unrelated_dollar_wrapper_property_flagged():
     # `field.$wrapper` is not the framework's sanctioned `$wrapper`/
     # `frm.fields_dict` entry point.
     content = "$(field.$wrapper).find('.control-label').css({color: 'red'});\n"
+    findings = JsJqueryDomCheck().check_file("a.js", content, changed_lines={1})
+    assert len(findings) == 1
+    assert findings[0].check_id == "RULE-014"
+
+
+def test_js_jquery_dom_unsafe_call_flagged_even_alongside_a_safe_call_on_same_line():
+    # regression (CodeRabbit): _SAFE_CALL_RE.search(line) checked the whole
+    # line, so a sanctioned call anywhere on the line suppressed an unsafe
+    # call sharing that line entirely -- e.g. an unsafe $(field.$wrapper)
+    # call followed by a safe $($wrapper) call on the same line went
+    # unreported. Each jQuery match must be checked at its own position.
+    content = "$(field.$wrapper).find('.x').css({}); $($wrapper).hide();\n"
     findings = JsJqueryDomCheck().check_file("a.js", content, changed_lines={1})
     assert len(findings) == 1
     assert findings[0].check_id == "RULE-014"

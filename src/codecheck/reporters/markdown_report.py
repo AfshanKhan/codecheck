@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from codecheck.models import Finding, ReviewReport, Severity
+from codecheck.reporters.glossary import format_ist, source_description, tier_description
 
 _SEVERITY_EMOJI = {
     Severity.CRITICAL: "\U0001f6d1",  # stop sign
@@ -36,6 +37,10 @@ def _md_code(text: str) -> str:
 def render_markdown(report: ReviewReport) -> str:
     lines = ["# PR Review Report", ""]
 
+    lines.append(f"**Repo:** {_md_inline(report.repo_path)}  ")
+    lines.append(f"**Generated:** {format_ist(report.generated_at)}")
+    lines.append("")
+
     counts = report.counts_by_severity()
     summary_bits = [
         f"{_SEVERITY_EMOJI[s]} {counts[s]} {s.value}"
@@ -44,8 +49,18 @@ def render_markdown(report: ReviewReport) -> str:
     ]
     lines.append(f"**{len(report.findings)} finding(s)** — " + ", ".join(summary_bits) if summary_bits else "**No findings.**")
     lines.append("")
-    lines.append(f"_Tiers run: {', '.join(report.tiers_run)}_")
+
+    tier_bits = [f"`{t}` ({tier_description(t)})" for t in report.tiers_run]
+    lines.append(f"_Tiers run: {', '.join(tier_bits)}_")
     lines.append("")
+
+    sources = sorted({f.source for f in report.findings})
+    if sources:
+        source_bits = ", ".join(f"**{s}** = {source_description(s)}" for s in sources)
+        lines.append(
+            f"<sub>Each finding below is tagged `CHECK-ID` (source) — {source_bits}.</sub>"
+        )
+        lines.append("")
 
     for file_path, findings in sorted(report.by_file().items()):
         lines.append(f"## `{_md_code(file_path)}`")

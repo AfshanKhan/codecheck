@@ -279,7 +279,8 @@ def _validate_clone_url(repo_url: str) -> None:
     URL achieves arbitrary command execution -- confirmed as a real vector since
     repo_url here can come from a caller-supplied string with no other checks.
     Plain local filesystem paths and https/http/ssh/git URLs are all still
-    allowed; only these two attack shapes are blocked.
+    allowed; only these two attack shapes -- plus a `file://` scheme, below --
+    are blocked.
     """
     if not repo_url or repo_url.startswith("-"):
         raise ValueError(f"Invalid repo URL {repo_url!r}: must not start with '-'")
@@ -293,6 +294,14 @@ def _validate_clone_url(repo_url: str) -> None:
         raise ValueError(
             f"Invalid repo URL {repo_url!r}: git transport-helper syntax ('::') is not allowed"
         )
+    # --repo-url exists specifically to fetch an *untrusted remote* source
+    # (report/redaction code trusts a URL-shaped repo_path enough to leave it
+    # unredacted -- see redact._is_url_like). A file:// URL points at the
+    # local filesystem instead, so it would both defeat the "untrusted
+    # remote" contract and leak a local path straight into the report the
+    # same way a bare local path would (CodeRabbit review).
+    if repo_url.lower().startswith("file://"):
+        raise ValueError(f"Invalid repo URL {repo_url!r}: local file:// URLs are not allowed")
 
 
 @contextmanager

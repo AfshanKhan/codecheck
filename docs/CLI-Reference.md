@@ -35,7 +35,7 @@ touched by the diff.
 | `--force-cloud` | off | Bypasses the cloud-tier file-count cap (`cloud.audit_file_cap`) for a large diff/PR — see the cost cap note under `audit`. |
 | `--force-local` | off | Skip the confirmation prompt/refusal when the local tier would run on this machine instead of a confirmed LM Link remote — see LM Link under [Tier 2 in Architecture](Architecture.md). |
 | `--device` | none | Which device to use when `local.model` is loaded on more than one at once (a device name, or `local`). Sets LM Studio's LM Link preferred device — see LM Link under [Tier 2 in Architecture](Architecture.md). |
-| `--output-dir` | `./reports` | Where the JSON/markdown/docx reports land. Each run gets a timestamped filename — see "Report filenames" below. |
+| `--output-dir` | `./reports` | Where each run's own timestamped subdirectory of JSON/markdown/docx/Excel reports lands — see "Report filenames" below. |
 | `--resume-from` | none | Path to a prior run's `report.json` — see "Resuming after a rate limit" below. |
 | `--gate` | none | Override `thresholds.fail_on_severity` with a named profile (`strict`/`standard`/`relaxed`) instead of a raw severity value — see "Named gate profiles" below. |
 | `--redact` | off | Scrub locally-identifying details (your machine's absolute repo path) from the written report files before saving — see "Sharing a report externally" below. |
@@ -145,7 +145,7 @@ every file is in scope, not just changed lines.
 | `--force-cloud` | off | Bypasses the cloud-tier file-count safety cap (`cloud.audit_file_cap`). Required if the repo has more eligible files than the cap. |
 | `--force-local` | off | Skip the confirmation prompt/refusal when the local tier would run on this machine instead of a confirmed LM Link remote — see LM Link under [Tier 2 in Architecture](Architecture.md). |
 | `--device` | none | Which device to use when `local.model` is loaded on more than one at once (a device name, or `local`). Sets LM Studio's LM Link preferred device — see LM Link under [Tier 2 in Architecture](Architecture.md). |
-| `--output-dir` | `./reports` | Where the JSON/markdown/docx reports land. Each run gets a timestamped filename — see "Report filenames" below. |
+| `--output-dir` | `./reports` | Where each run's own timestamped subdirectory of JSON/markdown/docx/Excel reports lands — see "Report filenames" below. |
 | `--resume-from` | none | Path to a prior run's `report.json` — see "Resuming after a rate limit" below. |
 | `--gate` | none | Override `thresholds.fail_on_severity` with a named profile (`strict`/`standard`/`relaxed`) instead of a raw severity value — see "Named gate profiles" below. |
 | `--redact` | off | Scrub locally-identifying details (your machine's absolute repo path) from the written report files before saving — see "Sharing a report externally" below. |
@@ -193,31 +193,74 @@ free and fast enough to just re-run in full every time.
 
 ### Report filenames
 
-Every run (`diff` or `audit`) writes three files into `--output-dir` (default
-`./reports`): a `.json`, a `.md`, and a `.docx` — same content, three formats.
-The filename follows `<repo>[_pr<N>]_<mode>_<timestamp>`, e.g.
-`codecheck_pr12_diff_20260814_161000.json` for a `--pr 12` review, or
-`codecheck_audit_20260814_161230.md` for a plain `audit` run (no PR number, so
-the mode — `diff` or `audit` — is used instead). `<repo>` is parsed from
-`--repo-url`/the PR's URL when one is given (a cloned repo lands in a
-randomly-named temp directory, so the directory name itself isn't useful),
-otherwise it's `--repo-path`'s own directory name. Each run gets its own
-timestamp, so re-running never silently overwrites a previous run's report —
-pass the exact filename to `--resume-from` when you want to continue one.
-The timestamp only has second resolution, so if a second run for the same
-repo/PR/mode finishes within the same second, `-2`, `-3`, ... is appended to
-keep it unique rather than overwriting the earlier run's files. That name is
-claimed atomically — an exclusive file-create (not a check-then-write) on
-*all three* extensions, not just `.json`, so two `codecheck` processes
-finishing in the same second against the same repo/PR/mode can't both win the
-same filename, and a leftover `.md`/`.docx` from an earlier interrupted run
-(with no matching `.json`) can't get silently overwritten either. Any failure
-during this process — a collision on the 2nd/3rd extension, a non-collision
-I/O error (permission denied, disk full), or a reporter raising once writing
-actual content starts — rolls back whatever got claimed/written for that run
-rather than leaving it behind. A crashed or failed run never leaves a
-permanently unusable, empty-looking report sitting at a filename no later run
-can ever reclaim.
+Every run (`diff` or `audit`) gets its own subdirectory inside `--output-dir`
+(default `./reports`), named `<repo>_pr<N>_<timestamp>` for a `--pr` run or
+`<repo>_<mode>_<timestamp>` otherwise (never both — the PR number replaces
+the mode in the name, it isn't appended alongside it), e.g.
+`./reports/codecheck_pr12_20260814_161000/` or
+`./reports/codecheck_diff_20260814_161000/`. Four files land inside it —
+a `.json`, a `.md`, a `.docx`, and a `.xlsx`, same underlying findings, four
+formats, each named after the directory they're in
+(`codecheck_pr12_20260814_161000.json`, etc.). Runs are never mixed
+together loose in one flat directory — `--output-dir` fills up with one
+subdirectory per run instead of four files per run all in the same place,
+which turns unreadable fast once there's more than a couple of runs sitting
+there.
+
+`<repo>` is parsed from `--repo-url`/the PR's URL when one is given (a cloned
+repo lands in a randomly-named temp directory, so the directory name itself
+isn't useful), otherwise it's `--repo-path`'s own directory name. Each run
+gets its own timestamp, so re-running never silently overwrites a previous
+run's report — pass the exact `.json` path to `--resume-from` when you want
+to continue one. The timestamp only has second resolution, so if a second run
+for the same repo/PR/mode finishes within the same second, `-2`, `-3`, ... is
+appended to the directory name to keep it unique rather than overwriting the
+earlier run's files. That directory is claimed atomically (an exclusive
+directory-create, not a check-then-write) — the whole run's worth of files
+sits behind one atomic claim now, rather than four separate per-extension
+claims — so two `codecheck` processes finishing in the same second against
+the same repo/PR/mode can't both win the same directory, and a leftover
+partial directory from an earlier interrupted run can't get silently reused
+(a directory-name collision on claim just moves on to `-2`, `-3`, ... — it
+doesn't touch or delete anything). Once a directory is actually claimed,
+though, a *later* failure while writing into it — a non-collision I/O error
+(permission denied, disk full), or a reporter raising once writing actual
+content starts — does roll back: the whole run directory (whatever did or
+didn't get written into it) is removed rather than left behind. That
+rollback is a normal Python exception handler on a best-effort delete,
+though, not a crash-proof guarantee: a process kill or forced termination
+(SIGKILL, power loss) partway through, or the delete itself hitting an I/O
+error, can still leave an empty or partial run directory that no later run
+can reclaim (the atomic-create in the next run just sees "already exists"
+and skips to `-2`, `-3`, ...).
+
+The `.xlsx` report is the one built for filtering and sorting rather than
+reading top to bottom: a "Findings" sheet with every finding as its own row
+and a header-row AutoFilter already turned on (severity/check/file dropdowns,
+no manual setup needed), plus a "Summary" sheet breaking counts down by
+severity and by check ID. Every cell that can hold text derived from the
+reviewed repo itself (a file path, a finding's title/explanation/suggestion)
+is written Text-formatted with any leading `=`/`+`/`-`/`@` neutralized, so a
+report built from an untrusted `--repo-url`/`--pr` can't smuggle a formula
+that runs when someone just opens the file in Excel.
+
+Every report format aside from `.json` is meant to be readable by someone who
+didn't run the review themselves, so:
+
+- **`Repo`** shows the actual `--repo-url` (or the URL `--pr` was given as)
+  when one was passed — not a local temp clone's meaningless directory name
+  — and only falls back to a local filesystem path for a genuinely local run
+  (`--repo-path`, or `--pr <number>` against an existing local checkout).
+  `--redact` leaves a remote URL untouched (nothing local-identifying about
+  a public URL) and only replaces an actual local path with a placeholder.
+- **`Generated`** is shown in IST (`27 Aug 2026, 12:16 PM IST`), not a raw
+  UTC ISO-8601 timestamp. `.json`'s `generated_at` field is the one
+  exception, kept as the machine-readable UTC string `render`/`compare`/
+  `--resume-from` parse back — see [Architecture](Architecture.md#making-a-report-readable-to-someone-who-didnt-run-it).
+- **`Tiers run`** and every check's `(house)`/`(ruff)`/... source tag get a
+  one-line "what does this mean" explanation next to them (only for the
+  tiers/sources actually present in that run), so a report doesn't assume
+  the reader already knows codecheck's own internal vocabulary.
 
 ### Named gate profiles (`--gate`)
 
@@ -242,7 +285,7 @@ of severity; this just moves the line for what makes the process exit `1`.
 
 ### Sharing a report externally (`--redact`)
 
-The written `.json`/`.md`/`.docx` reports include `repo_path` — on a local
+The written `.json`/`.md`/`.docx`/`.xlsx` reports include `repo_path` — on a local
 run, this is your machine's absolute filesystem path (e.g.
 `/Users/yourname/work/some-project`), which can reveal your username and
 directory layout to anyone who receives the report file. `--redact` replaces
@@ -267,8 +310,8 @@ codecheck render ./reports/myrepo_audit_20260814_161000.json --output-dir ./repo
 codecheck render ./reports/myrepo_audit_20260814_161000.json --redact --output-dir ./shared
 ```
 
-Rebuilds the `.md`/`.docx` (and a fresh `.json`) from an existing report's
-JSON, without re-running any checks — useful after upgrading `codecheck` (to
+Rebuilds the `.md`/`.docx`/`.xlsx` (and a fresh `.json`) from an existing
+report's JSON, without re-running any checks — useful after upgrading `codecheck` (to
 pick up a newer reporter's formatting on an old report) or to produce a
 `--redact` copy of a report you already generated, without repeating the
 whole review. The new files get their own timestamped filename in

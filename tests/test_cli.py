@@ -1,5 +1,4 @@
 import json
-import os
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -9,7 +8,8 @@ import pytest
 from typer.testing import CliRunner
 
 from codecheck.cli import (
-    _claim_unique_basename,
+    _claim_unique_run_dir,
+    _display_repo_url,
     _finish,
     _repo_label,
     _report_basename,
@@ -24,19 +24,19 @@ runner = CliRunner()
 
 
 def _report_json_path(output_dir: Path) -> Path:
-    matches = list(output_dir.glob("*.json"))
+    matches = list(output_dir.glob("*/*.json"))
     assert len(matches) == 1, f"expected exactly one .json report, found {matches}"
     return matches[0]
 
 
 def _report_md_path(output_dir: Path) -> Path:
-    matches = list(output_dir.glob("*.md"))
+    matches = list(output_dir.glob("*/*.md"))
     assert len(matches) == 1, f"expected exactly one .md report, found {matches}"
     return matches[0]
 
 
 def _report_docx_path(output_dir: Path) -> Path:
-    matches = list(output_dir.glob("*.docx"))
+    matches = list(output_dir.glob("*/*.docx"))
     assert len(matches) == 1, f"expected exactly one .docx report, found {matches}"
     return matches[0]
 
@@ -83,6 +83,51 @@ def test_repo_label_falls_back_to_local_dir_name(sandbox_repo: Path):
     assert _repo_label(sandbox_repo, None) == "sandbox"
 
 
+def test_display_repo_url_strips_embedded_credentials():
+    # regression (CodeRabbit): _validate_clone_url doesn't reject credentials
+    # in an HTTPS URL, and a URL-shaped repo_path is left unredacted by
+    # --redact (nothing local-identifying about a plain remote URL) -- so a
+    # credential embedded in --repo-url would otherwise reach every report
+    # format unredacted.
+    assert (
+        _display_repo_url("https://user:secretpass@github.com/org/repo.git")
+        == "https://github.com/org/repo.git"
+    )
+
+
+def test_display_repo_url_leaves_ssh_scp_syntax_untouched():
+    # git@host:org/repo.git has no userinfo component to strip (no "://", so
+    # urlsplit never treats "git@host" as netloc) -- its "git@" is the SSH
+    # transport user, not a secret.
+    assert _display_repo_url("git@github.com:org/repo.git") == "git@github.com:org/repo.git"
+
+
+def test_display_repo_url_leaves_credential_free_urls_untouched():
+    assert (
+        _display_repo_url("https://github.com/org/repo.git")
+        == "https://github.com/org/repo.git"
+    )
+
+
+def test_display_repo_url_strips_token_in_query_string():
+    # regression (CodeRabbit): a token can arrive as a query parameter
+    # instead of userinfo, e.g. GitHub's own
+    # https://github.com/org/repo.git?access_token=... pattern -- the
+    # original fix only stripped query/fragment when userinfo was ALSO
+    # present, so a query-only token slipped through untouched.
+    assert (
+        _display_repo_url("https://github.com/org/repo.git?access_token=secret")
+        == "https://github.com/org/repo.git"
+    )
+
+
+def test_display_repo_url_strips_credentials_query_and_fragment_together():
+    assert (
+        _display_repo_url("https://user:pass@github.com/org/repo.git?token=secret#frag")
+        == "https://github.com/org/repo.git"
+    )
+
+
 def test_report_basename_uses_pr_number_when_present():
     generated_at = datetime(2026, 8, 14, 16, 10, 0, tzinfo=timezone.utc)
     assert _report_basename("org_repo", 12, "diff", generated_at) == "org_repo_pr12_20260814_161000"
@@ -93,76 +138,59 @@ def test_report_basename_uses_mode_when_no_pr():
     assert _report_basename("myrepo", None, "audit", generated_at) == "myrepo_audit_20260814_161000"
 
 
-def test_claim_unique_basename_no_collision_claims_as_is(tmp_path: Path):
-    basename = _claim_unique_basename(tmp_path, "myrepo_audit_20260814_161000")
-    assert basename == "myrepo_audit_20260814_161000"
-    assert (tmp_path / "myrepo_audit_20260814_161000.json").exists()  # claimed as a side effect
+def test_claim_unique_run_dir_no_collision_claims_as_is(tmp_path: Path):
+    run_dir = _claim_unique_run_dir(tmp_path, "myrepo_audit_20260814_161000")
+    assert run_dir == tmp_path / "myrepo_audit_20260814_161000"
+    assert run_dir.is_dir()  # claimed as a side effect
 
 
-def test_claim_unique_basename_appends_suffix_on_collision(tmp_path: Path):
-    # regression (Greptile): two runs finishing within the same second must not
-    # silently overwrite each other's reports.
-    (tmp_path / "myrepo_audit_20260814_161000.json").write_text("{}")
-    assert _claim_unique_basename(tmp_path, "myrepo_audit_20260814_161000") == "myrepo_audit_20260814_161000-2"
+def test_claim_unique_run_dir_appends_suffix_on_collision(tmp_path: Path):
+    # regression (Greptile, adapted): two runs finishing within the same
+    # second must not silently overwrite each other's reports -- now
+    # expressed as one run's whole directory colliding with another's,
+    # rather than four separate per-extension file collisions.
+    (tmp_path / "myrepo_audit_20260814_161000").mkdir()
+    run_dir = _claim_unique_run_dir(tmp_path, "myrepo_audit_20260814_161000")
+    assert run_dir == tmp_path / "myrepo_audit_20260814_161000-2"
 
-    (tmp_path / "myrepo_audit_20260814_161000-2.md").write_text("x")
-    assert _claim_unique_basename(tmp_path, "myrepo_audit_20260814_161000") == "myrepo_audit_20260814_161000-3"
+    # both the original name and its first "-2" suffix are now taken (the
+    # base by the line above, "-2" as a side effect of the claim itself) --
+    # a third claim for the same basename must skip both and land on "-3"
+    run_dir = _claim_unique_run_dir(tmp_path, "myrepo_audit_20260814_161000")
+    assert run_dir == tmp_path / "myrepo_audit_20260814_161000-3"
 
 
-def test_claim_unique_basename_is_atomic_not_toctou(tmp_path: Path):
-    # regression (Greptile): two "concurrent" claims for the same basename must
-    # never both succeed with the same name -- simulated here by claiming twice
-    # in a row without an intervening write, which a check-then-write
-    # implementation would incorrectly allow.
-    first = _claim_unique_basename(tmp_path, "myrepo_audit_20260814_161000")
-    second = _claim_unique_basename(tmp_path, "myrepo_audit_20260814_161000")
+def test_claim_unique_run_dir_is_atomic_not_toctou(tmp_path: Path):
+    # regression (Greptile, adapted): two "concurrent" claims for the same
+    # basename must never both succeed with the same directory -- simulated
+    # here by claiming twice in a row without an intervening write, which a
+    # check-then-write implementation would incorrectly allow.
+    first = _claim_unique_run_dir(tmp_path, "myrepo_audit_20260814_161000")
+    second = _claim_unique_run_dir(tmp_path, "myrepo_audit_20260814_161000")
     assert first != second
 
 
-def test_claim_unique_basename_partial_leftover_md_not_overwritten(tmp_path: Path):
-    # regression (Greptile): a claim scoped to only the .json path would let
-    # this candidate through even though its .md already exists (e.g. a prior
-    # interrupted run, or the .json deleted by hand) -- silently overwriting it.
-    (tmp_path / "myrepo_audit_20260814_161000.md").write_text("existing report, don't touch")
-    basename = _claim_unique_basename(tmp_path, "myrepo_audit_20260814_161000")
-    assert basename == "myrepo_audit_20260814_161000-2"
-    assert (tmp_path / "myrepo_audit_20260814_161000.md").read_text() == "existing report, don't touch"
-    # nothing was left half-claimed under the rejected candidate
-    assert not (tmp_path / "myrepo_audit_20260814_161000.json").exists()
-    assert not (tmp_path / "myrepo_audit_20260814_161000.docx").exists()
+def test_claim_unique_run_dir_does_not_touch_an_unrelated_existing_directory(tmp_path: Path):
+    other = tmp_path / "myrepo_audit_20260814_161000"
+    other.mkdir()
+    (other / "existing-report.json").write_text("existing report, don't touch")
+    run_dir = _claim_unique_run_dir(tmp_path, "myrepo_audit_20260814_161000")
+    assert run_dir == tmp_path / "myrepo_audit_20260814_161000-2"
+    assert (other / "existing-report.json").read_text() == "existing report, don't touch"
 
 
-def test_claim_unique_basename_partial_leftover_docx_not_overwritten(tmp_path: Path):
-    (tmp_path / "myrepo_audit_20260814_161000.docx").write_bytes(b"existing docx")
-    basename = _claim_unique_basename(tmp_path, "myrepo_audit_20260814_161000")
-    assert basename == "myrepo_audit_20260814_161000-2"
-    assert (tmp_path / "myrepo_audit_20260814_161000.docx").read_bytes() == b"existing docx"
+def test_claim_unique_run_dir_reraises_non_collision_os_error(tmp_path: Path, monkeypatch):
+    # regression (Greptile, adapted): a non-FileExistsError OSError
+    # (permission denied, disk full, ...) must propagate rather than being
+    # swallowed and silently retried against the next suffix -- an error
+    # like that will likely recur identically for every candidate.
+    def flaky_mkdir(self, *args, **kwargs):
+        raise PermissionError("simulated I/O error")
 
-
-def test_claim_unique_basename_rolls_back_and_reraises_on_non_collision_os_error(
-    tmp_path: Path, monkeypatch
-):
-    # regression (Greptile): a non-FileExistsError OSError (permission denied,
-    # disk full, ...) claiming the 2nd/3rd extension used to leave the 1st
-    # extension's already-claimed empty file behind forever, with no rollback
-    # and no useful retry (the same error would likely recur on every suffix).
-    real_open = os.open
-    call_count = 0
-
-    def flaky_open(path, flags):
-        nonlocal call_count
-        call_count += 1
-        if call_count == 2:  # fails claiming .md, right after .json succeeded
-            raise PermissionError("simulated I/O error")
-        return real_open(path, flags)
-
-    monkeypatch.setattr("codecheck.cli.os.open", flaky_open)
+    monkeypatch.setattr(Path, "mkdir", flaky_mkdir)
 
     with pytest.raises(PermissionError):
-        _claim_unique_basename(tmp_path, "myrepo_audit_20260814_161000")
-
-    remaining = list(tmp_path.iterdir())
-    assert remaining == [], f"expected the claimed .json to be rolled back, found {remaining}"
+        _claim_unique_run_dir(tmp_path, "myrepo_audit_20260814_161000")
 
 
 def test_finish_cleans_up_claimed_files_when_a_reporter_raises(tmp_path: Path, monkeypatch):
@@ -600,6 +628,31 @@ def test_audit_repo_url_clones_and_reviews(fake_origin_and_clone: Path, tmp_path
     assert result.exit_code == 0
     assert "a.py" in result.stdout or "No findings" in result.stdout
     assert _report_json_path(output_dir).exists()
+
+
+def test_audit_repo_url_report_shows_the_url_not_the_local_clone_path(
+    fake_origin_and_clone: Path, tmp_path: Path
+):
+    # regression: repo_path used to always be the local temp clone's own
+    # directory (codecheck-clone-xxxxx), meaningless to anyone reading the
+    # report -- it should be the --repo-url the user actually passed.
+    bare = fake_origin_and_clone.parent / "origin.git"
+    output_dir = tmp_path / "reports"
+
+    result = runner.invoke(
+        app, ["audit", "--repo-url", str(bare), "--output-dir", str(output_dir)]
+    )
+    assert result.exit_code == 0
+    data = json.loads(_report_json_path(output_dir).read_text())
+    assert data["repo_path"] == str(bare)
+    assert "codecheck-clone" not in data["repo_path"]
+
+
+def test_audit_local_repo_path_report_shows_the_local_path(sandbox_repo: Path, tmp_path: Path):
+    output_dir = tmp_path / "reports"
+    runner.invoke(app, ["audit", "--repo-path", str(sandbox_repo), "--output-dir", str(output_dir)])
+    data = json.loads(_report_json_path(output_dir).read_text())
+    assert data["repo_path"] == str(sandbox_repo.resolve())
 
 
 class _FakeReviewer:

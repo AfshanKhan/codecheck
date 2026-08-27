@@ -34,6 +34,22 @@ def test_redact_leaves_original_report_untouched():
     assert report.repo_path == "/Users/afshan/Workspace/codecheck"  # not mutated
 
 
+def test_redact_leaves_a_github_repo_url_untouched():
+    # regression: repo_path is a --repo-url/--pr GitHub URL, not a local
+    # temp clone's path, whenever one was given -- nothing local-identifying
+    # about a public remote URL, so --redact must not mangle it into the
+    # placeholder like a real local path.
+    report = make_report("https://github.com/org/repo.git", [])
+    redacted = redact_report(report)
+    assert redacted.repo_path == "https://github.com/org/repo.git"
+
+
+def test_redact_leaves_an_ssh_repo_url_untouched():
+    report = make_report("git@github.com:org/repo.git", [])
+    redacted = redact_report(report)
+    assert redacted.repo_path == "git@github.com:org/repo.git"
+
+
 def test_redact_scrubs_absolute_paths_out_of_skipped_entries():
     report = make_report(
         "/Users/afshan/Workspace/codecheck",
