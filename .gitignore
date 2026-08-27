@@ -11,3 +11,4 @@ reports/
 dist/
 build/
 .claude/
+.DS_Store

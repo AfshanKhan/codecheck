@@ -425,6 +425,293 @@ def test_js_prose_comment_not_flagged():
     assert CommentedOutJsCodeCheck().check_file("a.js", content, None) == []
 
 
+def test_commented_out_multiline_python_sql_flagged():
+    # regression (found comparing against a separate audit tool on a real
+    # repo): a commented-out multi-line f-string SQL query doesn't parse on
+    # its first line alone ("data = frappe.db.sql(f\"\"\"SELECT ..." is an
+    # unterminated string by itself), so the original single-line-only
+    # check missed it entirely. Now grows the window one comment line at a
+    # time until the accumulated block parses as a complete statement.
+    content = (
+        "def get_data():\n"
+        '\t# data = frappe.db.sql(f"""SELECT COUNT(ymt.name) as \'pending\'\n'
+        "\t# \t\t\t\tFROM `tabYP Mobilization Table` ymt\n"
+        "\t# \t\t\t\tWHERE ymt.date IS NULL\n"
+        '\t# \t\t\t\tAND ymt.docstatus != 2""", as_dict=1)\n'
+        "\tcondition = ''\n"
+    )
+    findings = CommentedOutPythonCodeCheck().check_file("a.py", content, None)
+    assert len(findings) == 1
+    assert findings[0].line_start == 2
+    assert findings[0].line_end == 5
+
+
+def test_commented_out_python_consecutive_single_line_statements_not_merged():
+    # Two separate, unrelated one-line disabled statements shouldn't be
+    # merged into a single multi-line finding just because they're adjacent.
+    content = "x = 1\n# y = 2\n# z = 3\n"
+    findings = CommentedOutPythonCodeCheck().check_file("a.py", content, None)
+    assert [(f.line_start, f.line_end) for f in findings] == [(2, 2), (3, 3)]
+
+
+def test_commented_out_python_multiline_prose_not_flagged():
+    content = (
+        "# This function calculates the total\n"
+        "# revenue for the given quarter and\n"
+        "# returns it as a formatted string.\n"
+    )
+    assert CommentedOutPythonCodeCheck().check_file("a.py", content, None) == []
+
+
+def test_commented_out_python_diff_scope_covers_the_whole_block():
+    content = (
+        "def f():\n"
+        "\t# result = some_func(a,\n"
+        "\t#     b,\n"
+        "\t#     c)\n"
+    )
+    # A diff touching only the middle line of the block still counts as
+    # touching the finding it belongs to -- the block isn't a complete
+    # statement until all three lines are joined.
+    findings = CommentedOutPythonCodeCheck().check_file("a.py", content, {3})
+    assert len(findings) == 1
+    assert (findings[0].line_start, findings[0].line_end) == (2, 4)
+    assert CommentedOutPythonCodeCheck().check_file("a.py", content, {99}) == []
+
+
+def test_commented_out_python_if_header_and_body_merge_into_one_finding():
+    # regression (CodeRabbit): the synthetic-pass fallback let a
+    # colon-terminated header ("# if enabled:") be accepted as "complete"
+    # on its own, without checking whether the following comment line was
+    # actually its real, indented body -- fragmenting one logical
+    # if-statement into two separate findings (or, for a body that isn't
+    # independently parseable on its own, missing it outright). Now the
+    # fallback is only used as a last resort, once growing the window
+    # further genuinely can't pull in more comment lines.
+    content = "# if enabled:\n#     run_task()\n"
+    findings = CommentedOutPythonCodeCheck().check_file("a.py", content, None)
+    assert len(findings) == 1
+    assert (findings[0].line_start, findings[0].line_end) == (1, 2)
+    # A diff touching only the body line still counts as touching the
+    # single, combined finding.
+    body_only = CommentedOutPythonCodeCheck().check_file("a.py", content, {2})
+    assert len(body_only) == 1
+    assert (body_only[0].line_start, body_only[0].line_end) == (1, 2)
+
+
+def test_commented_out_python_header_only_still_flagged_with_no_body():
+    # The original single-line case this fallback exists for: a disabled
+    # `if x:` with no comment body ever shown (the comment run ends right
+    # there) still needs the synthetic pass to be recognized as code at all.
+    content = "# if x:\n"
+    findings = CommentedOutPythonCodeCheck().check_file("a.py", content, None)
+    assert len(findings) == 1
+    assert (findings[0].line_start, findings[0].line_end) == (1, 1)
+
+
+def test_commented_out_python_if_else_merges_into_one_finding():
+    # regression (CodeRabbit): a parseable `if` suite stopped window growth
+    # before a following elif/else/except/finally clause -- "else:" alone
+    # is a SyntaxError with nothing before it to attach to, so it was never
+    # matched at all (silently dropped), while its own body ("do_b()")
+    # became a separate, unrelated-looking finding.
+    content = "# if x:\n#     do_a()\n# else:\n#     do_b()\n"
+    findings = CommentedOutPythonCodeCheck().check_file("a.py", content, None)
+    assert len(findings) == 1
+    assert (findings[0].line_start, findings[0].line_end) == (1, 4)
+
+
+def test_commented_out_python_if_else_merges_across_a_blank_comment_line():
+    # regression (CodeRabbit, round 2): the continuation lookahead above only
+    # ever peeked at the *very next* line -- a blank "#" line deliberately
+    # separating the suite from its continuation clause (a common visual
+    # style) broke the lookahead the same way a missing lookahead did,
+    # silently dropping "else:" and reporting its body as a separate finding.
+    content = "# if x:\n#     do_a()\n#\n# else:\n#     do_b()\n"
+    findings = CommentedOutPythonCodeCheck().check_file("a.py", content, None)
+    assert len(findings) == 1
+    assert (findings[0].line_start, findings[0].line_end) == (1, 5)
+
+
+def test_commented_out_python_if_block_not_merged_with_unrelated_code_after_blank_line():
+    # A blank comment line followed by genuinely unrelated code (not a
+    # continuation clause) must not be swallowed into the previous match --
+    # and the blank line itself shouldn't be attributed to the unrelated
+    # statement's own finding range either (regression, Graphite review: an
+    # earlier version let the blank line become the *start* of the second
+    # finding, since its empty text parses harmlessly as part of a larger
+    # block -- reporting a range that visually claims to start on a blank
+    # line above code it has nothing to do with).
+    content = "# if x:\n#     do_a()\n#\n# y = 5\n"
+    findings = CommentedOutPythonCodeCheck().check_file("a.py", content, None)
+    assert [(f.line_start, f.line_end) for f in findings] == [(1, 2), (4, 4)]
+
+
+def test_commented_out_python_try_except_finally_merges_into_one_finding():
+    content = (
+        "# try:\n"
+        "#     risky()\n"
+        "# except ValueError:\n"
+        "#     handle()\n"
+        "# finally:\n"
+        "#     cleanup()\n"
+    )
+    findings = CommentedOutPythonCodeCheck().check_file("a.py", content, None)
+    assert len(findings) == 1
+    assert (findings[0].line_start, findings[0].line_end) == (1, 6)
+
+
+def test_commented_out_python_prose_mentioning_else_not_flagged():
+    content = "# TODO handle this else case differently\n"
+    assert CommentedOutPythonCodeCheck().check_file("a.py", content, None) == []
+
+
+def test_commented_out_js_const_declaration_block_merges_into_one_finding():
+    # regression (CodeRabbit): _JS_LINE_START_RE didn't include const/let/var,
+    # so "// const options = {" with commented properties following it fell
+    # back to the single-line check, which only reported the declaration
+    # line and dropped the rest of the object literal.
+    content = "// const options = {\n//     x: 1,\n//     y: 2\n// };\n"
+    findings = CommentedOutJsCodeCheck().check_file("a.js", content, None)
+    assert len(findings) == 1
+    assert (findings[0].line_start, findings[0].line_end) == (1, 4)
+
+
+def test_commented_out_js_complete_const_line_not_grown_unnecessarily():
+    content = "// const x = 1;\n"
+    findings = CommentedOutJsCodeCheck().check_file("a.js", content, None)
+    assert len(findings) == 1
+    assert (findings[0].line_start, findings[0].line_end) == (1, 1)
+
+
+def test_commented_out_multiline_js_call_flagged():
+    content = (
+        "// frappe.call({\n"
+        '//     method: "some.method",\n'
+        "//     args: {x: 1},\n"
+        "// });\n"
+    )
+    findings = CommentedOutJsCodeCheck().check_file("a.js", content, None)
+    assert len(findings) == 1
+    assert findings[0].line_start == 1
+    assert findings[0].line_end == 4
+
+
+def test_commented_out_js_consecutive_single_line_calls_not_merged():
+    content = "// doSomething();\n// doSomethingElse();\n"
+    findings = CommentedOutJsCodeCheck().check_file("a.js", content, None)
+    assert [(f.line_start, f.line_end) for f in findings] == [(1, 1), (2, 2)]
+
+
+def test_commented_out_js_unclosed_bracket_gives_up_not_flagged():
+    # A block whose opening bracket never closes within the comment run
+    # (it trails off into unrelated prose) shouldn't be force-matched.
+    content = (
+        "// frappe.call({\n"
+        "// this comment rambles on and never\n"
+        "// actually closes the bracket at all\n"
+    )
+    assert CommentedOutJsCodeCheck().check_file("a.js", content, None) == []
+
+
+def test_commented_out_js_unclosed_keyword_candidate_not_partially_flagged():
+    # regression (CodeRabbit): an unclosed *keyword*-prefixed candidate
+    # ("const options = {", "if (ready) {") used to fall back to the
+    # generic single-line keyword pattern, which matches "const"/"if"/...
+    # alone regardless of what follows -- so it was still reported as its
+    # own incomplete single-line finding, inconsistent with an unclosed
+    # identifier-call candidate ("frappe.call({"), which already correctly
+    # matched nothing (see the test above).
+    content = (
+        "// const options = {\n"
+        "// this rambles on and never\n"
+        "// closes the brace at all\n"
+    )
+    assert CommentedOutJsCodeCheck().check_file("a.js", content, None) == []
+
+    content2 = "// if (ready) {\n// this rambles on and never closes\n"
+    assert CommentedOutJsCodeCheck().check_file("a.js", content2, None) == []
+
+
+def test_commented_out_js_bare_assignment_block_merges_into_one_finding():
+    # regression (CodeRabbit): _JS_LINE_START_RE only recognized
+    # const/let/var-declared and identifier-call open candidates -- a bare
+    # assignment ("options = {"), a multi-line "return build(...)", or a
+    # multi-line "throw new Error(...)" all have an unclosed bracket on
+    # their first line too, but weren't recognized as open candidates at
+    # all, so they fell straight to the single-line fallback (which does
+    # match assignment/return/throw individually) and only ever reported
+    # the first line, silently dropping the rest of the statement.
+    content = "// options = {\n//     x: 1,\n//     y: 2\n// };\n"
+    findings = CommentedOutJsCodeCheck().check_file("a.js", content, None)
+    assert len(findings) == 1
+    assert (findings[0].line_start, findings[0].line_end) == (1, 4)
+
+
+def test_commented_out_js_multiline_return_merges_into_one_finding():
+    content = "// return build(\n//     a,\n//     b\n// );\n"
+    findings = CommentedOutJsCodeCheck().check_file("a.js", content, None)
+    assert len(findings) == 1
+    assert (findings[0].line_start, findings[0].line_end) == (1, 4)
+
+
+def test_commented_out_js_multiline_throw_merges_into_one_finding():
+    content = '// throw new Error(\n//     "bad"\n// );\n'
+    findings = CommentedOutJsCodeCheck().check_file("a.js", content, None)
+    assert len(findings) == 1
+    assert (findings[0].line_start, findings[0].line_end) == (1, 3)
+
+
+def test_commented_out_js_complete_one_line_assignment_and_return_not_grown():
+    content = "// options = {x: 1};\n"
+    findings = CommentedOutJsCodeCheck().check_file("a.js", content, None)
+    assert [(f.line_start, f.line_end) for f in findings] == [(1, 1)]
+
+    content2 = "// return x;\n"
+    findings2 = CommentedOutJsCodeCheck().check_file("a.js", content2, None)
+    assert [(f.line_start, f.line_end) for f in findings2] == [(1, 1)]
+
+
+def test_commented_out_js_unclosed_assignment_not_partially_flagged():
+    content = "// options = {\n// this rambles on and never closes\n"
+    assert CommentedOutJsCodeCheck().check_file("a.js", content, None) == []
+
+
+def test_commented_out_js_if_block_merges_into_one_finding():
+    # regression (CodeRabbit): "if (ready) {" matched the generic
+    # single-line keyword pattern before the open-block detection ever got
+    # a chance to run, and that open-block regex couldn't handle a
+    # condition-then-brace shape like "if (ready) {" anyway (a closing ")"
+    # before the "{" broke it) -- so the header was reported as its own
+    # single-line finding, separate from its body/closing brace, instead of
+    # one combined range.
+    content = "// if (ready) {\n//     doSomething();\n// }\n"
+    findings = CommentedOutJsCodeCheck().check_file("a.js", content, None)
+    assert len(findings) == 1
+    assert (findings[0].line_start, findings[0].line_end) == (1, 3)
+
+
+def test_commented_out_js_for_loop_block_merges_into_one_finding():
+    content = "// for (let i = 0; i < 10; i++) {\n//     doSomething(i);\n// }\n"
+    findings = CommentedOutJsCodeCheck().check_file("a.js", content, None)
+    assert len(findings) == 1
+    assert (findings[0].line_start, findings[0].line_end) == (1, 3)
+
+
+def test_commented_out_js_complete_single_line_if_not_grown_unnecessarily():
+    # A self-contained one-liner (balanced brackets already) shouldn't be
+    # treated as an open block needing more lines.
+    content = "// if (x) doSomething();\n"
+    findings = CommentedOutJsCodeCheck().check_file("a.js", content, None)
+    assert len(findings) == 1
+    assert (findings[0].line_start, findings[0].line_end) == (1, 1)
+
+
+def test_commented_out_js_multiline_prose_not_flagged():
+    content = "// This function calculates the total\n// revenue and returns it\n"
+    assert CommentedOutJsCodeCheck().check_file("a.js", content, None) == []
+
+
 # RULE-032: magic numbers
 def test_magic_number_in_comparison_flagged():
     content = "if amount > 4837:\n    pass\n"
