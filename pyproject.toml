@@ -1,6 +1,6 @@
 [project]
 name = "codecheck"
-version = "0.2.0"
+version = "0.3.0"
 description = "Local, tiered code review tool for a diff or a whole repo: deterministic linters + optional cloud LLM pass."
 readme = "README.md"
 license = "Apache-2.0"
