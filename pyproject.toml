@@ -9,7 +9,7 @@ dependencies = [
     "typer>=0.27.2",
     "rich>=13.7",
     "httpx>=0.27",
-    "gitpython>=3.1.59",
+    "gitpython>=3.1.61",
     "pydantic>=2.6",
     "pyyaml>=6.0",
     "python-docx>=1.1",
@@ -30,7 +30,7 @@ dependencies = [
 # separately (e.g. `npm install -g eslint`) if you want that sub-runner.
 rules = [
     "ruff>=0.16.4",
-    "semgrep>=1.174.0",
+    "semgrep>=1.175.0",
 ]
 
 # Only needed for --frappe-db-config -- a niche, opt-in feature most installs
