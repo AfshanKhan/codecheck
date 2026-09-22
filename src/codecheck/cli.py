@@ -23,7 +23,7 @@ from codecheck.aggregator import aggregate
 from codecheck.config import Config, load_config
 from codecheck.diff import get_diff, read_file_content
 from codecheck.frappe_db import FrappeDbConnection, FrappeDbUnavailable
-from codecheck.frappe_scripts import fetch_via_api, write_scripts
+from codecheck.frappe_scripts import FrappeScriptFetchError, fetch_via_api, write_scripts
 from codecheck.github_source import cloned_repo, parse_pr_url, pr_worktree
 from codecheck.lm_link import resolve_model_location, set_preferred_device
 from codecheck.models import ReviewReport, ReviewTarget, Severity
@@ -881,7 +881,11 @@ def audit_scripts(
                 console.print(f"[red]Error:[/red] {e}")
                 raise typer.Exit(code=2)
             stack.callback(db.close)
-            scripts = db.fetch_scripts()
+            try:
+                scripts = db.fetch_scripts()
+            except FrappeDbUnavailable as e:
+                console.print(f"[red]Error:[/red] {e}")
+                raise typer.Exit(code=2)
             source_label = str(frappe_db_config)
             repo_label = _sanitize_slug(frappe_db_config.stem) or "frappe-scripts"
         else:
@@ -891,7 +895,7 @@ def audit_scripts(
                 raise typer.Exit(code=2)
             try:
                 scripts = fetch_via_api(frappe_site_url, frappe_api_key, secret)
-            except httpx.HTTPError as e:
+            except (httpx.HTTPError, FrappeScriptFetchError) as e:
                 console.print(f"[red]Error:[/red] could not fetch scripts from {frappe_site_url}: {e}")
                 raise typer.Exit(code=2)
             source_label = frappe_site_url
