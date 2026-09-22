@@ -117,3 +117,18 @@ class FrappeDbConnection:
         result = frozenset(fields)
         self._doctype_fields_cache[doctype] = result
         return result
+
+    def fetch_scripts(self) -> list[tuple[str, str, str]]:
+        """(doctype, name, script) triples for every non-empty Server
+        Script / Client Script record."""
+        results: list[tuple[str, str, str]] = []
+        with self._connection.cursor() as cursor:
+            cursor.execute("SELECT name, script FROM `tabServer Script`")
+            for row in cursor.fetchall():
+                if row["script"]:
+                    results.append(("Server Script", row["name"], row["script"]))
+            cursor.execute("SELECT name, script FROM `tabClient Script`")
+            for row in cursor.fetchall():
+                if row["script"]:
+                    results.append(("Client Script", row["name"], row["script"]))
+        return results

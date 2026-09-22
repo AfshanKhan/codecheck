@@ -191,6 +191,42 @@ went to 9/68 cumulative on a resumed retry, correctly skipping those first 5
 instead of repeating them. Only applies to the LLM tiers — the rules tier is
 free and fast enough to just re-run in full every time.
 
+### `codecheck audit-scripts` — audit Server/Client Scripts with no repo
+
+```bash
+uv run codecheck audit-scripts --frappe-db-config site_config.json
+uv run codecheck audit-scripts --frappe-site-url https://example.com \
+  --frappe-api-key <key> --frappe-api-secret-env FRAPPE_API_SECRET
+```
+
+For a site whose customizations live entirely in **Server Script**/**Client
+Script** doctype records, not a custom app -- there's no git repo to check
+out, so `diff`/`audit` don't apply. This pulls every non-empty script
+straight from the site, writes each to a temp file (`server_script/<name>.py`,
+`client_script/<name>.js`), and runs the rules tier (house checks, plus
+ruff/eslint if installed) over them the same as `audit`.
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--frappe-db-config` | none | Same `site_config.json` as `audit`'s flag of the same name -- fetches scripts via a direct DB connection. Exactly one of this or `--frappe-site-url` is required. |
+| `--frappe-site-url` | none | Base URL of a live site (e.g. `https://example.com`) -- fetches scripts via its REST API instead, for when there's no local DB access. Requires `--frappe-api-key` and `--frappe-api-secret-env`. |
+| `--frappe-api-key` | none | API key for `--frappe-site-url`. |
+| `--frappe-api-secret-env` | none | Name of an env var holding the API secret -- the secret itself is never passed on the command line or stored. |
+| `--output-dir` | `./reports` | Same as `audit`. |
+| `--gate` | none | Same as `audit`. |
+| `--redact` | off | Same as `audit`. |
+
+No `--cloud`/`--local` yet -- rules-tier only for now. `repo_path` in the
+report is the site URL or `site_config.json` path used, not a filesystem
+path.
+
+**Known false positive**: Server Scripts run inside Frappe's own implicit
+namespace (`frappe`, `doc`, `method`, ... are injected at runtime, not
+imported), so ruff's `F821 Undefined name` fires on names a real Server
+Script would have available. Not a bug in this command -- inherent to
+linting a Frappe script standalone, outside the app that would normally
+provide those names.
+
 ### Report filenames
 
 Every run (`diff` or `audit`) gets its own subdirectory inside `--output-dir`
