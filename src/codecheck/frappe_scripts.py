@@ -38,7 +38,7 @@ def fetch_via_api(site_url: str, api_key: str, api_secret: str) -> list[tuple[st
     if parts.scheme != "https" and parts.hostname not in _LOOPBACK_HOSTS:
         raise FrappeScriptFetchError(
             f"refusing to send API credentials to {site_url!r} over plain HTTP -- "
-            "use https://, or http://localhost/http://127.0.0.1 for local development"
+            "use https://, or http://localhost or http://127.0.0.1 for local development"
         )
 
     headers = {"Authorization": f"token {api_key}:{api_secret}"}
