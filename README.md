@@ -114,6 +114,10 @@ codecheck audit --repo-path .
 This checks every file in the project, not just what changed. Useful for a
 first pass on an existing codebase, or a periodic health check.
 
+No custom app, just Server Script / Client Script records on the site itself?
+See [`codecheck audit-scripts`](docs/CLI-Reference.md#codecheck-audit-scripts--audit-serverclient-scripts-with-no-repo)
+— audits those directly, via a DB connection or the site's REST API.
+
 ### 4. Reading the report
 
 After either command, you'll see a table directly in your terminal, like this:

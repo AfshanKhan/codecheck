@@ -121,3 +121,49 @@ def test_close_delegates_to_connection():
     db = FrappeDbConnection(connection)
     db.close()
     connection.close.assert_called_once()
+
+
+def test_fetch_scripts_returns_doctype_name_script_triples_skipping_empty():
+    cursor = MagicMock()
+    cursor.__enter__.return_value = cursor
+    cursor.__exit__.return_value = False
+    cursor.fetchall.side_effect = [
+        [{"name": "srv1", "script": "import os\n"}, {"name": "srv2", "script": ""}],
+        [{"name": "cli1", "script": "console.log(1)\n"}, {"name": "cli2", "script": None}],
+    ]
+    connection = MagicMock()
+    connection.cursor.return_value = cursor
+
+    db = FrappeDbConnection(connection)
+    results = db.fetch_scripts()
+
+    assert results == [
+        ("Server Script", "srv1", "import os\n"),
+        ("Client Script", "cli1", "console.log(1)\n"),
+    ]
+
+
+def test_fetch_scripts_wraps_a_query_time_db_error(monkeypatch):
+    # regression (Greptile review): a query-time failure (dropped
+    # connection, missing table, no SELECT permission) used to raise a raw
+    # pymysql error instead of the same FrappeDbUnavailable the caller
+    # already handles for connect() failures.
+    import codecheck.frappe_db as frappe_db_module
+
+    class FakeMySQLError(Exception):
+        pass
+
+    fake_pymysql = MagicMock()
+    fake_pymysql.MySQLError = FakeMySQLError
+    monkeypatch.setattr(frappe_db_module, "_import_pymysql", lambda: fake_pymysql)
+
+    cursor = MagicMock()
+    cursor.__enter__.return_value = cursor
+    cursor.__exit__.return_value = False
+    cursor.execute.side_effect = FakeMySQLError("connection lost")
+    connection = MagicMock()
+    connection.cursor.return_value = cursor
+
+    db = FrappeDbConnection(connection)
+    with pytest.raises(FrappeDbUnavailable, match="connection lost"):
+        db.fetch_scripts()

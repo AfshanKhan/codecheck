@@ -514,6 +514,140 @@ def test_audit_no_files_exits_zero(tmp_path: Path):
     assert "No files found" in result.stdout
 
 
+def test_audit_scripts_requires_exactly_one_source(tmp_path: Path):
+    result = runner.invoke(app, ["audit-scripts"])
+    assert result.exit_code == 2
+    assert "exactly one of --frappe-db-config or --frappe-site-url" in result.stdout
+
+    result = runner.invoke(
+        app,
+        [
+            "audit-scripts",
+            "--frappe-db-config", str(tmp_path / "site_config.json"),
+            "--frappe-site-url", "https://example.com",
+        ],
+    )
+    assert result.exit_code == 2
+    assert "exactly one of --frappe-db-config or --frappe-site-url" in result.stdout
+
+
+def test_audit_scripts_site_url_requires_api_credentials():
+    result = runner.invoke(app, ["audit-scripts", "--frappe-site-url", "https://example.com"])
+    assert result.exit_code == 2
+    assert "requires --frappe-api-key and --frappe-api-secret-env" in result.stdout
+
+
+def test_audit_scripts_via_api_finds_house_rule_violations(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("FRAPPE_SECRET", "shh")
+    monkeypatch.setattr(
+        "codecheck.cli.fetch_via_api",
+        lambda site_url, api_key, api_secret: [
+            ("Server Script", "leaky", "try:\n    pass\nexcept:\n    pass\n"),
+            ("Client Script", "noisy", "console.log('x')\n"),
+        ],
+    )
+    output_dir = tmp_path / "reports"
+    result = runner.invoke(
+        app,
+        [
+            "audit-scripts",
+            "--frappe-site-url", "https://example.com",
+            "--frappe-api-key", "key123",
+            "--frappe-api-secret-env", "FRAPPE_SECRET",
+            "--output-dir", str(output_dir),
+        ],
+    )
+
+    assert result.exit_code == 1  # RULE-001 is MEDIUM, RULE-012 is LOW -- neither hits default HIGH gate
+    assert "RULE-001" in result.stdout or "RULE-012" in result.stdout
+    report = json.loads(_report_json_path(output_dir).read_text())
+    assert report["repo_path"] == "https://example.com"
+    assert any(f["file"] == "server_script/leaky.py" for f in report["findings"])
+    assert any(f["file"] == "client_script/noisy.js" for f in report["findings"])
+
+
+def test_audit_scripts_via_api_missing_secret_env_errors(tmp_path: Path):
+    result = runner.invoke(
+        app,
+        [
+            "audit-scripts",
+            "--frappe-site-url", "https://example.com",
+            "--frappe-api-key", "key123",
+            "--frappe-api-secret-env", "NOT_SET_ANYWHERE",
+        ],
+    )
+    assert result.exit_code == 2
+    assert "NOT_SET_ANYWHERE env var not set" in result.stdout
+
+
+def test_audit_scripts_via_db_config_uses_fetch_scripts(tmp_path: Path, monkeypatch):
+    from codecheck.frappe_db import FrappeDbConnection
+
+    site_config = tmp_path / "site_config.json"
+    site_config.write_text('{"db_name": "x", "db_password": "y"}')
+
+    fake_db = type(
+        "FakeDb",
+        (),
+        {
+            "fetch_scripts": lambda self: [("Server Script", "s1", "import os\n")],
+            "close": lambda self: None,
+        },
+    )()
+    monkeypatch.setattr(FrappeDbConnection, "connect", classmethod(lambda cls, path: fake_db))
+
+    output_dir = tmp_path / "reports"
+    result = runner.invoke(
+        app,
+        [
+            "audit-scripts",
+            "--frappe-db-config", str(site_config),
+            "--output-dir", str(output_dir),
+        ],
+    )
+    assert result.exit_code == 0
+    report = json.loads(_report_json_path(output_dir).read_text())
+    assert report["files_reviewed"] == ["server_script/s1.py"]
+
+
+def test_audit_scripts_via_db_config_query_error_exits_cleanly(tmp_path: Path, monkeypatch):
+    # regression (Greptile review): db.fetch_scripts() used to be called
+    # outside the try/except wrapping connect(), so a query-time failure
+    # crashed with a raw traceback instead of the same clean exit-2 error.
+    from codecheck.frappe_db import FrappeDbConnection, FrappeDbUnavailable
+
+    site_config = tmp_path / "site_config.json"
+    site_config.write_text('{"db_name": "x", "db_password": "y"}')
+
+    def _raise_fetch_scripts(self):
+        raise FrappeDbUnavailable("could not fetch scripts from the site's database: gone")
+
+    fake_db = type(
+        "FakeDb", (), {"fetch_scripts": _raise_fetch_scripts, "close": lambda self: None}
+    )()
+    monkeypatch.setattr(FrappeDbConnection, "connect", classmethod(lambda cls, path: fake_db))
+
+    result = runner.invoke(app, ["audit-scripts", "--frappe-db-config", str(site_config)])
+    assert result.exit_code == 2
+    assert "could not fetch scripts from the site's database" in result.stdout
+
+
+def test_audit_scripts_no_scripts_found_exits_zero(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("FRAPPE_SECRET", "shh")
+    monkeypatch.setattr("codecheck.cli.fetch_via_api", lambda site_url, api_key, api_secret: [])
+    result = runner.invoke(
+        app,
+        [
+            "audit-scripts",
+            "--frappe-site-url", "https://example.com",
+            "--frappe-api-key", "key123",
+            "--frappe-api-secret-env", "FRAPPE_SECRET",
+        ],
+    )
+    assert result.exit_code == 0
+    assert "No Server Script / Client Script records found" in result.stdout
+
+
 def test_diff_staged_and_pr_are_mutually_exclusive(tmp_path: Path):
     result = runner.invoke(
         app, ["diff", "--repo-path", str(tmp_path), "--staged", "--pr", "5"]

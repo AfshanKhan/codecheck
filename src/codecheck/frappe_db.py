@@ -117,3 +117,29 @@ class FrappeDbConnection:
         result = frozenset(fields)
         self._doctype_fields_cache[doctype] = result
         return result
+
+    def fetch_scripts(self) -> list[tuple[str, str, str]]:
+        """(doctype, name, script) triples for every non-empty Server
+        Script / Client Script record. Raises FrappeDbUnavailable (not a
+        raw pymysql error) if the query itself fails -- a dropped
+        connection, a missing table, or a permission error should surface
+        the same clear message as a failed connect(), not a traceback."""
+        try:
+            results: list[tuple[str, str, str]] = []
+            with self._connection.cursor() as cursor:
+                cursor.execute("SELECT name, script FROM `tabServer Script`")
+                for row in cursor.fetchall():
+                    if row["script"]:
+                        results.append(("Server Script", row["name"], row["script"]))
+                cursor.execute("SELECT name, script FROM `tabClient Script`")
+                for row in cursor.fetchall():
+                    if row["script"]:
+                        results.append(("Client Script", row["name"], row["script"]))
+            return results
+        except Exception as e:
+            # Only pull in pymysql (and re-raise verbatim) when something
+            # actually went wrong -- a healthy query never needs the
+            # module, so a mocked connection in tests doesn't either.
+            if not isinstance(e, _import_pymysql().MySQLError):
+                raise
+            raise FrappeDbUnavailable(f"could not fetch scripts from the site's database: {e}") from e

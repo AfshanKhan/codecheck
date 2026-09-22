@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import sys
+import tempfile
 import time
 from contextlib import ExitStack
 from datetime import datetime, timezone
@@ -13,6 +15,7 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import urlsplit, urlunsplit
 
+import httpx
 import typer
 from rich.console import Console
 
@@ -20,6 +23,7 @@ from codecheck.aggregator import aggregate
 from codecheck.config import Config, load_config
 from codecheck.diff import get_diff, read_file_content
 from codecheck.frappe_db import FrappeDbConnection, FrappeDbUnavailable
+from codecheck.frappe_scripts import FrappeScriptFetchError, fetch_via_api, write_scripts
 from codecheck.github_source import cloned_repo, parse_pr_url, pr_worktree
 from codecheck.lm_link import resolve_model_location, set_preferred_device
 from codecheck.models import ReviewReport, ReviewTarget, Severity
@@ -815,6 +819,102 @@ def audit(
 
         report = ReviewReport(
             repo_path=_display_repo_url(repo_url) if repo_url else str(effective_repo_path),
+            mode="audit",
+            base_ref=None,
+            head_ref=None,
+            generated_at=datetime.now(timezone.utc),
+            tiers_run=tiers_run,
+            findings=findings,
+            files_reviewed=[t.path for t in targets],
+            duration_seconds=time.monotonic() - start,
+            skipped=skipped,
+            file_hashes=file_hashes,
+        )
+        _finish(report, output_dir, cfg, repo_label, redact=redact)
+
+
+@app.command(name="audit-scripts")
+def audit_scripts(
+    frappe_db_config: Optional[Path] = typer.Option(
+        None, "--frappe-db-config", help="Path to a live Frappe site's site_config.json -- fetches Server/Client Scripts via a direct DB connection. Mutually exclusive with --frappe-site-url."
+    ),
+    frappe_site_url: Optional[str] = typer.Option(
+        None, "--frappe-site-url", help="Base URL of a live Frappe site, e.g. https://example.com -- fetches Server/Client Scripts via its REST API instead of a DB connection. Requires --frappe-api-key and --frappe-api-secret-env."
+    ),
+    frappe_api_key: Optional[str] = typer.Option(
+        None, "--frappe-api-key", help="API key for --frappe-site-url."
+    ),
+    frappe_api_secret_env: Optional[str] = typer.Option(
+        None, "--frappe-api-secret-env", help="Env var holding the API secret for --frappe-site-url -- never pass the secret itself on the command line."
+    ),
+    output_dir: Path = typer.Option(Path("./reports"), "--output-dir", help="Where JSON/markdown/docx/xlsx reports land."),
+    gate: Optional[str] = typer.Option(
+        None, "--gate", help=f"Override thresholds.fail_on_severity via a named profile: {', '.join(_GATE_PROFILES)}."
+    ),
+    redact: bool = typer.Option(
+        False, "--redact", help="Scrub locally-identifying details from the written reports before they're saved."
+    ),
+):
+    """Audit every Server Script / Client Script on a live Frappe site
+    directly -- for a site with no custom app / git repo to check out.
+    Runs the rules tier (house checks + ruff/eslint where applicable) over
+    each script's content, same as `audit`."""
+    if bool(frappe_db_config) == bool(frappe_site_url):
+        console.print("[red]Error:[/red] pass exactly one of --frappe-db-config or --frappe-site-url.")
+        raise typer.Exit(code=2)
+    if frappe_site_url and not (frappe_api_key and frappe_api_secret_env):
+        console.print("[red]Error:[/red] --frappe-site-url requires --frappe-api-key and --frappe-api-secret-env.")
+        raise typer.Exit(code=2)
+
+    resolved_gate = _resolve_gate(gate)
+    start = time.monotonic()
+    cfg = load_config(None)
+    if resolved_gate:
+        cfg.thresholds.fail_on_severity = resolved_gate
+
+    with ExitStack() as stack:
+        db: FrappeDbConnection | None = None
+        if frappe_db_config:
+            try:
+                db = FrappeDbConnection.connect(frappe_db_config)
+            except FrappeDbUnavailable as e:
+                console.print(f"[red]Error:[/red] {e}")
+                raise typer.Exit(code=2)
+            stack.callback(db.close)
+            try:
+                scripts = db.fetch_scripts()
+            except FrappeDbUnavailable as e:
+                console.print(f"[red]Error:[/red] {e}")
+                raise typer.Exit(code=2)
+            source_label = str(frappe_db_config)
+            repo_label = _sanitize_slug(frappe_db_config.stem) or "frappe-scripts"
+        else:
+            secret = os.environ.get(frappe_api_secret_env)
+            if not secret:
+                console.print(f"[red]Error:[/red] {frappe_api_secret_env} env var not set.")
+                raise typer.Exit(code=2)
+            try:
+                scripts = fetch_via_api(frappe_site_url, frappe_api_key, secret)
+            except (httpx.HTTPError, FrappeScriptFetchError) as e:
+                console.print(f"[red]Error:[/red] could not fetch scripts from {frappe_site_url}: {e}")
+                raise typer.Exit(code=2)
+            source_label = frappe_site_url
+            repo_label = _sanitize_slug(urlsplit(frappe_site_url).hostname or "") or "frappe-scripts"
+
+        if not scripts:
+            console.print("[yellow]No Server Script / Client Script records found.[/yellow]")
+            raise typer.Exit(code=0)
+
+        temp_dir = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix="codecheck-scripts-")))
+        targets = write_scripts(scripts, temp_dir)
+
+        console.print(f"[dim]Auditing {len(targets)} script(s) from {source_label}[/dim]")
+
+        results, tiers_run, skipped, file_hashes = _run_tiers(targets, temp_dir, cfg, "audit", frappe_db=db)
+        findings = aggregate(results)
+
+        report = ReviewReport(
+            repo_path=source_label,
             mode="audit",
             base_ref=None,
             head_ref=None,
