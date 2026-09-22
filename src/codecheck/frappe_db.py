@@ -124,7 +124,6 @@ class FrappeDbConnection:
         raw pymysql error) if the query itself fails -- a dropped
         connection, a missing table, or a permission error should surface
         the same clear message as a failed connect(), not a traceback."""
-        pymysql = _import_pymysql()
         try:
             results: list[tuple[str, str, str]] = []
             with self._connection.cursor() as cursor:
@@ -137,5 +136,10 @@ class FrappeDbConnection:
                     if row["script"]:
                         results.append(("Client Script", row["name"], row["script"]))
             return results
-        except pymysql.MySQLError as e:
+        except Exception as e:
+            # Only pull in pymysql (and re-raise verbatim) when something
+            # actually went wrong -- a healthy query never needs the
+            # module, so a mocked connection in tests doesn't either.
+            if not isinstance(e, _import_pymysql().MySQLError):
+                raise
             raise FrappeDbUnavailable(f"could not fetch scripts from the site's database: {e}") from e
