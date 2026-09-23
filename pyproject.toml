@@ -38,7 +38,7 @@ rules = [
 # imported in frappe_db.py with a clear "pip install codecheck[frappe-db]"
 # error if it's missing and that feature is actually requested.
 frappe-db = [
-    "pymysql>=1.1",
+    "pymysql>=1.2.3",
 ]
 
 [project.scripts]
