@@ -223,11 +223,13 @@ path.
 Server Scripts run inside Frappe's own implicit namespace (`frappe` and
 `doc` are injected at runtime, not imported), so this command passes ruff
 `--config` overrides declaring both as builtins before linting -- ruff's
-`F821 Undefined name` no longer false-positives on them, while any
-project or user-level ruff config you already have still applies. Other
-runtime-injected names Frappe provides in some contexts (`method`, event
-hooks, ...) aren't in that list yet; a real use of one may still show as
-`F821` since it's outside the app that would normally provide it.
+`F821 Undefined name` no longer false-positives on them. Scripts are
+linted from an isolated scratch directory outside any project tree, so a
+project-level ruff config never applies here; a user-level (global) ruff
+config, if you have one, still does. Other runtime-injected names Frappe
+provides in some contexts (`method`, event hooks, ...) aren't in the
+builtins list yet; a real use of one may still show as `F821` since it's
+outside the app that would normally provide it.
 
 ### Report filenames
 

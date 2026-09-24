@@ -574,6 +574,11 @@ def test_audit_scripts_frappe_and_doc_are_not_flagged_as_undefined_names(tmp_pat
     # ruff actually ran rather than the F821 assertion passing vacuously
     # because ruff was skipped or its invocation failed.
     monkeypatch.setenv("FRAPPE_SECRET", "shh")
+    # Isolate from any real user-level ruff config (e.g. a contributor's own
+    # ~/.config/ruff/ruff.toml narrowing `select`) -- this test assumes F821
+    # is enabled by ruff's own defaults, which only holds if no such config
+    # is discovered.
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "no-such-xdg-config"))
     monkeypatch.setattr(
         "codecheck.cli.fetch_via_api",
         lambda site_url, api_key, api_secret: [
