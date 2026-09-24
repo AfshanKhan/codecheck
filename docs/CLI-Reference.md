@@ -221,9 +221,10 @@ report is the site URL or `site_config.json` path used, not a filesystem
 path.
 
 Server Scripts run inside Frappe's own implicit namespace (`frappe` and
-`doc` are injected at runtime, not imported), so this command generates a
-`ruff.toml` declaring both as builtins before linting -- ruff's
-`F821 Undefined name` no longer false-positives on them. Other
+`doc` are injected at runtime, not imported), so this command passes ruff
+`--config` overrides declaring both as builtins before linting -- ruff's
+`F821 Undefined name` no longer false-positives on them, while any
+project or user-level ruff config you already have still applies. Other
 runtime-injected names Frappe provides in some contexts (`method`, event
 hooks, ...) aren't in that list yet; a real use of one may still show as
 `F821` since it's outside the app that would normally provide it.

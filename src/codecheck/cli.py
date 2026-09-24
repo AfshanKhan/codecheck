@@ -234,6 +234,7 @@ def _run_tiers(
     device: str | None = None,
     resume_from: Path | None = None,
     frappe_db: FrappeDbConnection | None = None,
+    ruff_extra_config: list[str] | None = None,
 ) -> tuple[dict[str, list], list[str], list[str], dict[str, str]]:
     """Runs the rules tier and (if available) the local and cloud LLM tiers.
     Returns (results_by_tier, tiers_run, skip_reasons, current_file_hashes).
@@ -251,7 +252,7 @@ def _run_tiers(
 
     current_file_hashes = _compute_current_file_hashes(targets, repo_path)
 
-    rules_reviewer = RulesEngineReviewer(cfg.rules, frappe_db=frappe_db)
+    rules_reviewer = RulesEngineReviewer(cfg.rules, frappe_db=frappe_db, ruff_extra_config=ruff_extra_config)
     available, reason = rules_reviewer.is_available(repo_path)
     if available:
         with console.status("[bold]Running rules engine (ruff/eslint/semgrep/house rules)..."):
@@ -907,14 +908,23 @@ def audit_scripts(
 
         temp_dir = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix="codecheck-scripts-")))
         targets = write_scripts(scripts, temp_dir)
-        # Frappe's Server Script sandbox injects `frappe` and `doc` as globals --
-        # imports aren't allowed there, so ruff's F821 (undefined name) is a
-        # false positive on both unless we tell it about them.
-        (temp_dir / "ruff.toml").write_text('builtins = ["frappe", "doc"]\n')
 
         console.print(f"[dim]Auditing {len(targets)} script(s) from {source_label}[/dim]")
 
-        results, tiers_run, skipped, file_hashes = _run_tiers(targets, temp_dir, cfg, "audit", frappe_db=db)
+        # Frappe's Server Script sandbox injects `frappe` and `doc` as globals --
+        # imports aren't allowed there, so ruff's F821 (undefined name) is a
+        # false positive on both unless we tell it about them. Passed as
+        # individual --config overrides (not a ruff.toml dropped into
+        # temp_dir) so an operator's own project/user-level ruff config,
+        # if ruff would otherwise discover one, still applies.
+        results, tiers_run, skipped, file_hashes = _run_tiers(
+            targets,
+            temp_dir,
+            cfg,
+            "audit",
+            frappe_db=db,
+            ruff_extra_config=['builtins=["frappe", "doc"]'],
+        )
         findings = aggregate(results)
 
         report = ReviewReport(
