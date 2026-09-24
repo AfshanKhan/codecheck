@@ -43,6 +43,13 @@ def _filter_targets(targets: list[ReviewTarget], suffixes: tuple[str, ...]) -> l
 class RuffRunner(SubRunner):
     name = "ruff"
 
+    def __init__(self, extra_config: list[str] | None = None):
+        # Individual `--config KEY=VALUE` overrides -- unlike a ruff.toml
+        # dropped into repo_path, these layer on top of whatever config
+        # ruff would otherwise discover (project or user-level) instead of
+        # replacing it outright.
+        self.extra_config = extra_config or []
+
     def is_available(self, repo_path: Path) -> tuple[bool, str | None]:
         if shutil.which("ruff") is None:
             return False, "ruff not found on PATH"
@@ -54,8 +61,9 @@ class RuffRunner(SubRunner):
             return []
 
         target_by_path = {t.path: t for t in py_targets}
+        config_args = [arg for value in self.extra_config for arg in ("--config", value)]
         result = subprocess.run(
-            ["ruff", "check", "--output-format=json", "--", *target_by_path.keys()],
+            ["ruff", "check", "--output-format=json", *config_args, "--", *target_by_path.keys()],
             cwd=repo_path,
             capture_output=True,
             text=True,
@@ -367,7 +375,12 @@ class RulesEngineReviewer(Reviewer):
     tier = "rules"
     name = "rules_engine"
 
-    def __init__(self, config: RulesConfig, frappe_db: FrappeDbConnection | None = None):
+    def __init__(
+        self,
+        config: RulesConfig,
+        frappe_db: FrappeDbConnection | None = None,
+        ruff_extra_config: list[str] | None = None,
+    ):
         self.config = config
         # (runner_name, reason) pairs for sub-runners enabled but unable to run.
         self.skipped_runners: list[tuple[str, str]] = []
@@ -375,7 +388,7 @@ class RulesEngineReviewer(Reviewer):
         self._extra_check_errors = extra_check_errors
         self._runners: list[SubRunner] = []
         if config.ruff:
-            self._runners.append(RuffRunner())
+            self._runners.append(RuffRunner(extra_config=ruff_extra_config))
         if config.eslint:
             self._runners.append(EslintRunner())
         if config.semgrep:

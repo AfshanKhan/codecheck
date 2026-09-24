@@ -566,6 +566,42 @@ def test_audit_scripts_via_api_finds_house_rule_violations(tmp_path: Path, monke
     assert any(f["file"] == "client_script/noisy.js" for f in report["findings"])
 
 
+def test_audit_scripts_frappe_and_doc_are_not_flagged_as_undefined_names(tmp_path: Path, monkeypatch):
+    # regression: Frappe's Server Script sandbox injects `frappe` and `doc`
+    # as globals -- imports aren't allowed there -- so ruff's F821 used to
+    # false-positive on every use of either name. The script also uses an
+    # undefined name ruff should still catch (`unrelated_name`) -- proves
+    # ruff actually ran rather than the F821 assertion passing vacuously
+    # because ruff was skipped or its invocation failed.
+    monkeypatch.setenv("FRAPPE_SECRET", "shh")
+    # Isolate from any real user-level ruff config (e.g. a contributor's own
+    # ~/.config/ruff/ruff.toml narrowing `select`) -- this test assumes F821
+    # is enabled by ruff's own defaults, which only holds if no such config
+    # is discovered.
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "no-such-xdg-config"))
+    monkeypatch.setattr(
+        "codecheck.cli.fetch_via_api",
+        lambda site_url, api_key, api_secret: [
+            ("Server Script", "uses_globals", "frappe.msgprint(doc.name)\nunrelated_name\n"),
+        ],
+    )
+    output_dir = tmp_path / "reports"
+    runner.invoke(
+        app,
+        [
+            "audit-scripts",
+            "--frappe-site-url", "https://example.com",
+            "--frappe-api-key", "key123",
+            "--frappe-api-secret-env", "FRAPPE_SECRET",
+            "--output-dir", str(output_dir),
+        ],
+    )
+
+    report = json.loads(_report_json_path(output_dir).read_text())
+    f821_names = {f["title"] for f in report["findings"] if f["check_id"] == "RUFF-F821"}
+    assert f821_names == {"F821: Undefined name `unrelated_name`"}
+
+
 def test_audit_scripts_via_api_missing_secret_env_errors(tmp_path: Path):
     result = runner.invoke(
         app,
