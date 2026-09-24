@@ -220,12 +220,13 @@ No `--cloud`/`--local` yet -- rules-tier only for now. `repo_path` in the
 report is the site URL or `site_config.json` path used, not a filesystem
 path.
 
-**Known false positive**: Server Scripts run inside Frappe's own implicit
-namespace (`frappe`, `doc`, `method`, ... are injected at runtime, not
-imported), so ruff's `F821 Undefined name` fires on names a real Server
-Script would have available. Not a bug in this command -- inherent to
-linting a Frappe script standalone, outside the app that would normally
-provide those names.
+Server Scripts run inside Frappe's own implicit namespace (`frappe` and
+`doc` are injected at runtime, not imported), so this command generates a
+`ruff.toml` declaring both as builtins before linting -- ruff's
+`F821 Undefined name` no longer false-positives on them. Other
+runtime-injected names Frappe provides in some contexts (`method`, event
+hooks, ...) aren't in that list yet; a real use of one may still show as
+`F821` since it's outside the app that would normally provide it.
 
 ### Report filenames
 

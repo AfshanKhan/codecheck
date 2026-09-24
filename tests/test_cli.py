@@ -566,6 +566,33 @@ def test_audit_scripts_via_api_finds_house_rule_violations(tmp_path: Path, monke
     assert any(f["file"] == "client_script/noisy.js" for f in report["findings"])
 
 
+def test_audit_scripts_frappe_and_doc_are_not_flagged_as_undefined_names(tmp_path: Path, monkeypatch):
+    # regression: Frappe's Server Script sandbox injects `frappe` and `doc`
+    # as globals -- imports aren't allowed there -- so ruff's F821 used to
+    # false-positive on every use of either name.
+    monkeypatch.setenv("FRAPPE_SECRET", "shh")
+    monkeypatch.setattr(
+        "codecheck.cli.fetch_via_api",
+        lambda site_url, api_key, api_secret: [
+            ("Server Script", "uses_globals", "frappe.msgprint(doc.name)\n"),
+        ],
+    )
+    output_dir = tmp_path / "reports"
+    runner.invoke(
+        app,
+        [
+            "audit-scripts",
+            "--frappe-site-url", "https://example.com",
+            "--frappe-api-key", "key123",
+            "--frappe-api-secret-env", "FRAPPE_SECRET",
+            "--output-dir", str(output_dir),
+        ],
+    )
+
+    report = json.loads(_report_json_path(output_dir).read_text())
+    assert not any(f["check_id"] == "RUFF-F821" for f in report["findings"])
+
+
 def test_audit_scripts_via_api_missing_secret_env_errors(tmp_path: Path):
     result = runner.invoke(
         app,

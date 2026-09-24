@@ -907,6 +907,10 @@ def audit_scripts(
 
         temp_dir = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix="codecheck-scripts-")))
         targets = write_scripts(scripts, temp_dir)
+        # Frappe's Server Script sandbox injects `frappe` and `doc` as globals --
+        # imports aren't allowed there, so ruff's F821 (undefined name) is a
+        # false positive on both unless we tell it about them.
+        (temp_dir / "ruff.toml").write_text('builtins = ["frappe", "doc"]\n')
 
         console.print(f"[dim]Auditing {len(targets)} script(s) from {source_label}[/dim]")
 
