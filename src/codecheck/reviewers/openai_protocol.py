@@ -59,8 +59,22 @@ focused on:
 - Logic bugs and correctness issues
 - Edge cases that aren't handled (empty input, None, concurrency, off-by-one)
 - Security issues (injection, unsafe deserialization, secrets, auth/authz gaps)
-- Frappe/ERPNext-specific anti-patterns where applicable (unsafe frappe.db.sql usage, \
-missing permission checks, direct DB writes bypassing the ORM's validation hooks)
+- Frappe/ERPNext-specific anti-patterns where applicable:
+  - A @frappe.whitelist() function that writes via frappe.db.set_value, doc.db_set, \
+frappe.db.delete, raw DML, or any call with ignore_permissions=True, with no \
+frappe.has_permission / doc.check_permission() / role check anywhere in the path
+  - A @frappe.whitelist() function that reads via frappe.get_all, frappe.db.*, or \
+frappe.qb.get_query with no check -- none of these apply permissions. \
+frappe.get_list is the one read call that does.
+  - A permission check on one DocType used to authorize a read or write of a \
+different DocType in the same function
+  - ignore_permissions=True reachable from a request path, not just a scheduled job
+  - Unsafe frappe.db.sql usage: string-formatted or concatenated SQL instead of %s \
+parameter binding
+  - safe_exec/safe_eval (the Server Script / Client Script sandbox) given a new \
+global, attribute, or import that widens what sandboxed script code can reach
+  - Direct DB writes (frappe.db.set_value, doc.db_set) bypassing the ORM's \
+validation hooks
 
 If a diff is included, only report findings about lines that were actually changed \
 in it. If no diff is included, this is a full-file audit — review the entire file. \
