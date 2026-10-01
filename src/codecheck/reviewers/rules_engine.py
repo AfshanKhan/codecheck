@@ -206,6 +206,12 @@ _SEMGREP_SEVERITY_MAP = {
 class SemgrepRunner(SubRunner):
     name = "semgrep"
 
+    def __init__(self, config_path: str | None = None):
+        # A local rules directory (e.g. a clone of frappe/semgrep-rules)
+        # takes over from semgrep's own registry lookup entirely -- that's
+        # semgrep's own --config semantics, not something we layer here.
+        self.config_path = config_path
+
     def is_available(self, repo_path: Path) -> tuple[bool, str | None]:
         if shutil.which("semgrep") is None:
             return False, "semgrep not found on PATH"
@@ -217,9 +223,10 @@ class SemgrepRunner(SubRunner):
             return []
 
         target_by_path = {t.path: t for t in live_targets}
+        config_value = self.config_path or "auto"
         result = subprocess.run(
             # --metrics=off disables semgrep's default anonymous telemetry.
-            ["semgrep", "--config=auto", "--metrics=off", "--json", "--quiet", "--", *target_by_path.keys()],
+            ["semgrep", f"--config={config_value}", "--metrics=off", "--json", "--quiet", "--", *target_by_path.keys()],
             cwd=repo_path,
             capture_output=True,
             text=True,
@@ -392,7 +399,7 @@ class RulesEngineReviewer(Reviewer):
         if config.eslint:
             self._runners.append(EslintRunner())
         if config.semgrep:
-            self._runners.append(SemgrepRunner())
+            self._runners.append(SemgrepRunner(config_path=config.semgrep_config))
         if config.house_rules:
             self._runners.append(HouseRulesRunner(extra_checks=extra_checks))
         if config.test_coverage:

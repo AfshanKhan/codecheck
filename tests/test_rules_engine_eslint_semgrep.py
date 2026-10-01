@@ -120,3 +120,18 @@ def test_semgrep_parses_and_filters_to_changed_lines(tmp_path: Path):
     assert len(findings) == 1
     assert findings[0].line_start == 1
     assert findings[0].severity.value == "high"
+
+
+def test_semgrep_uses_config_path_when_given_else_auto(tmp_path: Path):
+    (tmp_path / "a.py").write_text("x = 1\n")
+    target = ReviewTarget(path="a.py", status="modified", diff_text="", changed_lines={1})
+
+    with patch("codecheck.reviewers.rules_engine.shutil.which", return_value="/usr/bin/semgrep"), \
+         patch("codecheck.reviewers.rules_engine.subprocess.run", return_value=_fake_completed_process("{}")) as mock_run:
+        SemgrepRunner().run([target], tmp_path)
+    assert "--config=auto" in mock_run.call_args.args[0]
+
+    with patch("codecheck.reviewers.rules_engine.shutil.which", return_value="/usr/bin/semgrep"), \
+         patch("codecheck.reviewers.rules_engine.subprocess.run", return_value=_fake_completed_process("{}")) as mock_run:
+        SemgrepRunner(config_path="/clone/of/frappe-semgrep-rules/rules").run([target], tmp_path)
+    assert "--config=/clone/of/frappe-semgrep-rules/rules" in mock_run.call_args.args[0]

@@ -6,6 +6,9 @@ rules:
   ruff: true
   eslint: true
   semgrep: true
+  semgrep_config: null  # local path to a semgrep rules directory, e.g. a clone of
+                         # https://github.com/frappe/semgrep-rules (`semgrep --config <path>`
+                         # under the hood); null = semgrep's own --config=auto (its hosted registry)
   house_rules: true
   test_coverage: true   # RULE-017: diff changes app code but touches no test file (diff mode only)
   secrets_scan: true    # RULE-035: an .env file present anywhere in the repo and not covered by .gitignore

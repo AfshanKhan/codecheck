@@ -6,7 +6,7 @@ import pytest
 from codecheck.config import RulesConfig
 from codecheck.diff import get_diff
 from codecheck.models import ReviewTarget
-from codecheck.reviewers.rules_engine import RulesEngineReviewer
+from codecheck.reviewers.rules_engine import RulesEngineReviewer, SemgrepRunner
 
 
 @pytest.fixture
@@ -196,3 +196,17 @@ def test_review_records_enabled_but_skipped_runners(monkeypatch):
     skipped = dict(reviewer.skipped_runners)
     assert "ruff" in skipped
     assert "semgrep" in skipped
+
+
+def test_rules_engine_passes_semgrep_config_through_to_runner():
+    reviewer = RulesEngineReviewer(
+        RulesConfig(
+            ruff=False,
+            eslint=False,
+            semgrep=True,
+            house_rules=False,
+            semgrep_config="/clone/of/frappe-semgrep-rules/rules",
+        )
+    )
+    (semgrep_runner,) = [r for r in reviewer._runners if isinstance(r, SemgrepRunner)]
+    assert semgrep_runner.config_path == "/clone/of/frappe-semgrep-rules/rules"
