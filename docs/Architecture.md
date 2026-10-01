@@ -40,7 +40,7 @@ ran and found nothing.
 |---|---|---|
 | `RuffRunner` | `ruff` on `PATH` | Runs `ruff check --output-format=json -- <targets>` on `.py` targets. |
 | `EslintRunner` | An eslint config file exists in the repo root (`.eslintrc*`, `eslint.config.{js,mjs,cjs}`) **and** a `PATH`-resolved `eslint` binary is found — the reviewed repo's own `node_modules/.bin/eslint` is deliberately never run (see "Security considerations"). | Runs `eslint --format=json -- <targets>` on `.js/.jsx/.ts/.tsx` targets. |
-| `SemgrepRunner` | `semgrep` on `PATH` | Runs `semgrep --config=auto --metrics=off --json --quiet -- <targets>` on all non-deleted targets (language-agnostic; `--metrics=off` disables scan telemetry). |
+| `SemgrepRunner` | `semgrep` on `PATH` | Runs `semgrep --config=<auto or rules.semgrep_config> --json --quiet -- <targets>` on all non-deleted targets (language-agnostic). `--metrics=off` (disables scan telemetry) is added only for a local `rules.semgrep_config` — semgrep refuses `--config=auto` combined with `--metrics=off`, so the default `auto` path sends telemetry. A non-0/1 semgrep exit (e.g. an invalid `semgrep_config`) is a hard failure, not zero findings — see `RulesEngineReviewer.runner_failures` in cli.py's exit-code handling. |
 | `HouseRulesRunner` | always available | Runs the checks in `checks/registry.py` against `.py`/`.js`/`.json` targets' current content. |
 
 **Line scoping:** every Tier 1 finding is filtered through `_line_in_scope()` —
