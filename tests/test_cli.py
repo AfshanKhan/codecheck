@@ -966,7 +966,8 @@ def test_gate_fails_when_a_configured_runner_crashes_not_just_on_findings(
     # skip, but the exit code only ever looked at findings -- so a scan
     # that never actually ran could still "pass" the gate. Verified live
     # before this test existed: a broken semgrep_config produced zero
-    # findings and exit code 0.
+    # findings and exit code 0. semgrep is mocked here (not installed in
+    # CI's base `uv sync`, which skips the optional "rules" extra).
     output_dir = tmp_path / "reports"
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
@@ -974,13 +975,20 @@ def test_gate_fails_when_a_configured_runner_crashes_not_just_on_findings(
         "  house_rules: false\n  semgrep_config: /nonexistent/rules/dir\n"
     )
 
-    result = runner.invoke(
-        app,
-        [
-            "audit", "--repo-path", str(sandbox_repo),
-            "--config", str(config_path), "--output-dir", str(output_dir),
-        ],
-    )
+    class _FailedScan:
+        returncode = 7
+        stdout = ""
+        stderr = "invalid configuration file found"
+
+    with patch("codecheck.reviewers.rules_engine.shutil.which", return_value="/usr/bin/semgrep"), \
+         patch("codecheck.reviewers.rules_engine.subprocess.run", return_value=_FailedScan()):
+        result = runner.invoke(
+            app,
+            [
+                "audit", "--repo-path", str(sandbox_repo),
+                "--config", str(config_path), "--output-dir", str(output_dir),
+            ],
+        )
 
     assert result.exit_code == 2
     assert "semgrep" in result.stdout
