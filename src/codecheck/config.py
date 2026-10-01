@@ -13,6 +13,10 @@ class RulesConfig(BaseModel):
     ruff: bool = True
     eslint: bool = True
     semgrep: bool = True
+    # Local path to a semgrep rules directory (e.g. a clone of
+    # frappe/semgrep-rules), passed as `semgrep --config <path>`. Falls back
+    # to semgrep's own `--config=auto` (its hosted registry) when unset.
+    semgrep_config: str | None = None
     house_rules: bool = True
     test_coverage: bool = True
     secrets_scan: bool = True

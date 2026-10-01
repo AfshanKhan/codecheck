@@ -25,12 +25,16 @@ container/VM.
 
 **semgrep's `--config=auto` reaches semgrep's own rule registry over the
 network** to fetch the ruleset it runs (unavoidable if you want that curated
-ruleset) — `codecheck` passes `--metrics=off` to disable the separate
-scan-telemetry semgrep sends by default, but the rule-download request itself
-still happens, and it happens for every rules-tier run, not just untrusted
-ones. If that's not acceptable for your environment, disable it with
-`rules.semgrep: false`, or point semgrep at a local/offline ruleset yourself
-outside `codecheck`.
+ruleset), and it happens for every rules-tier run, not just untrusted ones.
+`--metrics=off` (disabling the separate scan-telemetry semgrep sends by
+default) is only passed when `rules.semgrep_config` points at a local rules
+directory — semgrep itself refuses to run with `--config=auto` and
+`--metrics=off` together, so the default `auto` path does send that
+telemetry. If that's not acceptable for your environment, disable semgrep
+entirely with `rules.semgrep: false`, or set `rules.semgrep_config` to a
+local/offline ruleset (e.g. a clone of
+[frappe/semgrep-rules](https://github.com/frappe/semgrep-rules)) to get both
+the rule-download and the telemetry disabled.
 
 **Things already hardened, so you don't need to think about them further:**
 - `git clone`/`git fetch` calls (`--repo-url`, `--pr`) reject URLs starting

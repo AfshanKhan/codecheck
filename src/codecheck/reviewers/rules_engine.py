@@ -206,6 +206,16 @@ _SEMGREP_SEVERITY_MAP = {
 class SemgrepRunner(SubRunner):
     name = "semgrep"
 
+    def __init__(self, config_path: str | None = None):
+        # A local rules directory (e.g. a clone of frappe/semgrep-rules)
+        # takes over from semgrep's own registry lookup entirely -- that's
+        # semgrep's own --config semantics, not something we layer here.
+        # Resolved to an absolute path now, against codecheck's own cwd --
+        # semgrep itself runs with cwd=repo_path (the repo being reviewed),
+        # so a relative path given here would otherwise resolve against the
+        # wrong directory once inside subprocess.run.
+        self.config_path = str(Path(config_path).expanduser().resolve()) if config_path else None
+
     def is_available(self, repo_path: Path) -> tuple[bool, str | None]:
         if shutil.which("semgrep") is None:
             return False, "semgrep not found on PATH"
@@ -217,13 +227,25 @@ class SemgrepRunner(SubRunner):
             return []
 
         target_by_path = {t.path: t for t in live_targets}
-        result = subprocess.run(
-            # --metrics=off disables semgrep's default anonymous telemetry.
-            ["semgrep", "--config=auto", "--metrics=off", "--json", "--quiet", "--", *target_by_path.keys()],
-            cwd=repo_path,
-            capture_output=True,
-            text=True,
-        )
+        config_value = self.config_path or "auto"
+        command = ["semgrep", f"--config={config_value}"]
+        if config_value != "auto":
+            # --metrics=off disables semgrep's default anonymous telemetry --
+            # but semgrep refuses to run at all with --config=auto and
+            # --metrics=off together ("Cannot create auto config when
+            # metrics are off"), so only pass it for a local rules config.
+            command.append("--metrics=off")
+        command += ["--json", "--quiet", "--", *target_by_path.keys()]
+        result = subprocess.run(command, cwd=repo_path, capture_output=True, text=True)
+        # 0 = clean scan, 1 = scan found results -- both are a completed scan.
+        # Anything else (e.g. 7: invalid/missing config) is a real failure;
+        # treating it as "zero findings" would make a broken custom
+        # semgrep_config look like a clean scan instead of reporting nothing.
+        if result.returncode not in (0, 1):
+            raise RuntimeError(
+                f"semgrep exited {result.returncode} (config={config_value}): "
+                f"{result.stderr.strip() or result.stdout.strip()}"
+            )
         try:
             payload = json.loads(result.stdout or "{}")
         except json.JSONDecodeError:
@@ -392,7 +414,7 @@ class RulesEngineReviewer(Reviewer):
         if config.eslint:
             self._runners.append(EslintRunner())
         if config.semgrep:
-            self._runners.append(SemgrepRunner())
+            self._runners.append(SemgrepRunner(config_path=config.semgrep_config))
         if config.house_rules:
             self._runners.append(HouseRulesRunner(extra_checks=extra_checks))
         if config.test_coverage:
@@ -411,6 +433,11 @@ class RulesEngineReviewer(Reviewer):
         self.skipped_runners = [
             ("house_rules.extra_checks", error) for error in self._extra_check_errors
         ]
+        # Runner names that crashed mid-run (as opposed to being merely
+        # unavailable, e.g. a missing binary) -- distinct from
+        # skipped_runners so a gate can tell "nothing to run here" apart
+        # from "something that was configured to run never actually ran."
+        self.runner_failures: list[str] = []
         findings: list[Finding] = []
         for runner in self._runners:
             available, reason = runner.is_available(repo_path)
@@ -418,7 +445,13 @@ class RulesEngineReviewer(Reviewer):
                 if reason:
                     self.skipped_runners.append((runner.name, reason))
                 continue
-            findings.extend(runner.run(targets, repo_path))
+            try:
+                findings.extend(runner.run(targets, repo_path))
+            except Exception as e:
+                # A sub-runner's own failure (e.g. semgrep exiting non-0/1 on
+                # an invalid config) must not abort the whole audit.
+                self.skipped_runners.append((runner.name, str(e)))
+                self.runner_failures.append(runner.name)
         if self.config.disabled_checks:
             disabled = set(self.config.disabled_checks)
             findings = [f for f in findings if f.check_id not in disabled]

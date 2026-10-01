@@ -3,6 +3,9 @@ rules:
   ruff: true
   eslint: true
   semgrep: true
+  # semgrep_config: ~/src/frappe-semgrep-rules/rules  # local rules dir (e.g.
+  #   `git clone https://github.com/frappe/semgrep-rules`); unset = semgrep's
+  #   own --config=auto (its hosted registry)
   house_rules: true
   test_coverage: true   # RULE-017: diff changes app code but touches no test file (diff mode only)
 

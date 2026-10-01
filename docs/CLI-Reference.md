@@ -480,8 +480,13 @@ mariadb` only, the Frappe default.
 - `1` — at least one finding at or above `thresholds.fail_on_severity` (default
   `high`, or `--gate`'s override). This is what you'd wire into CI.
 - `2` — a usage/safety error (bad `base_ref`, no merge base, an invalid
-  `--gate` value, or the audit cloud cap blocked the run). No report is
-  written in this case. A `base_ref` naming a ref that doesn't exist at all
+  `--gate` value, or the audit cloud cap blocked the run) -- no report is
+  written in this case. Also used when a configured rules sub-runner (e.g.
+  semgrep with an invalid `semgrep_config`) crashed mid-run instead of
+  completing -- the report *is* written in that case (check "Skipped" in
+  it for which runner and why), but the run isn't treated as a clean pass
+  just because the crashed runner contributed zero findings.
+  A `base_ref` naming a ref that doesn't exist at all
   used to crash with a raw Python traceback instead — `git.GitCommandError`
   from `repo.merge_base()` wasn't caught alongside the other `ValueError`
   cases in `diff.py`/`cli.py`. Fixed: `get_diff()` now converts it into the
