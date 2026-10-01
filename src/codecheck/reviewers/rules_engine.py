@@ -228,13 +228,15 @@ class SemgrepRunner(SubRunner):
 
         target_by_path = {t.path: t for t in live_targets}
         config_value = self.config_path or "auto"
-        result = subprocess.run(
-            # --metrics=off disables semgrep's default anonymous telemetry.
-            ["semgrep", f"--config={config_value}", "--metrics=off", "--json", "--quiet", "--", *target_by_path.keys()],
-            cwd=repo_path,
-            capture_output=True,
-            text=True,
-        )
+        command = ["semgrep", f"--config={config_value}"]
+        if config_value != "auto":
+            # --metrics=off disables semgrep's default anonymous telemetry --
+            # but semgrep refuses to run at all with --config=auto and
+            # --metrics=off together ("Cannot create auto config when
+            # metrics are off"), so only pass it for a local rules config.
+            command.append("--metrics=off")
+        command += ["--json", "--quiet", "--", *target_by_path.keys()]
+        result = subprocess.run(command, cwd=repo_path, capture_output=True, text=True)
         # 0 = clean scan, 1 = scan found results -- both are a completed scan.
         # Anything else (e.g. 7: invalid/missing config) is a real failure;
         # treating it as "zero findings" would make a broken custom
@@ -431,6 +433,11 @@ class RulesEngineReviewer(Reviewer):
         self.skipped_runners = [
             ("house_rules.extra_checks", error) for error in self._extra_check_errors
         ]
+        # Runner names that crashed mid-run (as opposed to being merely
+        # unavailable, e.g. a missing binary) -- distinct from
+        # skipped_runners so a gate can tell "nothing to run here" apart
+        # from "something that was configured to run never actually ran."
+        self.runner_failures: list[str] = []
         findings: list[Finding] = []
         for runner in self._runners:
             available, reason = runner.is_available(repo_path)
@@ -444,6 +451,7 @@ class RulesEngineReviewer(Reviewer):
                 # A sub-runner's own failure (e.g. semgrep exiting non-0/1 on
                 # an invalid config) must not abort the whole audit.
                 self.skipped_runners.append((runner.name, str(e)))
+                self.runner_failures.append(runner.name)
         if self.config.disabled_checks:
             disabled = set(self.config.disabled_checks)
             findings = [f for f in findings if f.check_id not in disabled]

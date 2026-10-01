@@ -235,14 +235,19 @@ def _run_tiers(
     resume_from: Path | None = None,
     frappe_db: FrappeDbConnection | None = None,
     ruff_extra_config: list[str] | None = None,
-) -> tuple[dict[str, list], list[str], list[str], dict[str, str]]:
+) -> tuple[dict[str, list], list[str], list[str], dict[str, str], bool]:
     """Runs the rules tier and (if available) the local and cloud LLM tiers.
-    Returns (results_by_tier, tiers_run, skip_reasons, current_file_hashes).
+    Returns (results_by_tier, tiers_run, skip_reasons, current_file_hashes,
+    had_runner_error). had_runner_error is True when a configured sub-runner
+    (e.g. semgrep with a bad semgrep_config) crashed mid-run rather than
+    just being unavailable -- the caller should treat that as a hard
+    failure, not a clean pass, even if no findings came back.
     resume_from, if given, reuses a prior run's non-skipped LLM results for
     unchanged files."""
     results: dict[str, list] = {}
     tiers_run: list[str] = []
     skipped: list[str] = []
+    had_runner_error = False
 
     prior_report: dict | None = None
     if resume_from is not None:
@@ -259,6 +264,7 @@ def _run_tiers(
             results["rules"] = rules_reviewer.review(targets, repo_path)
         tiers_run.append("rules")
         skipped.extend(f"rules: {name}: {reason}" for name, reason in rules_reviewer.skipped_runners)
+        had_runner_error = bool(rules_reviewer.runner_failures)
     elif reason:
         skipped.append(f"rules tier: {reason}")
 
@@ -292,7 +298,7 @@ def _run_tiers(
     elif cfg.cloud.enabled and reason:
         skipped.append(f"cloud tier: {reason}")
 
-    return results, tiers_run, skipped, current_file_hashes
+    return results, tiers_run, skipped, current_file_hashes, had_runner_error
 
 
 def _sanitize_slug(value: str) -> str:
@@ -382,6 +388,7 @@ def _finish(
     repo_label: str,
     pr_number: int | None = None,
     redact: bool = False,
+    had_runner_error: bool = False,
 ) -> None:
     console.print()
     print_report(report, console)
@@ -393,6 +400,17 @@ def _finish(
     console.print(
         f"\n[dim]Reports written to {json_path}, {md_path}, {docx_path}, and {xlsx_path}[/dim]"
     )
+
+    if had_runner_error:
+        # A configured sub-runner crashed mid-run (e.g. semgrep with a bad
+        # semgrep_config) -- zero findings from it is not a clean pass, it's
+        # an incomplete scan. Exit 2, same as any other config/tooling error,
+        # not 0 (clean) or 1 (findings at/above threshold).
+        console.print(
+            "\n[red]Error:[/red] a configured check failed to run -- see 'Skipped' above. "
+            "Not treating this as a clean pass."
+        )
+        raise typer.Exit(code=2)
 
     fail_threshold = Severity(cfg.thresholds.fail_on_severity)
     if report.findings_at_or_above(fail_threshold):
@@ -672,7 +690,7 @@ def diff(
                 )
                 raise typer.Exit(code=2)
 
-        results, tiers_run, skipped, file_hashes = _run_tiers(
+        results, tiers_run, skipped, file_hashes, had_runner_error = _run_tiers(
             targets, review_repo_path, cfg, "diff",
             force_local=force_local, device=device, resume_from=resume_from, frappe_db=frappe_db,
         )
@@ -693,7 +711,7 @@ def diff(
             skipped=skipped,
             file_hashes=file_hashes,
         )
-        _finish(report, output_dir, cfg, repo_label, pr_number=pr_number, redact=redact)
+        _finish(report, output_dir, cfg, repo_label, pr_number=pr_number, redact=redact, had_runner_error=had_runner_error)
 
 
 @app.command()
@@ -810,7 +828,7 @@ def audit(
 
         console.print(f"[dim]Auditing {len(targets)} file(s) in {effective_repo_path}[/dim]")
 
-        results, tiers_run, skipped, file_hashes = _run_tiers(
+        results, tiers_run, skipped, file_hashes, had_runner_error = _run_tiers(
             targets, effective_repo_path, cfg, "audit",
             force_local=force_local, device=device, resume_from=resume_from, frappe_db=frappe_db,
         )
@@ -831,7 +849,7 @@ def audit(
             skipped=skipped,
             file_hashes=file_hashes,
         )
-        _finish(report, output_dir, cfg, repo_label, redact=redact)
+        _finish(report, output_dir, cfg, repo_label, redact=redact, had_runner_error=had_runner_error)
 
 
 @app.command(name="audit-scripts")
@@ -917,7 +935,7 @@ def audit_scripts(
         # individual --config overrides (not a ruff.toml dropped into
         # temp_dir) so an operator's own project/user-level ruff config,
         # if ruff would otherwise discover one, still applies.
-        results, tiers_run, skipped, file_hashes = _run_tiers(
+        results, tiers_run, skipped, file_hashes, had_runner_error = _run_tiers(
             targets,
             temp_dir,
             cfg,
@@ -940,7 +958,7 @@ def audit_scripts(
             skipped=skipped,
             file_hashes=file_hashes,
         )
-        _finish(report, output_dir, cfg, repo_label, redact=redact)
+        _finish(report, output_dir, cfg, repo_label, redact=redact, had_runner_error=had_runner_error)
 
 
 def _load_report_file(path: Path) -> ReviewReport:

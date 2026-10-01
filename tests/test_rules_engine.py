@@ -230,3 +230,19 @@ def test_a_sub_runner_failure_is_recorded_as_skipped_not_raised(monkeypatch):
 
     assert findings == []
     assert dict(reviewer.skipped_runners)["semgrep"] == "semgrep exited 7"
+    # Distinct from an ordinary "unavailable" skip (e.g. binary not on
+    # PATH) -- this is a sub-runner that was configured and ran, then
+    # crashed, which a gate should treat as a hard failure.
+    assert reviewer.runner_failures == ["semgrep"]
+
+
+def test_runner_failures_stays_empty_for_an_ordinary_unavailable_skip(monkeypatch):
+    monkeypatch.setattr("codecheck.reviewers.rules_engine.shutil.which", lambda _name: None)
+    reviewer = RulesEngineReviewer(
+        RulesConfig(ruff=True, eslint=False, semgrep=False, house_rules=False)
+    )
+
+    reviewer.review([], Path("."))
+
+    assert "ruff" in dict(reviewer.skipped_runners)
+    assert reviewer.runner_failures == []

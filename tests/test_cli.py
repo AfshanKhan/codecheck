@@ -958,6 +958,34 @@ def test_gate_strict_still_fails_on_a_high_finding(sandbox_repo: Path, tmp_path:
     assert result.exit_code == 1
 
 
+def test_gate_fails_when_a_configured_runner_crashes_not_just_on_findings(
+    sandbox_repo: Path, tmp_path: Path
+):
+    # regression (Greptile review): a configured sub-runner crashing (e.g.
+    # semgrep with an invalid semgrep_config) used to be recorded as a
+    # skip, but the exit code only ever looked at findings -- so a scan
+    # that never actually ran could still "pass" the gate. Verified live
+    # before this test existed: a broken semgrep_config produced zero
+    # findings and exit code 0.
+    output_dir = tmp_path / "reports"
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "rules:\n  enabled: true\n  ruff: false\n  eslint: false\n  semgrep: true\n"
+        "  house_rules: false\n  semgrep_config: /nonexistent/rules/dir\n"
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "audit", "--repo-path", str(sandbox_repo),
+            "--config", str(config_path), "--output-dir", str(output_dir),
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "semgrep" in result.stdout
+
+
 def test_gate_rejects_an_unknown_profile_name(sandbox_repo: Path, tmp_path: Path):
     output_dir = tmp_path / "reports"
     result = runner.invoke(

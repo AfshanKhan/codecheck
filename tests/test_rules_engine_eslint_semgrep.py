@@ -84,9 +84,12 @@ def test_eslint_and_semgrep_invocations_include_arg_separator(tmp_path: Path):
 
     (tmp_path / "a.py").write_text("x = 1\n")
     changed_py = ReviewTarget(path="a.py", status="modified", diff_text="", changed_lines={1})
+    # --config=auto is incompatible with --metrics=off (semgrep refuses to
+    # run with both), so a local rules config is used here to exercise the
+    # arg-separator regression this test is actually about.
     with patch("codecheck.reviewers.rules_engine.shutil.which", return_value="/usr/bin/semgrep"), \
          patch("codecheck.reviewers.rules_engine.subprocess.run", return_value=_fake_completed_process("{}")) as mock_run:
-        SemgrepRunner().run([changed_py], tmp_path)
+        SemgrepRunner(config_path="/some/rules/dir").run([changed_py], tmp_path)
     assert "--" in mock_run.call_args.args[0]
     assert "--metrics=off" in mock_run.call_args.args[0]
 
@@ -132,11 +135,16 @@ def test_semgrep_uses_config_path_when_given_else_auto(tmp_path: Path):
          patch("codecheck.reviewers.rules_engine.subprocess.run", return_value=_fake_completed_process("{}")) as mock_run:
         SemgrepRunner().run([target], tmp_path)
     assert "--config=auto" in mock_run.call_args.args[0]
+    # regression: semgrep refuses to run at all with --config=auto and
+    # --metrics=off together ("Cannot create auto config when metrics are
+    # off") -- confirmed live. --metrics=off must not be sent for auto.
+    assert "--metrics=off" not in mock_run.call_args.args[0]
 
     with patch("codecheck.reviewers.rules_engine.shutil.which", return_value="/usr/bin/semgrep"), \
          patch("codecheck.reviewers.rules_engine.subprocess.run", return_value=_fake_completed_process("{}")) as mock_run:
         SemgrepRunner(config_path="/clone/of/frappe-semgrep-rules/rules").run([target], tmp_path)
     assert "--config=/clone/of/frappe-semgrep-rules/rules" in mock_run.call_args.args[0]
+    assert "--metrics=off" in mock_run.call_args.args[0]
 
 
 def test_semgrep_resolves_a_relative_config_path_against_cwd_not_repo_path(tmp_path: Path, monkeypatch):
