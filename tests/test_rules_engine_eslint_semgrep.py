@@ -2,6 +2,8 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from codecheck.models import ReviewTarget
 from codecheck.reviewers.rules_engine import EslintRunner, SemgrepRunner
 
@@ -135,3 +137,38 @@ def test_semgrep_uses_config_path_when_given_else_auto(tmp_path: Path):
          patch("codecheck.reviewers.rules_engine.subprocess.run", return_value=_fake_completed_process("{}")) as mock_run:
         SemgrepRunner(config_path="/clone/of/frappe-semgrep-rules/rules").run([target], tmp_path)
     assert "--config=/clone/of/frappe-semgrep-rules/rules" in mock_run.call_args.args[0]
+
+
+def test_semgrep_resolves_a_relative_config_path_against_cwd_not_repo_path(tmp_path: Path, monkeypatch):
+    # regression (Greptile review): semgrep itself runs with cwd=repo_path
+    # (the repo being reviewed), so a relative semgrep_config used to
+    # resolve against the wrong directory -- the reviewed repo, not wherever
+    # the user actually has the rules clone.
+    (tmp_path / "a.py").write_text("x = 1\n")
+    target = ReviewTarget(path="a.py", status="modified", diff_text="", changed_lines={1})
+
+    clone_dir = tmp_path / "elsewhere" / "frappe-semgrep-rules" / "rules"
+    clone_dir.mkdir(parents=True)
+    monkeypatch.chdir(clone_dir.parent)
+
+    with patch("codecheck.reviewers.rules_engine.shutil.which", return_value="/usr/bin/semgrep"), \
+         patch("codecheck.reviewers.rules_engine.subprocess.run", return_value=_fake_completed_process("{}")) as mock_run:
+        SemgrepRunner(config_path="rules").run([target], tmp_path)
+    assert f"--config={clone_dir}" in mock_run.call_args.args[0]
+
+
+def test_semgrep_raises_on_scan_failure_instead_of_looking_clean(tmp_path: Path):
+    # regression (Greptile review): a non-0/1 exit code (e.g. an invalid or
+    # missing semgrep_config) used to be silently treated as "zero
+    # findings," indistinguishable from a real clean scan.
+    (tmp_path / "a.py").write_text("x = 1\n")
+    target = ReviewTarget(path="a.py", status="modified", diff_text="", changed_lines={1})
+
+    failed = _fake_completed_process('{"errors": ["invalid configuration file found"]}')
+    failed.returncode = 7
+    failed.stderr = ""
+
+    with patch("codecheck.reviewers.rules_engine.shutil.which", return_value="/usr/bin/semgrep"), \
+         patch("codecheck.reviewers.rules_engine.subprocess.run", return_value=failed):
+        with pytest.raises(RuntimeError, match="semgrep exited 7"):
+            SemgrepRunner(config_path="/bad/rules/dir").run([target], tmp_path)

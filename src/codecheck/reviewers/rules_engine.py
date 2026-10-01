@@ -210,7 +210,11 @@ class SemgrepRunner(SubRunner):
         # A local rules directory (e.g. a clone of frappe/semgrep-rules)
         # takes over from semgrep's own registry lookup entirely -- that's
         # semgrep's own --config semantics, not something we layer here.
-        self.config_path = config_path
+        # Resolved to an absolute path now, against codecheck's own cwd --
+        # semgrep itself runs with cwd=repo_path (the repo being reviewed),
+        # so a relative path given here would otherwise resolve against the
+        # wrong directory once inside subprocess.run.
+        self.config_path = str(Path(config_path).expanduser().resolve()) if config_path else None
 
     def is_available(self, repo_path: Path) -> tuple[bool, str | None]:
         if shutil.which("semgrep") is None:
@@ -231,6 +235,15 @@ class SemgrepRunner(SubRunner):
             capture_output=True,
             text=True,
         )
+        # 0 = clean scan, 1 = scan found results -- both are a completed scan.
+        # Anything else (e.g. 7: invalid/missing config) is a real failure;
+        # treating it as "zero findings" would make a broken custom
+        # semgrep_config look like a clean scan instead of reporting nothing.
+        if result.returncode not in (0, 1):
+            raise RuntimeError(
+                f"semgrep exited {result.returncode} (config={config_value}): "
+                f"{result.stderr.strip() or result.stdout.strip()}"
+            )
         try:
             payload = json.loads(result.stdout or "{}")
         except json.JSONDecodeError:
@@ -425,7 +438,12 @@ class RulesEngineReviewer(Reviewer):
                 if reason:
                     self.skipped_runners.append((runner.name, reason))
                 continue
-            findings.extend(runner.run(targets, repo_path))
+            try:
+                findings.extend(runner.run(targets, repo_path))
+            except Exception as e:
+                # A sub-runner's own failure (e.g. semgrep exiting non-0/1 on
+                # an invalid config) must not abort the whole audit.
+                self.skipped_runners.append((runner.name, str(e)))
         if self.config.disabled_checks:
             disabled = set(self.config.disabled_checks)
             findings = [f for f in findings if f.check_id not in disabled]

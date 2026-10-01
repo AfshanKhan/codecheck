@@ -210,3 +210,23 @@ def test_rules_engine_passes_semgrep_config_through_to_runner():
     )
     (semgrep_runner,) = [r for r in reviewer._runners if isinstance(r, SemgrepRunner)]
     assert semgrep_runner.config_path == "/clone/of/frappe-semgrep-rules/rules"
+
+
+def test_a_sub_runner_failure_is_recorded_as_skipped_not_raised(monkeypatch):
+    # regression (Greptile review): a sub-runner failing mid-run (e.g.
+    # semgrep exiting non-0/1 on a bad semgrep_config) used to crash the
+    # whole rules-tier review instead of being recorded like any other
+    # unavailable/skipped runner.
+    monkeypatch.setattr("codecheck.reviewers.rules_engine.shutil.which", lambda _name: "/usr/bin/semgrep")
+    monkeypatch.setattr(
+        "codecheck.reviewers.rules_engine.SemgrepRunner.run",
+        lambda self, targets, repo_path: (_ for _ in ()).throw(RuntimeError("semgrep exited 7")),
+    )
+    reviewer = RulesEngineReviewer(
+        RulesConfig(ruff=False, eslint=False, semgrep=True, house_rules=False)
+    )
+
+    findings = reviewer.review([], Path("."))
+
+    assert findings == []
+    assert dict(reviewer.skipped_runners)["semgrep"] == "semgrep exited 7"
