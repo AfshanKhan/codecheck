@@ -63,9 +63,11 @@ focused on:
   - A @frappe.whitelist() function that writes via frappe.db.set_value, doc.db_set, \
 frappe.db.delete, raw DML, or any call with ignore_permissions=True, with no \
 frappe.has_permission / doc.check_permission() / role check anywhere in the path
-  - A @frappe.whitelist() function that reads via frappe.get_all, frappe.db.*, or \
-frappe.qb.get_query with no check -- none of these apply permissions. \
-frappe.get_list is the one read call that does.
+  - A @frappe.whitelist() function that reads via frappe.get_all / frappe.db.get_all, \
+frappe.db.get_value / frappe.db.sql / other frappe.db.* calls, or frappe.qb.get_query \
+with no check -- none of these apply permissions. frappe.get_list and \
+frappe.db.get_list (frappe.db.get_list is just a thin proxy to frappe.get_list, same \
+function) are the one read path that does.
   - A permission check on one DocType used to authorize a read or write of a \
 different DocType in the same function
   - ignore_permissions=True reachable from a request path, not just a scheduled job
