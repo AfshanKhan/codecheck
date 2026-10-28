@@ -250,7 +250,8 @@ def _run_tiers(
     had_runner_error). had_runner_error is True when a configured sub-runner
     (e.g. semgrep with a bad semgrep_config) crashed mid-run rather than
     just being unavailable, or when an LLM tier failed on every file it
-    tried (that tier is then left out of tiers_run) -- the caller should
+    tried (that tier is then left out of tiers_run), or when no tier ran at
+    all -- the caller should
     treat that as a hard failure, not a clean pass, even if no findings
     came back.
     resume_from, if given, reuses a prior run's non-skipped LLM results for
@@ -315,7 +316,9 @@ def _run_tiers(
     elif cfg.cloud.enabled and reason:
         skipped.append(f"cloud tier: {reason}")
 
-    return results, tiers_run, skipped, current_file_hashes, had_runner_error
+    # No tier ran at all (missing key, rules off, ...): nothing was checked,
+    # so "no findings" must not read as a clean pass.
+    return results, tiers_run, skipped, current_file_hashes, had_runner_error or not tiers_run
 
 
 def _sanitize_slug(value: str) -> str:
@@ -424,7 +427,7 @@ def _finish(
         # an incomplete scan. Exit 2, same as any other config/tooling error,
         # not 0 (clean) or 1 (findings at/above threshold).
         console.print(
-            "\n[red]Error:[/red] a configured check failed to run -- see 'Skipped' above. "
+            "\n[red]Error:[/red] a configured check failed to run, or no check ran -- see 'Skipped' above. "
             "Not treating this as a clean pass."
         )
         raise typer.Exit(code=2)

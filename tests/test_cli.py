@@ -387,7 +387,7 @@ def test_audit_ambiguous_device_without_flag_skips_non_interactively(
             ],
         )
 
-    assert result.exit_code == 0
+    assert result.exit_code == 2  # no tier ran: not a clean pass
     assert "pass --device" in result.stdout
     report = json.loads(_report_json_path(output_dir).read_text())
     assert "local_llm" not in report["tiers_run"]
@@ -441,7 +441,7 @@ def test_audit_ambiguous_device_with_unmatched_device_flag_skips(sandbox_repo: P
             ],
         )
 
-    assert result.exit_code == 0
+    assert result.exit_code == 2  # no tier ran: not a clean pass
     assert "does not match any candidate" in result.stdout
     report = json.loads(_report_json_path(output_dir).read_text())
     assert "local_llm" not in report["tiers_run"]
@@ -1294,3 +1294,14 @@ def test_maybe_suggest_fixes_falling_back_to_local_records_why(tmp_path: Path, m
     assert any(
         "suggest_fixes" in entry and "falling back to --local" in entry for entry in skipped
     )
+
+
+def test_audit_exits_2_when_no_tier_ran(sandbox_repo: Path, tmp_path: Path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("rules:\n  enabled: false\nlocal:\n  enabled: false\ncloud:\n  enabled: false\n")
+    result = runner.invoke(
+        app,
+        ["audit", "--repo-path", str(sandbox_repo), "--config", str(config_path), "--output-dir", str(tmp_path / "r")],
+    )
+    assert result.exit_code == 2
+    assert "no check ran" in result.stdout

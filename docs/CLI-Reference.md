@@ -487,7 +487,9 @@ mariadb` only, the Frappe default.
   it tried (API errors, unreachable server) -- the report *is* written in
   those cases (check "Skipped" in it for which runner or file and why, and
   that tier is left out of "tiers run"), but the run isn't treated as a
-  clean pass just because the failed check contributed zero findings. A
+  clean pass just because the failed check contributed zero findings. Exit 2
+  also when no tier ran at all (rules disabled and no usable LLM tier, e.g. a
+  missing API key), since nothing was checked. A
   tier that fails on only some files stays a normal run: those files are
   listed under "Skipped" and the exit code follows the findings. Transient
   API errors (HTTP 429, and 502/503/504/529 for up to 2 retries) are
