@@ -271,9 +271,13 @@ def test_audit_local_ollama_skips_lm_link_gate_entirely(sandbox_repo: Path, tmp_
 
     mock_resolve.assert_not_called()
     assert "Local LLM tier:" not in result.stdout
-    assert result.exit_code == 0
+    # exit 2: the deliberately unreachable server fails every file, which is
+    # a failed tier, not a clean pass -- this test is about the device gate.
+    assert result.exit_code == 2
     report = json.loads(_report_json_path(output_dir).read_text())
-    assert "local_llm" in report["tiers_run"]
+    # a tier that failed on every file is left out of tiers_run, so the
+    # proof it was attempted (not gated off) is its per-file skip entries
+    assert any(s.startswith("local_llm:") for s in report["skipped"])
     assert any("API request failed" in s for s in report["skipped"])
 
 
@@ -342,11 +346,15 @@ def test_diff_local_confirmed_remote_device_proceeds_without_force_local(
             ],
         )
 
-    assert result.exit_code == 0
+    # exit 2: the deliberately unreachable server fails every file, which is
+    # a failed tier, not a clean pass -- this test is about the device gate.
+    assert result.exit_code == 2
     report = json.loads(_report_json_path(output_dir).read_text())
     # confirmed remote -> tier actually ran (and then failed per-file on the
     # unreachable port, which is a skip-not-crash, not a tier-level skip)
-    assert "local_llm" in report["tiers_run"]
+    # a tier that failed on every file is left out of tiers_run, so the
+    # proof it was attempted (not gated off) is its per-file skip entries
+    assert any(s.startswith("local_llm:") for s in report["skipped"])
     assert any("API request failed" in s for s in report["skipped"])
     assert _report_json_path(output_dir).exists()
 
@@ -407,11 +415,15 @@ def test_audit_ambiguous_device_with_matching_device_flag_sets_preference(
         )
 
     mock_set.assert_called_once_with("remote-id")
-    assert result.exit_code == 0
+    # exit 2: the deliberately unreachable server fails every file, which is
+    # a failed tier, not a clean pass -- this test is about the device gate.
+    assert result.exit_code == 2
     report = json.loads(_report_json_path(output_dir).read_text())
     # the tier actually ran (proceeded past the ambiguity gate), then failed
     # per-file on the unreachable port -- proving it wasn't skipped by the gate
-    assert "local_llm" in report["tiers_run"]
+    # a tier that failed on every file is left out of tiers_run, so the
+    # proof it was attempted (not gated off) is its per-file skip entries
+    assert any(s.startswith("local_llm:") for s in report["skipped"])
 
 
 def test_audit_ambiguous_device_with_unmatched_device_flag_skips(sandbox_repo: Path, tmp_path: Path):
@@ -457,9 +469,13 @@ def test_audit_ambiguous_device_with_force_local_no_device_proceeds_unset(
         )
 
     mock_set.assert_not_called()
-    assert result.exit_code == 0
+    # exit 2: the deliberately unreachable server fails every file, which is
+    # a failed tier, not a clean pass -- this test is about the device gate.
+    assert result.exit_code == 2
     report = json.loads(_report_json_path(output_dir).read_text())
-    assert "local_llm" in report["tiers_run"]
+    # a tier that failed on every file is left out of tiers_run, so the
+    # proof it was attempted (not gated off) is its per-file skip entries
+    assert any(s.startswith("local_llm:") for s in report["skipped"])
 
 
 def test_diff_clean_change_exits_zero(sandbox_repo: Path, tmp_path: Path):
@@ -832,6 +848,8 @@ class _FakeReviewer:
 
     def __init__(self):
         self.skipped_files: list[tuple[str, str]] = []
+        self.failed_files: list[tuple[str, str]] = []
+        self.reviewed_count = 0
         self.received_targets: list[ReviewTarget] | None = None
 
     def review(self, targets, repo_path, on_progress=None):
@@ -916,6 +934,61 @@ def test_run_llm_tier_processes_everything_without_resume(tmp_path: Path):
 
     assert [t.path for t in reviewer.received_targets] == ["a.py"]
     assert resumed == 0
+
+
+def test_llm_tier_failed_completely_only_when_every_attempt_failed():
+    from codecheck.cli import _llm_tier_failed_completely
+
+    reviewer = _FakeReviewer()
+    assert _llm_tier_failed_completely(reviewer, resumed=0) is False  # nothing attempted
+
+    reviewer.skipped_files = [("big.py", "file too large (9999 lines > 800)")]
+    assert _llm_tier_failed_completely(reviewer, resumed=0) is False  # benign skip, not a failure
+
+    reviewer.failed_files = [("a.py", "API request failed: 503")]
+    assert _llm_tier_failed_completely(reviewer, resumed=0) is True
+
+    reviewer.reviewed_count = 1  # one file did succeed -- partial failure, not a total one
+    assert _llm_tier_failed_completely(reviewer, resumed=0) is False
+
+    reviewer.reviewed_count = 0
+    assert _llm_tier_failed_completely(reviewer, resumed=3) is False  # reused results from a prior run
+
+
+def test_audit_exits_2_and_omits_the_tier_when_every_cloud_call_fails(
+    sandbox_repo: Path, tmp_path: Path, monkeypatch
+):
+    # regression: found live running the Gemini route -- every call returned
+    # 503, yet the report said "No findings", "Compliance: 100.0%", listed
+    # cloud_llm as a tier that ran, and the run exited normally. A CI gate
+    # passed on a review that never happened.
+    import httpx
+
+    monkeypatch.setenv("FAKE_LLM_KEY", "k")
+    output_dir = tmp_path / "reports"
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "rules:\n  enabled: false\n"
+        "cloud:\n  enabled: true\n  provider: openai_compatible\n  model: m\n"
+        "  base_url: https://llm.example.test/v1/chat/completions\n  api_key_env: FAKE_LLM_KEY\n"
+    )
+
+    with patch(
+        "codecheck.reviewers.openai_protocol.post_with_retry",
+        side_effect=httpx.ConnectError("boom"),
+    ):
+        result = runner.invoke(
+            app,
+            [
+                "audit", "--repo-path", str(sandbox_repo),
+                "--config", str(config_path), "--output-dir", str(output_dir),
+            ],
+        )
+
+    assert result.exit_code == 2
+    report = json.loads(_report_json_path(output_dir).read_text())
+    assert "cloud_llm" not in report["tiers_run"]
+    assert any("API request failed" in entry for entry in report["skipped"])
 
 
 def test_version_flag_prints_version_and_exits():

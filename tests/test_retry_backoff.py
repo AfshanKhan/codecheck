@@ -105,3 +105,43 @@ def test_post_with_retry_ignores_unparseable_retry_after_and_uses_backoff():
         post_with_retry(client, "https://example.test", {})
 
     mock_sleep.assert_called_once_with(2.0)
+
+
+@pytest.mark.parametrize("status", [502, 503, 504, 529])
+def test_post_with_retry_retries_transient_server_errors_then_succeeds(status):
+    # regression: a Gemini 503 "model is currently experiencing high demand"
+    # failed the file immediately instead of being retried.
+    client = MagicMock()
+    client.post.side_effect = [_response(status), _response(200)]
+
+    with patch("codecheck.reviewers.openai_protocol.time.sleep"):
+        result = post_with_retry(client, "https://example.test", {})
+
+    assert client.post.call_count == 2
+    assert result.status_code == 200
+
+
+def test_post_with_retry_gives_up_on_a_persistent_503_after_two_retries():
+    # short fuse: a model that is down would otherwise stall every file in
+    # an audit for the full 429 retry budget (5 retries, up to ~60s each).
+    client = MagicMock()
+    client.post.side_effect = [_response(503) for _ in range(10)]
+
+    with patch("codecheck.reviewers.openai_protocol.time.sleep"):
+        with pytest.raises(httpx.HTTPStatusError):
+            post_with_retry(client, "https://example.test", {}, max_retries=5)
+
+    assert client.post.call_count == 3  # 1 initial attempt + 2 retries
+
+
+def test_post_with_retry_does_not_retry_a_plain_500():
+    # a 500 can be a deterministic server bug -- not worth waiting out
+    client = MagicMock()
+    client.post.return_value = _response(500)
+
+    with patch("codecheck.reviewers.openai_protocol.time.sleep") as mock_sleep:
+        with pytest.raises(httpx.HTTPStatusError):
+            post_with_retry(client, "https://example.test", {})
+
+    assert client.post.call_count == 1
+    mock_sleep.assert_not_called()

@@ -34,17 +34,33 @@ def _parse_retry_after(response: httpx.Response) -> float | None:
         return None
 
 
+# Transient server-side statuses (overload / gateway) -- retried, but with a
+# short fuse: unlike a 429 rate limit these usually mean the model is
+# overloaded or down, and a persistent outage would otherwise stall a
+# whole audit for minutes per file.
+_TRANSIENT_SERVER_STATUSES = frozenset({502, 503, 504, 529})
+_MAX_TRANSIENT_SERVER_RETRIES = 2
+
+
 def post_with_retry(
     client: httpx.Client, url: str, json_payload: dict, max_retries: int = DEFAULT_MAX_RETRIES
 ) -> httpx.Response:
-    """POST with automatic retry-with-backoff on HTTP 429. Honors the
-    server's Retry-After header, capped at _MAX_RETRY_DELAY_SECONDS. Any
-    non-429 error is raised immediately."""
+    """POST with automatic retry-with-backoff on HTTP 429 (up to max_retries)
+    and on transient server errors 502/503/504/529 (up to 2 retries). Honors
+    the server's Retry-After header, capped at _MAX_RETRY_DELAY_SECONDS. Any
+    other error is raised immediately."""
     delay = _INITIAL_RETRY_DELAY_SECONDS
     attempt = 0
     while True:
         response = client.post(url, json=json_payload)
-        if response.status_code != 429 or attempt >= max_retries:
+        status = response.status_code
+        if status == 429:
+            retry_limit = max_retries
+        elif status in _TRANSIENT_SERVER_STATUSES:
+            retry_limit = _MAX_TRANSIENT_SERVER_RETRIES
+        else:
+            retry_limit = 0
+        if attempt >= retry_limit:
             response.raise_for_status()
             return response
         wait = min(_parse_retry_after(response) or delay, _MAX_RETRY_DELAY_SECONDS)
@@ -201,6 +217,12 @@ class OpenAIProtocolReviewer(Reviewer):
         self.config = config
         self._client = client
         self.skipped_files: list[tuple[str, str]] = []
+        # The API/response-error subset of skipped_files (not benign skips
+        # like "file too large"), plus a count of files reviewed
+        # successfully -- together they let the CLI tell "every call
+        # failed" apart from "nothing needed review".
+        self.failed_files: list[tuple[str, str]] = []
+        self.reviewed_count = 0
 
     def _resolved_base_url(self) -> str | None:
         raise NotImplementedError
@@ -319,6 +341,8 @@ class OpenAIProtocolReviewer(Reviewer):
         """on_progress, if given, is called as on_progress(file_path, outcome)
         after each file is processed."""
         self.skipped_files = []
+        self.failed_files = []
+        self.reviewed_count = 0
         client = self._get_client()
         findings: list[Finding] = []
         finding_counter = 0
@@ -343,10 +367,12 @@ class OpenAIProtocolReviewer(Reviewer):
             raw_findings, error = self._review_file(client, target, content)
             if error:
                 self.skipped_files.append((target.path, error))
+                self.failed_files.append((target.path, error))
                 if on_progress:
                     on_progress(target.path, f"skipped: {error}")
                 continue
 
+            self.reviewed_count += 1
             file_finding_count = 0
             for raw in raw_findings:
                 finding_counter += 1

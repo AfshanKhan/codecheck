@@ -102,6 +102,8 @@ class AnthropicCloudReviewer(Reviewer):
         self.config = config
         self._client = client
         self.skipped_files: list[tuple[str, str]] = []
+        self.failed_files: list[tuple[str, str]] = []  # API/response-error subset of skipped_files
+        self.reviewed_count = 0
 
     def is_available(self, repo_path: Path) -> tuple[bool, str | None]:
         if not self.config.enabled:
@@ -134,6 +136,8 @@ class AnthropicCloudReviewer(Reviewer):
         """on_progress, if given, is called as on_progress(file_path, outcome)
         after each file is processed."""
         self.skipped_files = []
+        self.failed_files = []
+        self.reviewed_count = 0
         client = self._get_client()
         findings: list[Finding] = []
         finding_counter = 0
@@ -158,10 +162,12 @@ class AnthropicCloudReviewer(Reviewer):
             raw_findings, error = self._review_file(client, target, content)
             if error:
                 self.skipped_files.append((target.path, error))
+                self.failed_files.append((target.path, error))
                 if on_progress:
                     on_progress(target.path, f"skipped: {error}")
                 continue
 
+            self.reviewed_count += 1
             file_finding_count = 0
             for raw in raw_findings:
                 finding_counter += 1
