@@ -483,9 +483,15 @@ mariadb` only, the Frappe default.
   `--gate` value, or the audit cloud cap blocked the run) -- no report is
   written in this case. Also used when a configured rules sub-runner (e.g.
   semgrep with an invalid `semgrep_config`) crashed mid-run instead of
-  completing -- the report *is* written in that case (check "Skipped" in
-  it for which runner and why), but the run isn't treated as a clean pass
-  just because the crashed runner contributed zero findings.
+  completing, or when an LLM tier (local or cloud) failed on *every* file
+  it tried (API errors, unreachable server) -- the report *is* written in
+  those cases (check "Skipped" in it for which runner or file and why, and
+  that tier is left out of "tiers run"), but the run isn't treated as a
+  clean pass just because the failed check contributed zero findings. A
+  tier that fails on only some files stays a normal run: those files are
+  listed under "Skipped" and the exit code follows the findings. Transient
+  API errors (HTTP 429, and 502/503/504/529 for up to 2 retries) are
+  retried with backoff before a file counts as failed.
   A `base_ref` naming a ref that doesn't exist at all
   used to crash with a raw Python traceback instead — `git.GitCommandError`
   from `repo.merge_base()` wasn't caught alongside the other `ValueError`

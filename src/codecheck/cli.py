@@ -225,6 +225,15 @@ def _run_llm_tier(
     return reused_findings + new_findings, skip_entries, len(already_done)
 
 
+def _llm_tier_failed_completely(reviewer, resumed: int) -> bool:
+    """True when an LLM tier tried to review files and every attempt failed
+    (API errors, bad responses) -- nothing reviewed, nothing resumed from a
+    prior run. A tier that merely had nothing to review (e.g. every file too
+    large) is not a failure. Without this, an outage reads as "No findings /
+    100% compliance" and a CI gate passes on a review that never happened."""
+    return bool(reviewer.failed_files) and reviewer.reviewed_count == 0 and resumed == 0
+
+
 def _run_tiers(
     targets: list[ReviewTarget],
     repo_path: Path,
@@ -240,8 +249,10 @@ def _run_tiers(
     Returns (results_by_tier, tiers_run, skip_reasons, current_file_hashes,
     had_runner_error). had_runner_error is True when a configured sub-runner
     (e.g. semgrep with a bad semgrep_config) crashed mid-run rather than
-    just being unavailable -- the caller should treat that as a hard
-    failure, not a clean pass, even if no findings came back.
+    just being unavailable, or when an LLM tier failed on every file it
+    tried (that tier is then left out of tiers_run) -- the caller should
+    treat that as a hard failure, not a clean pass, even if no findings
+    came back.
     resume_from, if given, reuses a prior run's non-skipped LLM results for
     unchanged files."""
     results: dict[str, list] = {}
@@ -276,8 +287,11 @@ def _run_tiers(
             current_file_hashes, "Running local LLM review...",
         )
         results["local_llm"] = findings
-        tiers_run.append("local_llm")
         skipped.extend(skip_entries)
+        if _llm_tier_failed_completely(local_reviewer, resumed):
+            had_runner_error = True
+        else:
+            tiers_run.append("local_llm")
         if resumed:
             console.print(f"[dim]Resumed: {resumed} file(s) already reviewed by local_llm, not re-requested.[/dim]")
     elif cfg.local.enabled and reason:
@@ -291,8 +305,11 @@ def _run_tiers(
             current_file_hashes, "Running cloud LLM review...",
         )
         results["cloud_llm"] = findings
-        tiers_run.append("cloud_llm")
         skipped.extend(skip_entries)
+        if _llm_tier_failed_completely(cloud_reviewer, resumed):
+            had_runner_error = True
+        else:
+            tiers_run.append("cloud_llm")
         if resumed:
             console.print(f"[dim]Resumed: {resumed} file(s) already reviewed by cloud_llm, not re-requested.[/dim]")
     elif cfg.cloud.enabled and reason:

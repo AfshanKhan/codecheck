@@ -280,3 +280,28 @@ def test_review_records_api_error_as_skip(tmp_path: Path):
     assert findings == []
     assert len(reviewer.skipped_files) == 1
     assert reviewer.skipped_files[0][0] == "a.py"
+
+
+def test_review_tracks_api_failures_separately_from_benign_skips(tmp_path: Path):
+    # A file that was too large to send is a benign skip; a file whose API
+    # call failed is a failure -- the CLI needs to tell them apart to know
+    # whether the tier effectively never ran.
+    import httpx
+
+    (tmp_path / "big.py").write_text("x = 1\n" * 5000)
+    (tmp_path / "a.py").write_text("x = 1\n")
+    mock_client = MagicMock()
+    mock_client.post.side_effect = httpx.ConnectError("boom")
+
+    reviewer = AnthropicCloudReviewer(CloudConfig(enabled=True), client=mock_client)
+    reviewer.review(
+        [
+            ReviewTarget(path="big.py", status="scanned"),
+            ReviewTarget(path="a.py", status="scanned"),
+        ],
+        tmp_path,
+    )
+
+    assert {path for path, _ in reviewer.skipped_files} == {"big.py", "a.py"}
+    assert [path for path, _ in reviewer.failed_files] == ["a.py"]
+    assert reviewer.reviewed_count == 0
