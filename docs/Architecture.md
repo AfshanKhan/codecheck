@@ -825,7 +825,9 @@ Deliberately a presence check, not a `git ls-files`-backed tracked-status
 check: it flags any `.env` file present in the checkout and not matched by
 a `.gitignore` (checking every directory from the repo root down to that
 `.env`'s own directory, not just the root — a nested app-level `.gitignore`
-counts too), regardless of whether it's actually been committed yet.
+counts too, and so do the git root's and any ancestor's when `--repo-path` selects a
+subdirectory; they're applied root first so a deeper `!pattern` overrides a shallower
+ignore, as in git), regardless of whether it's actually been committed yet.
 Catching one before `.gitignore` covers it is at least as valuable as
 catching one after the fact, and it avoids depending on git state a plain
 filesystem scan doesn't need. Doesn't try to detect a secret *inside* file

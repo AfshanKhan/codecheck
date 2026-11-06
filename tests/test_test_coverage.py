@@ -154,3 +154,11 @@ def test_password_is_not_mistaken_for_a_pass_stub():
     assert _looks_like_real_test(target) is True
     stub = ReviewTarget(path="test_x.py", status="modified", diff_text="+    pass\n", changed_lines={1})
     assert _looks_like_real_test(stub) is False
+
+
+def test_jasmine_focused_tests_count_as_test_declarations():
+    from codecheck.reviewers.rules_engine import _looks_like_real_test
+
+    for call in ("fit('does a thing', () => {})", "fdescribe('suite', () => {})"):
+        target = ReviewTarget(path="a.spec.js", status="added", diff_text=f"+{call}\n", changed_lines={1})
+        assert _looks_like_real_test(target) is True, call

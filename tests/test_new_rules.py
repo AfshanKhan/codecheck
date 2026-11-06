@@ -875,3 +875,26 @@ def test_env_variant_files_are_flagged_but_templates_are_not(tmp_path):
     (tmp_path / ".envrc").write_text("export X=1\n")  # direnv file, not a dotenv variant
     findings = SecretsInRepoRunner().run([], tmp_path)
     assert sorted(f.file for f in findings) == [".env.local", ".env.production"]
+
+
+def test_nested_negation_overrides_a_root_wildcard_ignore(tmp_path):
+    # root ignores .env*, but app/.gitignore re-includes .env.production: git does NOT ignore it
+    (tmp_path / ".git").mkdir()
+    app_dir = tmp_path / "app"
+    app_dir.mkdir()
+    (tmp_path / ".gitignore").write_text(".env*\n")
+    (app_dir / ".gitignore").write_text("!.env.production\n")
+    (app_dir / ".env.production").write_text("SECRET=1\n")
+    (app_dir / ".env.local").write_text("SECRET=1\n")  # still covered by the root rule
+    assert [f.file for f in SecretsInRepoRunner().run([], tmp_path)] == ["app/.env.production"]
+
+
+def test_ancestor_gitignore_applies_when_scanning_a_subdirectory(tmp_path):
+    # `--repo-path app` inside a repo whose root .gitignore covers .env.*: no false finding
+    (tmp_path / ".git").mkdir()
+    app_dir = tmp_path / "app"
+    app_dir.mkdir()
+    (tmp_path / ".gitignore").write_text(".env.*\n")
+    (app_dir / ".env.local").write_text("SECRET=1\n")
+    assert SecretsInRepoRunner().run([], app_dir) == []
+    assert [f.file for f in SecretsInRepoRunner().run([], tmp_path)] == []

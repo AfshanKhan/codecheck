@@ -17,8 +17,11 @@ def get_repo_files(repo_path: Path) -> list[ReviewTarget]:
     # -z keeps non-ASCII names verbatim; without it git quotes them ("caf\303\251.py")
     # and the is_file() check below silently drops the file.
     git_in_path = git.Git(str(repo_path))
-    tracked = git_in_path.ls_files(z=True).split("\0")
-    untracked = git_in_path.ls_files(z=True, others=True, exclude_standard=True).split("\0")
+    try:
+        tracked = git_in_path.ls_files(z=True).split("\0")
+        untracked = git_in_path.ls_files(z=True, others=True, exclude_standard=True).split("\0")
+    except (git.GitCommandError, git.NoSuchPathError) as e:
+        raise ValueError(f"{repo_path} is not a readable git repository: {e}") from e
     paths = sorted((set(tracked) | set(untracked)) - {""})
 
     targets = []

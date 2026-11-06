@@ -1337,14 +1337,24 @@ def test_non_utf8_config_exits_2_with_a_clean_error(tmp_path: Path):
     assert "invalid config" in result.output
 
 
-def test_unreadable_config_exits_2_with_a_clean_error(tmp_path: Path):
+def test_unreadable_config_exits_2_with_a_clean_error(tmp_path: Path, monkeypatch):
+    # Typer's readable-path check usually rejects such a file first, and chmod 000 does nothing
+    # when the tests run with enough privileges -- so make the read itself fail, deterministically
     config = tmp_path / "c.yaml"
     config.write_text("thresholds: {}\n")
-    config.chmod(0o000)
-    try:
-        result = runner.invoke(app, ["audit", "--config", str(config), "--output-dir", str(tmp_path / "out")])
-    finally:
-        config.chmod(0o600)
-    # Typer's own readable-path check rejects it first (usage error, still exit 2)
-    assert result.exit_code == 2
 
+    def _deny(_path):
+        raise PermissionError("denied")
+
+    monkeypatch.setattr("codecheck.cli.load_config", _deny)
+    result = runner.invoke(app, ["audit", "--config", str(config), "--output-dir", str(tmp_path / "out")])
+    assert result.exit_code == 2
+    assert "invalid config" in result.output
+
+
+def test_audit_of_a_non_git_directory_exits_2_not_a_traceback(tmp_path: Path):
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    result = runner.invoke(app, ["audit", "--repo-path", str(plain), "--output-dir", str(tmp_path / "out")])
+    assert result.exit_code == 2
+    assert "not a readable git repository" in result.output

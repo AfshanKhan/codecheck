@@ -275,3 +275,36 @@ def test_eslint_fatal_exit_is_a_runner_failure_not_a_clean_scan(tmp_path: Path, 
     reviewer.review([target], tmp_path)
 
     assert reviewer.runner_failures == ["eslint"]
+
+
+def _fake_run(stdout: str, returncode: int = 0):
+    return lambda *a, **k: subprocess.CompletedProcess(a, returncode, stdout=stdout, stderr="")
+
+
+def test_semgrep_unparseable_output_is_a_runner_failure_not_a_clean_scan(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("codecheck.reviewers.rules_engine.shutil.which", lambda _n: "/usr/bin/semgrep")
+    monkeypatch.setattr("codecheck.reviewers.rules_engine.subprocess.run", _fake_run("Traceback (most recent call last)"))
+    reviewer = RulesEngineReviewer(RulesConfig(ruff=False, eslint=False, semgrep=True, house_rules=False))
+
+    reviewer.review([ReviewTarget(path="a.py", status="scanned", changed_lines=None)], tmp_path)
+
+    assert reviewer.runner_failures == ["semgrep"]
+    assert "unparseable" in dict(reviewer.skipped_runners)["semgrep"]
+
+
+@pytest.mark.parametrize("tool", ["ruff", "eslint", "semgrep"])
+def test_valid_json_of_the_wrong_shape_is_a_runner_failure(tmp_path: Path, monkeypatch, tool: str):
+    # a JSON object where a list is expected (or vice versa) used to blow up in the parsing loop
+    # with a confusing AttributeError; it must be reported as the tool producing unexpected output
+    (tmp_path / "eslint.config.js").write_text("module.exports = [];\n")
+    monkeypatch.setattr("codecheck.reviewers.rules_engine.shutil.which", lambda _n: f"/usr/bin/{tool}")
+    wrong_shape = "[]" if tool == "semgrep" else "{}"
+    monkeypatch.setattr("codecheck.reviewers.rules_engine.subprocess.run", _fake_run(wrong_shape))
+    target = ReviewTarget(path="a.js" if tool == "eslint" else "a.py", status="scanned", changed_lines=None)
+    config = RulesConfig(ruff=tool == "ruff", eslint=tool == "eslint", semgrep=tool == "semgrep", house_rules=False)
+    reviewer = RulesEngineReviewer(config)
+
+    reviewer.review([target], tmp_path)
+
+    assert reviewer.runner_failures == [tool]
+    assert "unexpected output" in dict(reviewer.skipped_runners)[tool]

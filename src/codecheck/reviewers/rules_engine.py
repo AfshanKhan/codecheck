@@ -78,6 +78,8 @@ class RuffRunner(SubRunner):
             raw_findings = json.loads(result.stdout or "[]")
         except json.JSONDecodeError as e:
             raise RuntimeError(f"ruff produced unparseable output: {e}") from e
+        if not isinstance(raw_findings, list):
+            raise RuntimeError("ruff produced unexpected output (expected a JSON list)")
 
         findings = []
         for item in raw_findings:
@@ -173,6 +175,8 @@ class EslintRunner(SubRunner):
             raw_results = json.loads(result.stdout or "[]")
         except json.JSONDecodeError as e:
             raise RuntimeError(f"eslint produced unparseable output: {e}") from e
+        if not isinstance(raw_results, list):
+            raise RuntimeError("eslint produced unexpected output (expected a JSON list)")
 
         findings = []
         for file_result in raw_results:
@@ -254,8 +258,10 @@ class SemgrepRunner(SubRunner):
             )
         try:
             payload = json.loads(result.stdout or "{}")
-        except json.JSONDecodeError:
-            return []
+        except json.JSONDecodeError as e:
+            raise RuntimeError(f"semgrep produced unparseable output: {e}") from e
+        if not isinstance(payload, dict):
+            raise RuntimeError("semgrep produced unexpected output (expected a JSON object)")
 
         findings = []
         for item in payload.get("results", []):
@@ -309,7 +315,7 @@ class HouseRulesRunner(SubRunner):
 
 _APP_EXTENSIONS = (".py", ".js", ".jsx", ".ts", ".tsx")
 # Word-boundary anchored, so "latest(" / "split(" / "submit(" don't count as a test declaration.
-_TEST_MARKER_RE = re.compile(r"\bdef test_|\b(?:test|it|describe)\(")
+_TEST_MARKER_RE = re.compile(r"\bdef test_|\b(?:test|it|describe|fit|fdescribe)\(")
 _PASS_STATEMENT_RE = re.compile(r"\bpass\b")
 
 # Matches test-file conventions, not just a "test" substring (which would

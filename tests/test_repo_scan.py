@@ -90,3 +90,10 @@ def test_get_repo_files_on_a_subdirectory_returns_paths_relative_to_it(tmp_path:
     _run(repo, "commit", "-q", "-m", "i")
 
     assert [t.path for t in get_repo_files(repo / "sub")] == ["s.py"]
+
+
+def test_get_repo_files_outside_a_git_repo_raises_value_error(tmp_path: Path):
+    plain = tmp_path / "not_a_repo"
+    plain.mkdir()
+    with pytest.raises(ValueError, match="not a readable git repository"):
+        get_repo_files(plain)

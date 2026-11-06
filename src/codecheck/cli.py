@@ -842,7 +842,11 @@ def audit(
         else:
             effective_repo_path = repo_path.resolve()
 
-        targets = get_repo_files(effective_repo_path)
+        try:
+            targets = get_repo_files(effective_repo_path)
+        except ValueError as e:
+            console.print(f"[red]Error:[/red] {e}")
+            raise typer.Exit(code=2)
         if not targets:
             console.print("[yellow]No files found to audit.[/yellow]")
             raise typer.Exit(code=0)
