@@ -47,6 +47,10 @@ def daily_quota_hit(text: str) -> bool:
     return "perday" in text.lower().replace(" ", "").replace("_", "")
 
 
+class DailyQuotaExceeded(httpx.HTTPStatusError):
+    """A 429 whose body says the per-day quota is gone. Decided from the whole response body."""
+
+
 def post_with_retry(
     client: httpx.Client, url: str, json_payload: dict, max_retries: int = DEFAULT_MAX_RETRIES
 ) -> httpx.Response:
@@ -68,7 +72,12 @@ def post_with_retry(
         else:
             retry_limit = 0
         if attempt >= retry_limit:
-            response.raise_for_status()
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as e:
+                if status == 429 and daily_quota_hit(response.text):
+                    raise DailyQuotaExceeded(str(e), request=e.request, response=e.response) from e
+                raise
             return response
         wait = min(_parse_retry_after(response) or delay, _MAX_RETRY_DELAY_SECONDS)
         time.sleep(wait)
@@ -224,6 +233,7 @@ def _extract_findings_from_content(content: str | None) -> list[dict] | None:
 class OpenAIProtocolReviewer(Reviewer):
     check_id_prefix: ClassVar[str] = "LLM"
     _disabled_message: ClassVar[str] = "tier disabled"
+    _daily_quota = False   # set when the last failed request was a per-day quota 429
 
     def __init__(self, config, client: httpx.Client | None = None):
         self.config = config
@@ -294,6 +304,7 @@ class OpenAIProtocolReviewer(Reviewer):
         try:
             response = post_with_retry(client, self._resolved_base_url(), payload)
         except httpx.HTTPError as e:
+            self._daily_quota = isinstance(e, DailyQuotaExceeded)
             return [], f"API request failed: {format_http_error(e)}"
 
         try:
@@ -369,6 +380,7 @@ class OpenAIProtocolReviewer(Reviewer):
         self.skipped_files = []
         self.failed_files = []
         self.reviewed_count = 0
+        self._daily_quota = False
         client = self._get_client()
         findings: list[Finding] = []
         finding_counter = 0
@@ -403,7 +415,7 @@ class OpenAIProtocolReviewer(Reviewer):
             if error:
                 self.skipped_files.append((target.path, error))
                 self.failed_files.append((target.path, error))
-                if daily_quota_hit(error):
+                if self._daily_quota:
                     stop_reason = "daily request quota for this API key is used up, not reviewed"
                 if on_progress:
                     on_progress(target.path, f"skipped: {error}")

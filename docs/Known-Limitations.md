@@ -37,7 +37,8 @@
   which is also a per-file skip.
 - `skip_noise` is a syntactic heuristic. It never reads for meaning, so a file it calls
   boilerplate (imports and `pass` only) is assumed to hold nothing worth reviewing, and
-  tests are never reviewed by the LLM. Turn it off to send everything.
+  tests are never reviewed by the LLM. Turning `skip_noise` off only disables this filter: GitHub
+  workflow/action files are still never sent, and `extensions` still applies.
 - Thinking models (e.g. Gemini) count their reasoning against the output-token budget.
   An empty reply is retried once with a larger budget, but a very large file can still
   come back empty and is skipped.

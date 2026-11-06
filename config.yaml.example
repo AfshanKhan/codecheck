@@ -13,7 +13,8 @@ cloud:
   enabled: false          # can be overridden by --cloud
   provider: anthropic     # anthropic | groq | mistral | cerebras | openrouter | google | openai_compatible
   model: "claude-sonnet-4-6"
-  api_key_env: "ANTHROPIC_API_KEY"   # unset (or omit) to use the provider's default env var name
+  # api_key_env: "ANTHROPIC_API_KEY"   # leave unset to use the provider's default env var name. If you switch
+  #                                     # `provider`, do not leave this pointing at another provider's key
   max_file_lines: 800      # files larger than this are skipped in the cloud tier
   audit_file_cap: 50       # `audit --cloud` refuses to run over this many files without --force-cloud
   request_timeout_seconds: 120   # hosted APIs are fast; rarely needs raising

@@ -20,6 +20,7 @@ import httpx
 from codecheck.config import CloudConfig, LocalConfig
 from codecheck.diff import read_file_content
 from codecheck.models import Finding, ReviewTarget, Severity
+from codecheck.noise import partition
 from codecheck.reviewers.base import Reviewer
 from codecheck.reviewers.openai_protocol import (
     SYSTEM_PROMPT,
@@ -109,10 +110,12 @@ def cloud_targets(targets: list[ReviewTarget], config: CloudConfig | LocalConfig
     return [t for t in targets if Path(t.path).suffix.lower() in wanted]
 
 
-def exceeds_audit_cap(targets: list[ReviewTarget], config: CloudConfig, force: bool) -> int | None:
+def exceeds_audit_cap(targets: list[ReviewTarget], config: CloudConfig, force: bool, repo_path: Path | None = None) -> int | None:
     """Returns the eligible file count if it exceeds config.audit_file_cap and
     force wasn't passed, else None."""
     eligible = [t for t in cloud_targets(targets, config) if t.status != "deleted"]
+    if config.skip_noise and repo_path is not None:        # tests, bundles, empty files... are not sent, so do not count
+        eligible = partition(eligible, repo_path)[0]
     if not force and len(eligible) > config.audit_file_cap:
         return len(eligible)
     return None

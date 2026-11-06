@@ -356,3 +356,33 @@ def test_github_workflow_and_action_files_are_never_sent_to_an_llm():
     assert [t.path for t in cloud_targets(ts, CloudConfig())] == ["src/app.py", "docs/github/workflows/x.py"]      # even with no extension filter
     assert [t.path for t in cloud_targets(ts, CloudConfig(extensions=[".py", ".yml"]))] == ["src/app.py", "docs/github/workflows/x.py"]
     assert exceeds_audit_cap(ts, CloudConfig(audit_file_cap=1), force=False) == 2
+
+
+def _resp(status, text, url="http://x/chat"):
+    return httpx.Response(status, text=text, request=httpx.Request("POST", url))
+
+
+def _review_three(tmp_path, monkeypatch, response):
+    monkeypatch.setenv("GEMINI_API_KEY", "k")
+    names = ("a.py", "b.py", "c.py")
+    for n in names:
+        (tmp_path / n).write_text("x = 1\n")
+    targets = [ReviewTarget(path=n, status="modified", diff_text="", changed_lines={1}) for n in names]
+    mock_client = MagicMock()
+    mock_client.post.return_value = response
+    reviewer = OpenAICompatibleCloudReviewer(CloudConfig(enabled=True, provider="google"), client=mock_client)
+    reviewer.review(targets, tmp_path)
+    return reviewer, mock_client
+
+
+def test_daily_quota_is_found_even_when_the_marker_is_past_the_shortened_error_text(tmp_path: Path, monkeypatch):
+    body = "Quota exceeded. " + "details " * 200 + "GenerateRequestsPerDayPerProjectPerModel-FreeTier"
+    reviewer, client = _review_three(tmp_path, monkeypatch, _resp(429, body))
+    assert client.post.call_count == 1
+    assert "daily request quota" in reviewer.skipped_files[1][1]
+
+
+def test_a_per_day_url_does_not_stop_the_review(tmp_path: Path, monkeypatch):
+    reviewer, client = _review_three(tmp_path, monkeypatch, _resp(400, "bad request", url="https://api.example.com/PerDay/chat"))
+    assert client.post.call_count == 3                                                   # every file was still tried
+    assert not any("daily request quota" in reason for _, reason in reviewer.skipped_files)

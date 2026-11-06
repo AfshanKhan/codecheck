@@ -574,6 +574,12 @@ audit with no diff (`audit` mode).
   `if TYPE_CHECKING:` blocks; JS: re-export-only barrels and empty Frappe form scripts). The files left out
   are summarised in one `skipped` line ("N file(s) not sent to the AI (...)") rather than listed one by one.
 - Rules (Tier 1) are unaffected and see every file.
+- The audit/diff file cap counts only the files that will really be sent (after these filters, including
+  `skip_noise`).
+- The report's `llm_sent` field records, per tier, the files that tier was given. `--resume-from` only reuses a
+  prior result for a file listed there, so a file that was filtered out last time is reviewed when the
+  settings change, not mistaken for already reviewed.
+- `--suggest-fixes` applies the workflow/action-file exclusion too.
 
 **Per-file skip conditions** (recorded in the reviewer's `skipped_files` and
 surfaced in the final report's "Skipped" section, not silently dropped):
@@ -589,8 +595,9 @@ surfaced in the final report's "Skipped" section, not silently dropped):
   against a real 400 from Groq where the bare exception message alone gave no
   indication of the cause.
 - A response comes back without the expected tool call block (`tool_use` for
-  Anthropic, `tool_calls` for OpenAI-compatible) → retried once (models do this
-  intermittently), then treated as a skip, not a crash. The skip reason says
+  Anthropic, `tool_calls` for OpenAI-compatible) → treated as a skip, not a crash. The
+  OpenAI-compatible backends (including Google) first retry once, since models do this
+  intermittently; the Anthropic backend does not retry. The skip reason says
   whether the reply was empty or plain text and gives the `finish_reason`. When it
   was `length` (a thinking model — seen with Gemini — spent its whole 4096-token
   output budget reasoning), the retry allows 16384 tokens.
@@ -602,8 +609,9 @@ surfaced in the final report's "Skipped" section, not silently dropped):
   backends; see `post_with_retry()`'s callers in `openai_protocol.py` and
   `cloud_llm.py` for the exact guard clauses.
 
-**A per-day quota 429 stops the tier.** A 429 whose body mentions a per-day limit (Google's
-`...PerDay...` quota ids) is not retried, since waiting won't help until tomorrow; the
+**A per-day quota 429 stops the tier.** A 429 whose *response body* mentions a per-day limit (Google's
+`...PerDay...` quota ids) is not retried, since waiting won't help until tomorrow; `post_with_retry()`
+raises `DailyQuotaExceeded`, so the decision never depends on the shortened error text. The
 files after it are skipped with `"daily request quota for this API key is used up"`.
 
 **429 (rate limited) is handled differently from other HTTP errors** — it

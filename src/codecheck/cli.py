@@ -48,6 +48,7 @@ from codecheck.reviewers.cloud_llm import (
     build_cloud_reviewer,
     cloud_targets,
     exceeds_audit_cap,
+    without_ci_files,
 )
 from codecheck.reviewers.local_llm import LocalLLMReviewer
 from codecheck.reviewers.openai_protocol import OpenAIProtocolReviewer
@@ -214,10 +215,13 @@ def _run_llm_tier(
         )
 
     remaining_targets = [t for t in targets if t.path not in already_done]
+    sent_paths = sorted({t.path for t in remaining_targets} | already_done)   # recorded in the report for --resume-from
     left_out_note = None
     if getattr(getattr(reviewer, "config", None), "skip_noise", False):
         remaining_targets, left_out = partition(remaining_targets, repo_path)
         left_out_note = summary(left_out) if left_out else None
+        sent_paths = sorted({t.path for t in remaining_targets} | already_done)
+    reviewer.sent_paths = sent_paths
     total = len(remaining_targets)
     completed = 0
 
@@ -257,6 +261,7 @@ def _run_tiers(
     resume_from: Path | None = None,
     frappe_db: FrappeDbConnection | None = None,
     ruff_extra_config: list[str] | None = None,
+    sent_out: dict[str, list[str]] | None = None,
 ) -> tuple[dict[str, list], list[str], list[str], dict[str, str], bool]:
     """Runs the rules tier and (if available) the local and cloud LLM tiers.
     Returns (results_by_tier, tiers_run, skip_reasons, current_file_hashes,
@@ -268,7 +273,7 @@ def _run_tiers(
     treat that as a hard failure, not a clean pass, even if no findings
     came back.
     resume_from, if given, reuses a prior run's non-skipped LLM results for
-    unchanged files."""
+    unchanged files. sent_out, if given, is filled with the files each LLM tier was given."""
     results: dict[str, list] = {}
     tiers_run: list[str] = []
     skipped: list[str] = []
@@ -301,6 +306,8 @@ def _run_tiers(
             current_file_hashes, "Running local LLM review...",
         )
         results["local_llm"] = findings
+        if sent_out is not None:
+            sent_out["local_llm"] = local_reviewer.sent_paths
         skipped.extend(skip_entries)
         if _llm_tier_failed_completely(local_reviewer, resumed):
             had_runner_error = True
@@ -319,6 +326,8 @@ def _run_tiers(
             current_file_hashes, "Running cloud LLM review...",
         )
         results["cloud_llm"] = findings
+        if sent_out is not None:
+            sent_out["cloud_llm"] = cloud_reviewer.sent_paths
         skipped.extend(skip_entries)
         if _llm_tier_failed_completely(cloud_reviewer, resumed):
             had_runner_error = True
@@ -525,7 +534,7 @@ def _maybe_suggest_fixes(
         )
         return
 
-    targets_by_path = {t.path: t for t in targets}
+    targets_by_path = {t.path: t for t in without_ci_files(targets)}   # workflow/action files never go to an LLM
     exclude_checks = set(cfg.suggestions.exclude_checks)
     with console.status("[bold]Generating fix suggestions..."):
         count, suggest_skips = generate_suggestions(
@@ -723,7 +732,7 @@ def diff(
 
         if cfg.cloud.enabled:
             # Apply the same per-run file cap as `audit`.
-            capped_count = exceeds_audit_cap(targets, cfg.cloud, force=force_cloud)
+            capped_count = exceeds_audit_cap(targets, cfg.cloud, force=force_cloud, repo_path=review_repo_path)
             if capped_count is not None:
                 console.print(
                     f"[red]Refusing to run the cloud tier over {capped_count} changed files[/red] "
@@ -733,9 +742,11 @@ def diff(
                 )
                 raise typer.Exit(code=2)
 
+        llm_sent: dict[str, list[str]] = {}
         results, tiers_run, skipped, file_hashes, had_runner_error = _run_tiers(
             targets, review_repo_path, cfg, "diff",
             force_local=force_local, device=device, resume_from=resume_from, frappe_db=frappe_db,
+            sent_out=llm_sent,
         )
         skipped = skipped_early + skipped
         findings = aggregate(results)
@@ -753,6 +764,7 @@ def diff(
             duration_seconds=time.monotonic() - start,
             skipped=skipped,
             file_hashes=file_hashes,
+            llm_sent=llm_sent,
         )
         _finish(report, output_dir, cfg, repo_label, pr_number=pr_number, redact=redact, had_runner_error=had_runner_error)
 
@@ -863,7 +875,7 @@ def audit(
             raise typer.Exit(code=0)
 
         if cfg.cloud.enabled:
-            capped_count = exceeds_audit_cap(targets, cfg.cloud, force=force_cloud)
+            capped_count = exceeds_audit_cap(targets, cfg.cloud, force=force_cloud, repo_path=effective_repo_path)
             if capped_count is not None:
                 console.print(
                     f"[red]Refusing to run the cloud tier over {capped_count} files[/red] "
@@ -875,9 +887,11 @@ def audit(
 
         console.print(f"[dim]Auditing {len(targets)} file(s) in {effective_repo_path}[/dim]")
 
+        llm_sent: dict[str, list[str]] = {}
         results, tiers_run, skipped, file_hashes, had_runner_error = _run_tiers(
             targets, effective_repo_path, cfg, "audit",
             force_local=force_local, device=device, resume_from=resume_from, frappe_db=frappe_db,
+            sent_out=llm_sent,
         )
         skipped = skipped_early + skipped
         findings = aggregate(results)
@@ -895,6 +909,7 @@ def audit(
             duration_seconds=time.monotonic() - start,
             skipped=skipped,
             file_hashes=file_hashes,
+            llm_sent=llm_sent,
         )
         _finish(report, output_dir, cfg, repo_label, redact=redact, had_runner_error=had_runner_error)
 
@@ -982,12 +997,14 @@ def audit_scripts(
         # individual --config overrides (not a ruff.toml dropped into
         # temp_dir) so an operator's own project/user-level ruff config,
         # if ruff would otherwise discover one, still applies.
+        llm_sent: dict[str, list[str]] = {}
         results, tiers_run, skipped, file_hashes, had_runner_error = _run_tiers(
             targets,
             temp_dir,
             cfg,
             "audit",
             frappe_db=db,
+            sent_out=llm_sent,
             ruff_extra_config=['builtins=["frappe", "doc"]'],
         )
         findings = aggregate(results)
@@ -1004,6 +1021,7 @@ def audit_scripts(
             duration_seconds=time.monotonic() - start,
             skipped=skipped,
             file_hashes=file_hashes,
+            llm_sent=llm_sent,
         )
         _finish(report, output_dir, cfg, repo_label, redact=redact, had_runner_error=had_runner_error)
 
