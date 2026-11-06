@@ -328,7 +328,7 @@ def _load_config_or_exit(config_path: Path | None) -> Config:
     any other config error), not a traceback -- and not exit 1, which means "findings"."""
     try:
         return load_config(config_path)
-    except (FileNotFoundError, yaml.YAMLError, ValidationError) as e:
+    except (OSError, UnicodeDecodeError, yaml.YAMLError, ValidationError) as e:  # OSError covers missing/unreadable
         console.print(f"[red]Error:[/red] invalid config: {e}")
         raise typer.Exit(code=2)
 

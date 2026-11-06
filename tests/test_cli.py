@@ -1328,3 +1328,23 @@ def test_render_of_non_utf8_report_exits_2(tmp_path: Path):
     result = runner.invoke(app, ["render", str(report), "--output-dir", str(tmp_path / "out")])
     assert result.exit_code == 2
 
+
+def test_non_utf8_config_exits_2_with_a_clean_error(tmp_path: Path):
+    config = tmp_path / "c.yaml"
+    config.write_bytes(b"\xff\xfe not utf-8")
+    result = runner.invoke(app, ["audit", "--config", str(config), "--output-dir", str(tmp_path / "out")])
+    assert result.exit_code == 2
+    assert "invalid config" in result.output
+
+
+def test_unreadable_config_exits_2_with_a_clean_error(tmp_path: Path):
+    config = tmp_path / "c.yaml"
+    config.write_text("thresholds: {}\n")
+    config.chmod(0o000)
+    try:
+        result = runner.invoke(app, ["audit", "--config", str(config), "--output-dir", str(tmp_path / "out")])
+    finally:
+        config.chmod(0o600)
+    # Typer's own readable-path check rejects it first (usage error, still exit 2)
+    assert result.exit_code == 2
+
