@@ -3,7 +3,7 @@ file content per changed file, forcing structured JSON output via tool-calling.
 
 Two backends: `AnthropicCloudReviewer` (Anthropic Messages API, its own loop)
 and `OpenAICompatibleCloudReviewer` (built on the shared
-reviewers.openai_protocol, for Groq/Mistral/Cerebras/OpenRouter/custom).
+reviewers.openai_protocol, for Groq/Mistral/Cerebras/OpenRouter/Google/custom).
 `build_cloud_reviewer()` picks the right one from config.cloud.provider.
 """
 
@@ -11,14 +11,16 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from collections.abc import Callable
 from pathlib import Path
 
 import httpx
 
-from codecheck.config import CloudConfig
+from codecheck.config import CloudConfig, LocalConfig
 from codecheck.diff import read_file_content
 from codecheck.models import Finding, ReviewTarget, Severity
+from codecheck.noise import partition
 from codecheck.reviewers.base import Reviewer
 from codecheck.reviewers.openai_protocol import (
     SYSTEM_PROMPT,
@@ -82,13 +84,38 @@ _OPENAI_COMPATIBLE_PRESETS: dict[str, dict[str, str]] = {
         "base_url": "https://openrouter.ai/api/v1/chat/completions",
         "api_key_env": "OPENROUTER_API_KEY",
     },
+    "google": {  # Gemini's OpenAI-compatible endpoint
+        "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+        "api_key_env": "GEMINI_API_KEY",
+    },
 }
 
 
-def exceeds_audit_cap(targets: list[ReviewTarget], config: CloudConfig, force: bool) -> int | None:
+def is_ci_path(path: str) -> bool:
+    """GitHub workflow and action files: never sent to an LLM (the rules tier still checks them)."""
+    p = "/" + path
+    return "/.github/workflows/" in p or "/.github/actions/" in p
+
+
+def without_ci_files(targets: list[ReviewTarget]) -> list[ReviewTarget]:
+    return [t for t in targets if not is_ci_path(t.path)]
+
+
+def cloud_targets(targets: list[ReviewTarget], config: CloudConfig | LocalConfig) -> list[ReviewTarget]:
+    """The files the cloud tier gets: not CI files, and only config.extensions when that is set."""
+    targets = without_ci_files(targets)
+    if not config.extensions:
+        return targets
+    wanted = {e.lower() for e in config.extensions}
+    return [t for t in targets if Path(t.path).suffix.lower() in wanted]
+
+
+def exceeds_audit_cap(targets: list[ReviewTarget], config: CloudConfig, force: bool, repo_path: Path | None = None) -> int | None:
     """Returns the eligible file count if it exceeds config.audit_file_cap and
     force wasn't passed, else None."""
-    eligible = [t for t in targets if t.status != "deleted"]
+    eligible = [t for t in cloud_targets(targets, config) if t.status != "deleted"]
+    if config.skip_noise and repo_path is not None:        # tests, bundles, empty files... are not sent, so do not count
+        eligible = partition(eligible, repo_path)[0]
     if not force and len(eligible) > config.audit_file_cap:
         return len(eligible)
     return None
@@ -142,8 +169,15 @@ class AnthropicCloudReviewer(Reviewer):
         findings: list[Finding] = []
         finding_counter = 0
 
+        deadline = time.monotonic() + self.config.time_budget_seconds if self.config.time_budget_seconds else None
         for target in targets:
             if target.status == "deleted":
+                continue
+            if deadline and time.monotonic() > deadline:
+                reason = "time budget reached, not reviewed"
+                self.skipped_files.append((target.path, reason))
+                if on_progress:
+                    on_progress(target.path, f"skipped: {reason}")
                 continue
             content = read_file_content(repo_path, target)
             if content is None:

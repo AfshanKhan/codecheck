@@ -146,6 +146,9 @@ class ReviewReport:
     skipped: list[str] = field(default_factory=list)
     # sha256 of each reviewed file's content, for --resume-from.
     file_hashes: dict[str, str] = field(default_factory=dict)
+    # Files each LLM tier was actually given (after the extension/noise/CI filters), so --resume-from does not
+    # mistake a file that was never sent for one that was reviewed.
+    llm_sent: dict[str, list[str]] = field(default_factory=dict)
 
     def findings_at_or_above(self, severity: Severity) -> list[Finding]:
         return [f for f in self.findings if f.severity >= severity]
@@ -191,6 +194,7 @@ class ReviewReport:
             "files_reviewed": self.files_reviewed,
             "skipped": self.skipped,
             "file_hashes": self.file_hashes,
+            "llm_sent": self.llm_sent,
             "counts_by_severity": {
                 s.value: c for s, c in self.counts_by_severity().items()
             },
@@ -229,4 +233,5 @@ class ReviewReport:
             duration_seconds=data.get("duration_seconds") or 0.0,
             skipped=data.get("skipped") if isinstance(data.get("skipped"), list) else [],
             file_hashes=data.get("file_hashes") if isinstance(data.get("file_hashes"), dict) else {},
+            llm_sent=data.get("llm_sent") if isinstance(data.get("llm_sent"), dict) else {},
         )

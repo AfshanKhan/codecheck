@@ -46,10 +46,14 @@ def already_succeeded_paths(
     if not isinstance(prior_hashes, dict):
         return set()  # older report predating file_hashes -- fail closed, not stale-trusting
 
+    sent = prior.get("llm_sent")
+    sent_to_tier = set(sent[tier]) if isinstance(sent, dict) and isinstance(sent.get(tier), list) else None
     result = set()
     for path in prior_files:
         if not isinstance(path, str):
             continue
+        if sent_to_tier is not None and path not in sent_to_tier:
+            continue  # never given to this tier (filtered out) -- it was not reviewed by it
         prior_hash = prior_hashes.get(path)
         current_hash = current_file_hashes.get(path)
         if not prior_hash or not current_hash or prior_hash != current_hash:

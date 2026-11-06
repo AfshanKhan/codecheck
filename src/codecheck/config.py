@@ -38,7 +38,7 @@ class SuggestionsConfig(BaseModel):
 
 class CloudConfig(BaseModel):
     enabled: bool = False
-    # anthropic | groq | mistral | cerebras | openrouter | openai_compatible (custom base_url)
+    # anthropic | groq | mistral | cerebras | openrouter | google | openai_compatible (custom base_url)
     provider: str = "anthropic"
     model: str = "claude-sonnet-4-6"
     # Defaults per-provider if left unset (e.g. GROQ_API_KEY for provider=groq). Never the key itself.
@@ -47,6 +47,12 @@ class CloudConfig(BaseModel):
     base_url: str | None = None
     max_file_lines: int = 800
     audit_file_cap: int = 50  # max files the cloud tier will review in one `audit` run without --force-cloud
+    # Leave out tests, bundled/generated files, empty files and boilerplate (see codecheck.noise).
+    skip_noise: bool = False
+    # Only files with these extensions go to the cloud tier (None = every file). Rules still see all files.
+    extensions: list[str] | None = None
+    # Stop starting new files after this many seconds; the rest are listed as skipped and the report is still written.
+    time_budget_seconds: float | None = None
     request_timeout_seconds: float = 120.0  # hosted APIs are fast; raise this if a provider is slow
 
 
@@ -60,6 +66,8 @@ class LocalConfig(BaseModel):
     # Local servers usually need no auth; set this only if yours does.
     api_key_env: str | None = None
     max_file_lines: int = 2000
+    skip_noise: bool = False  # same meaning as cloud.skip_noise
+    extensions: list[str] | None = None  # same meaning as cloud.extensions
     # Higher than the cloud default -- CPU inference can take minutes.
     request_timeout_seconds: float = 300.0
 

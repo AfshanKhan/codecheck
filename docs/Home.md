@@ -10,7 +10,7 @@ Reference and deep-dive docs for `codecheck`. New here? Start with the
 - **[CLI reference](CLI-Reference.md)** — full `diff` / `audit` flag tables, PR
   reviewing, private-repo credential handling, exit codes, `--help` / `--version`.
 - **[Configuration](Configuration.md)** — the full `config.yaml` schema and
-  cloud/local provider setup (Anthropic, Groq, Mistral, Cerebras, OpenRouter,
+  cloud/local provider setup (Anthropic, Google, Groq, Mistral, Cerebras, OpenRouter,
   vLLM, LM Studio, Ollama).
 - **[Architecture & internals](Architecture.md)** — how the tiers, rules engine,
   house rules, LLM reviewers, aggregator, and reporters actually work; project

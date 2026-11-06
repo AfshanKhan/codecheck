@@ -32,7 +32,18 @@
   many calls (mitigated by the `cloud.audit_file_cap` safety rail, which applies
   to both `audit --cloud` and `diff --cloud`).
 - Cloud tier has no chunking for files over `max_file_lines` — they're skipped
-  entirely, not partially reviewed.
+  entirely, not partially reviewed. Raise `max_file_lines` if your model's context
+  allows; a file too big for the model's context makes the provider return an error,
+  which is also a per-file skip.
+- `skip_noise` is a syntactic heuristic. It never reads for meaning, so a file it calls
+  boilerplate (imports and `pass` only) is assumed to hold nothing worth reviewing, and
+  tests are never reviewed by the LLM. Turning `skip_noise` off only disables this filter: GitHub
+  workflow/action files are still never sent, and `extensions` still applies.
+- Thinking models (e.g. Gemini) count their reasoning against the output-token budget.
+  An empty reply is retried once with a larger budget, but a very large file can still
+  come back empty and is skipped.
+- Review quality varies a lot by model: on the same file a small model (Gemini Flash
+  Lite) reported nothing where a larger one (3.6 Flash) found a critical permission bug.
 - Aggregator dedupe is title-similarity only and misses same-issue findings with
   dissimilar wording (see the ruff/house-rule example in [Architecture](Architecture.md)).
 - eslint and semgrep sub-runners are covered by tests with mocked subprocess
