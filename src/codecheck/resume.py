@@ -15,9 +15,10 @@ from codecheck.models import Finding, Severity
 def load_prior_report(path: Path) -> dict | None:
     """Returns the parsed prior report.json, or None if it can't be read/parsed."""
     try:
-        return json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError):
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):  # ValueError covers JSONDecodeError and UnicodeDecodeError
         return None
+    return data if isinstance(data, dict) else None
 
 
 def compute_file_hash(content: str) -> str:

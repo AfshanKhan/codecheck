@@ -246,3 +246,32 @@ def test_runner_failures_stays_empty_for_an_ordinary_unavailable_skip(monkeypatc
 
     assert "ruff" in dict(reviewer.skipped_runners)
     assert reviewer.runner_failures == []
+
+
+def test_ruff_tool_failure_is_a_runner_failure_not_a_clean_scan(tmp_path: Path):
+    # an invalid ruff config makes ruff exit 2 without linting anything
+    (tmp_path / "pyproject.toml").write_text('[tool.ruff]\nline-length = "bad"\n')
+    (tmp_path / "a.py").write_text("import os\n")
+    target = ReviewTarget(path="a.py", status="scanned", changed_lines=None)
+    reviewer = RulesEngineReviewer(RulesConfig(ruff=True, eslint=False, semgrep=False, house_rules=False))
+
+    findings = reviewer.review([target], tmp_path)
+
+    assert findings == []
+    assert reviewer.runner_failures == ["ruff"]
+    assert "ruff exited 2" in dict(reviewer.skipped_runners)["ruff"]
+
+
+def test_eslint_fatal_exit_is_a_runner_failure_not_a_clean_scan(tmp_path: Path, monkeypatch):
+    (tmp_path / "eslint.config.js").write_text("module.exports = [];\n")
+    monkeypatch.setattr("codecheck.reviewers.rules_engine.shutil.which", lambda _n: "/usr/bin/eslint")
+    monkeypatch.setattr(
+        "codecheck.reviewers.rules_engine.subprocess.run",
+        lambda *a, **k: subprocess.CompletedProcess(a, 2, stdout="", stderr="Oops! Something went wrong"),
+    )
+    target = ReviewTarget(path="a.js", status="scanned", changed_lines=None)
+    reviewer = RulesEngineReviewer(RulesConfig(ruff=False, eslint=True, semgrep=False, house_rules=False))
+
+    reviewer.review([target], tmp_path)
+
+    assert reviewer.runner_failures == ["eslint"]

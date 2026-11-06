@@ -12,11 +12,14 @@ from codecheck.models import ReviewTarget
 
 
 def get_repo_files(repo_path: Path) -> list[ReviewTarget]:
-    repo = git.Repo(repo_path, search_parent_directories=True)
-
-    tracked = repo.git.ls_files().splitlines()
-    untracked = repo.git.ls_files(others=True, exclude_standard=True).splitlines()
-    paths = sorted(set(tracked) | set(untracked))
+    # Run git from repo_path itself, so the listed paths are relative to it (the frame
+    # every runner and read_file_content use) even when it's a subdirectory of the repo.
+    # -z keeps non-ASCII names verbatim; without it git quotes them ("caf\303\251.py")
+    # and the is_file() check below silently drops the file.
+    git_in_path = git.Git(str(repo_path))
+    tracked = git_in_path.ls_files(z=True).split("\0")
+    untracked = git_in_path.ls_files(z=True, others=True, exclude_standard=True).split("\0")
+    paths = sorted((set(tracked) | set(untracked)) - {""})
 
     targets = []
     for path in paths:

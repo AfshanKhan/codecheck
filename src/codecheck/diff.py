@@ -24,15 +24,33 @@ def _parse_changed_lines(diff_text: str) -> set[int]:
             current_line = int(match.group(1))
             continue
         if current_line == 0:
-            continue
-        if raw_line.startswith("+") and not raw_line.startswith("+++"):
+            continue  # still in the file header (---/+++ lines), before the first hunk
+        # Inside a hunk every "+"/"-" line is content -- a removed "-- sql comment" or
+        # "---" rule is "--- ..." / "----", an added "++i;" is "+++i;" -- so don't
+        # mistake those for file headers.
+        if raw_line.startswith("+"):
             changed.add(current_line)
             current_line += 1
-        elif raw_line.startswith("-") and not raw_line.startswith("---"):
+        elif raw_line.startswith("-"):
             changed.add(max(current_line, 1))
+        elif raw_line.startswith("\\"):
+            continue  # "\ No newline at end of file" marker -- not a file line
         else:
             current_line += 1
     return changed
+
+
+def count_added_lines(diff_text: str) -> int:
+    """Number of "+" content lines in a unified diff. The "+++ b/path" file header
+    before the first hunk is not content; inside a hunk a "+++..." line is."""
+    in_hunk = False
+    count = 0
+    for raw_line in diff_text.splitlines():
+        if _HUNK_HEADER_RE.match(raw_line):
+            in_hunk = True
+        elif raw_line.startswith("+") and (in_hunk or not raw_line.startswith("+++")):
+            count += 1
+    return count
 
 
 _GIT_QUOTE_ESCAPES = {"a": 7, "b": 8, "f": 12, "n": 10, "r": 13, "t": 9, "v": 11, "\\": 92, '"': 34}
@@ -170,11 +188,14 @@ def _parse_raw_diff(raw_diff_text: str) -> list[ReviewTarget]:
             continue
         old_path, new_path = header
 
-        if "new file mode" in block:
+        # Only the extended header (before the first hunk) says what happened to the
+        # file -- the same words can appear in the file's own content further down.
+        header_text = re.split(r"^@@", block, maxsplit=1, flags=re.MULTILINE)[0]
+        if re.search(r"^new file mode", header_text, re.MULTILINE):
             status = "added"
-        elif "deleted file mode" in block:
+        elif re.search(r"^deleted file mode", header_text, re.MULTILINE):
             status = "deleted"
-        elif "rename from" in block:
+        elif re.search(r"^rename from", header_text, re.MULTILINE):
             status = "renamed"
         else:
             status = "modified"

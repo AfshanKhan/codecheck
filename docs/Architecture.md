@@ -812,7 +812,8 @@ on to the next finding, never raised — reusing the same `post_with_retry` /
 ### Uncovered `.env` file check (`SecretsInRepoRunner`, `RULE-035`)
 
 Another repo-wide `SubRunner`, same shape as `TestCoverageRunner`: it needs
-to see the whole tree at once (every `.env` under `repo_path`, plus every
+to see the whole tree at once (every `.env` / `.env.<name>` file under `repo_path`
+— template variants like `.env.example` are skipped — plus every
 `.gitignore` that could cover one), which a `HouseCheck` (one file's content
 at a time) can't provide. `checks/secrets_in_repo.py` duck-types the
 `SubRunner` interface instead of importing the ABC from `rules_engine.py`,

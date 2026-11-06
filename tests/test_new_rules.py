@@ -865,3 +865,13 @@ def test_negation_pattern_un_ignores_a_specific_env_file(tmp_path):
     findings = SecretsInRepoRunner().run([], tmp_path)
     assert len(findings) == 1
     assert findings[0].file == "committed/.env"
+
+
+def test_env_variant_files_are_flagged_but_templates_are_not(tmp_path):
+    (tmp_path / ".env.production").write_text("SECRET=1\n")
+    (tmp_path / ".env.local").write_text("SECRET=1\n")
+    (tmp_path / ".env.example").write_text("SECRET=changeme\n")
+    (tmp_path / ".env.sample").write_text("SECRET=changeme\n")
+    (tmp_path / ".envrc").write_text("export X=1\n")  # direnv file, not a dotenv variant
+    findings = SecretsInRepoRunner().run([], tmp_path)
+    assert sorted(f.file for f in findings) == [".env.local", ".env.production"]

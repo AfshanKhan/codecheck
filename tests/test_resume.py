@@ -141,3 +141,19 @@ def test_prior_findings_for_paths_skips_malformed_finding_entries():
     findings = prior_findings_for_paths(report, "cloud_llm", {"a.py"})
     assert len(findings) == 1
     assert findings[0].check_id == "CLOUD-002"
+
+
+def test_load_prior_report_rejects_non_object_json(tmp_path):
+    from codecheck.resume import load_prior_report
+
+    path = tmp_path / "r.json"
+    path.write_text("[1, 2]")
+    assert load_prior_report(path) is None
+
+
+def test_load_prior_report_survives_undecodable_bytes(tmp_path):
+    from codecheck.resume import load_prior_report
+
+    path = tmp_path / "r.json"
+    path.write_bytes(b"\xff\xfe\x00 not utf-8")
+    assert load_prior_report(path) is None

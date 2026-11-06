@@ -66,6 +66,17 @@ def _is_ignored(repo_path: Path, env_path: Path) -> bool:
     return False
 
 
+# .env.example and friends are meant to be committed -- they hold placeholders, not secrets.
+_TEMPLATE_SUFFIXES = frozenset({"example", "sample", "template", "dist", "defaults"})
+
+
+def _is_env_file_name(name: str) -> bool:
+    """`.env` itself, or a variant such as `.env.local` / `.env.production`."""
+    if name == ".env":
+        return True
+    return name.startswith(".env.") and name.rsplit(".", 1)[-1] not in _TEMPLATE_SUFFIXES
+
+
 class SecretsInRepoRunner:
     check_id = "RULE-035"
     title = ".env file present and not covered by .gitignore"
@@ -79,8 +90,8 @@ class SecretsInRepoRunner:
         if not repo_path.is_dir():
             return []
         findings = []
-        for env_path in sorted(repo_path.rglob(".env")):
-            if not env_path.is_file():
+        for env_path in sorted(repo_path.rglob(".env*")):
+            if not _is_env_file_name(env_path.name) or not env_path.is_file():
                 continue
             if _is_ignored(repo_path, env_path):
                 continue

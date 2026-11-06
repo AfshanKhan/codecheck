@@ -17,6 +17,8 @@ from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 import typer
+import yaml
+from pydantic import ValidationError
 from rich.console import Console
 
 from codecheck.aggregator import aggregate
@@ -319,6 +321,16 @@ def _run_tiers(
     # No tier ran at all (missing key, rules off, ...): nothing was checked,
     # so "no findings" must not read as a clean pass.
     return results, tiers_run, skipped, current_file_hashes, had_runner_error or not tiers_run
+
+
+def _load_config_or_exit(config_path: Path | None) -> Config:
+    """load_config, but a missing/malformed/invalid config is a clean exit 2 (same as
+    any other config error), not a traceback -- and not exit 1, which means "findings"."""
+    try:
+        return load_config(config_path)
+    except (FileNotFoundError, yaml.YAMLError, ValidationError) as e:
+        console.print(f"[red]Error:[/red] invalid config: {e}")
+        raise typer.Exit(code=2)
 
 
 def _sanitize_slug(value: str) -> str:
@@ -650,7 +662,7 @@ def diff(
                 raise typer.Exit(code=2)
 
     start = time.monotonic()
-    cfg = load_config(config)
+    cfg = _load_config_or_exit(config)
     if cloud:
         cfg.cloud.enabled = True
     if local:
@@ -805,7 +817,7 @@ def audit(
     files) instead of just a diff."""
     resolved_gate = _resolve_gate(gate)
     start = time.monotonic()
-    cfg = load_config(config)
+    cfg = _load_config_or_exit(config)
     if cloud:
         cfg.cloud.enabled = True
     if local:
@@ -907,7 +919,7 @@ def audit_scripts(
 
     resolved_gate = _resolve_gate(gate)
     start = time.monotonic()
-    cfg = load_config(None)
+    cfg = _load_config_or_exit(None)
     if resolved_gate:
         cfg.thresholds.fail_on_severity = resolved_gate
 
@@ -983,11 +995,11 @@ def audit_scripts(
 
 def _load_report_file(path: Path) -> ReviewReport:
     try:
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding="utf-8"))
     except OSError as e:
         console.print(f"[red]Error:[/red] could not read {path}: {e}")
         raise typer.Exit(code=2)
-    except json.JSONDecodeError as e:
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
         console.print(f"[red]Error:[/red] {path} is not valid JSON: {e}")
         raise typer.Exit(code=2)
     if not isinstance(data, dict):
@@ -1036,7 +1048,7 @@ def compare(
     new = _load_report_file(new_report)
     added, resolved = diff_reports(old, new)
 
-    cfg = load_config(config)
+    cfg = _load_config_or_exit(config)
     resolved_gate = _resolve_gate(gate)
     if resolved_gate:
         cfg.thresholds.fail_on_severity = resolved_gate
