@@ -138,7 +138,7 @@ def get_diff(repo_path: Path, base_ref: str | None, staged: bool) -> list[Review
     repo = git.Repo(repo_path, search_parent_directories=True)
 
     if staged:
-        diff_index = repo.index.diff("HEAD", create_patch=True, R=True)
+        targets = _diff_index_to_targets(repo.index.diff("HEAD", create_patch=True, R=True))
     else:
         if not base_ref:
             raise ValueError("base_ref is required when staged=False")
@@ -149,10 +149,34 @@ def get_diff(repo_path: Path, base_ref: str | None, staged: bool) -> list[Review
         if not merge_base_results:
             raise ValueError(f"No merge base found between {base_ref!r} and HEAD")
         merge_base = merge_base_results[0]
-        diff_index = repo.git.diff(merge_base.hexsha, "HEAD", patch=True)
-        return _parse_raw_diff(diff_index)
+        targets = _parse_raw_diff(repo.git.diff(merge_base.hexsha, "HEAD", patch=True))
 
-    return _diff_index_to_targets(diff_index)
+    return _relative_to_repo_path(targets, repo_path, repo)
+
+
+def _relative_to_repo_path(targets: list[ReviewTarget], repo_path: Path, repo: git.Repo) -> list[ReviewTarget]:
+    """git reports paths relative to the repo root. When repo_path is a subdirectory,
+    keep only the files under it and re-base their paths onto it -- the frame the
+    rules runners (cwd=repo_path) and read_file_content use."""
+    root = Path(repo.working_tree_dir).resolve()
+    prefix = Path(repo_path).resolve().relative_to(root).as_posix()
+    if prefix == ".":
+        return targets
+
+    def rebase(path: str | None) -> str | None:
+        if path is not None and path.startswith(prefix + "/"):
+            return path[len(prefix) + 1 :]
+        return None
+
+    rebased = []
+    for target in targets:
+        new_path = rebase(target.path)
+        if new_path is None:
+            continue  # outside repo_path
+        target.path = new_path
+        target.old_path = rebase(target.old_path)
+        rebased.append(target)
+    return rebased
 
 
 def _diff_index_to_targets(diff_index) -> list[ReviewTarget]:

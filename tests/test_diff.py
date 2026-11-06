@@ -251,3 +251,43 @@ def test_raw_diff_status_still_detects_a_real_new_file():
         "@@ -0,0 +1 @@\n+x\n"
     )
     assert [t.status for t in _parse_raw_diff(block)] == ["added"]
+
+
+def _commit_all(repo: Path, message: str) -> None:
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-q", "-m", message], cwd=repo, check=True, capture_output=True)
+
+
+@pytest.fixture
+def subdir_repo(tmp_path: Path) -> Path:
+    repo = tmp_path / "mono"
+    (repo / "app").mkdir(parents=True)
+    for args in (["init", "-q", "-b", "main"], ["config", "user.email", "t@example.com"], ["config", "user.name", "T"]):
+        subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
+    (repo / "app" / "a.py").write_text("x = 1\n")
+    (repo / "top.py").write_text("y = 1\n")
+    _commit_all(repo, "initial")
+    subprocess.run(["git", "checkout", "-q", "-b", "feature"], cwd=repo, check=True, capture_output=True)
+    return repo
+
+
+def test_base_ref_diff_on_a_subdirectory_is_scoped_and_relative_to_it(subdir_repo: Path):
+    (subdir_repo / "app" / "a.py").write_text("x = 2\n")
+    (subdir_repo / "top.py").write_text("y = 2\n")  # outside repo_path
+    _commit_all(subdir_repo, "change both")
+
+    targets = get_diff(subdir_repo / "app", base_ref="main", staged=False)
+
+    assert [t.path for t in targets] == ["a.py"]
+    assert read_file_content(subdir_repo / "app", targets[0]) == "x = 2\n"
+
+
+def test_staged_diff_on_a_subdirectory_is_scoped_and_relative_to_it(subdir_repo: Path):
+    (subdir_repo / "app" / "a.py").write_text("x = 2\n")
+    (subdir_repo / "top.py").write_text("y = 2\n")
+    subprocess.run(["git", "add", "-A"], cwd=subdir_repo, check=True, capture_output=True)
+
+    targets = get_diff(subdir_repo / "app", base_ref=None, staged=True)
+
+    assert [t.path for t in targets] == ["a.py"]
+
