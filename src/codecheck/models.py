@@ -33,7 +33,7 @@ class Severity(str, Enum):
     @classmethod
     def parse(cls, value: str | None) -> "Severity":
         """Case-insensitive parse with a MEDIUM fallback for anything unrecognized."""
-        if not value:
+        if not isinstance(value, str) or not value.strip():
             return cls.MEDIUM
         try:
             return cls(value.strip().lower())

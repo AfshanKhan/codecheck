@@ -812,7 +812,8 @@ on to the next finding, never raised — reusing the same `post_with_retry` /
 ### Uncovered `.env` file check (`SecretsInRepoRunner`, `RULE-035`)
 
 Another repo-wide `SubRunner`, same shape as `TestCoverageRunner`: it needs
-to see the whole tree at once (every `.env` under `repo_path`, plus every
+to see the whole tree at once (every `.env` / `.env.<name>` file under `repo_path`
+— template variants like `.env.example` are skipped — plus every
 `.gitignore` that could cover one), which a `HouseCheck` (one file's content
 at a time) can't provide. `checks/secrets_in_repo.py` duck-types the
 `SubRunner` interface instead of importing the ABC from `rules_engine.py`,
@@ -824,7 +825,9 @@ Deliberately a presence check, not a `git ls-files`-backed tracked-status
 check: it flags any `.env` file present in the checkout and not matched by
 a `.gitignore` (checking every directory from the repo root down to that
 `.env`'s own directory, not just the root — a nested app-level `.gitignore`
-counts too), regardless of whether it's actually been committed yet.
+counts too, and so do the git root's and any ancestor's when `--repo-path` selects a
+subdirectory; they're applied root first so a deeper `!pattern` overrides a shallower
+ignore, as in git), regardless of whether it's actually been committed yet.
 Catching one before `.gitignore` covers it is at least as valuable as
 catching one after the fact, and it avoids depending on git state a plain
 filesystem scan doesn't need. Doesn't try to detect a secret *inside* file

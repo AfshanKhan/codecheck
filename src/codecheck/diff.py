@@ -24,15 +24,33 @@ def _parse_changed_lines(diff_text: str) -> set[int]:
             current_line = int(match.group(1))
             continue
         if current_line == 0:
-            continue
-        if raw_line.startswith("+") and not raw_line.startswith("+++"):
+            continue  # still in the file header (---/+++ lines), before the first hunk
+        # Inside a hunk every "+"/"-" line is content -- a removed "-- sql comment" or
+        # "---" rule is "--- ..." / "----", an added "++i;" is "+++i;" -- so don't
+        # mistake those for file headers.
+        if raw_line.startswith("+"):
             changed.add(current_line)
             current_line += 1
-        elif raw_line.startswith("-") and not raw_line.startswith("---"):
+        elif raw_line.startswith("-"):
             changed.add(max(current_line, 1))
+        elif raw_line.startswith("\\"):
+            continue  # "\ No newline at end of file" marker -- not a file line
         else:
             current_line += 1
     return changed
+
+
+def count_added_lines(diff_text: str) -> int:
+    """Number of "+" content lines in a unified diff. The "+++ b/path" file header
+    before the first hunk is not content; inside a hunk a "+++..." line is."""
+    in_hunk = False
+    count = 0
+    for raw_line in diff_text.splitlines():
+        if _HUNK_HEADER_RE.match(raw_line):
+            in_hunk = True
+        elif raw_line.startswith("+") and (in_hunk or not raw_line.startswith("+++")):
+            count += 1
+    return count
 
 
 _GIT_QUOTE_ESCAPES = {"a": 7, "b": 8, "f": 12, "n": 10, "r": 13, "t": 9, "v": 11, "\\": 92, '"': 34}
@@ -120,7 +138,7 @@ def get_diff(repo_path: Path, base_ref: str | None, staged: bool) -> list[Review
     repo = git.Repo(repo_path, search_parent_directories=True)
 
     if staged:
-        diff_index = repo.index.diff("HEAD", create_patch=True, R=True)
+        targets = _diff_index_to_targets(repo.index.diff("HEAD", create_patch=True, R=True))
     else:
         if not base_ref:
             raise ValueError("base_ref is required when staged=False")
@@ -131,10 +149,34 @@ def get_diff(repo_path: Path, base_ref: str | None, staged: bool) -> list[Review
         if not merge_base_results:
             raise ValueError(f"No merge base found between {base_ref!r} and HEAD")
         merge_base = merge_base_results[0]
-        diff_index = repo.git.diff(merge_base.hexsha, "HEAD", patch=True)
-        return _parse_raw_diff(diff_index)
+        targets = _parse_raw_diff(repo.git.diff(merge_base.hexsha, "HEAD", patch=True))
 
-    return _diff_index_to_targets(diff_index)
+    return _relative_to_repo_path(targets, repo_path, repo)
+
+
+def _relative_to_repo_path(targets: list[ReviewTarget], repo_path: Path, repo: git.Repo) -> list[ReviewTarget]:
+    """git reports paths relative to the repo root. When repo_path is a subdirectory,
+    keep only the files under it and re-base their paths onto it -- the frame the
+    rules runners (cwd=repo_path) and read_file_content use."""
+    root = Path(repo.working_tree_dir).resolve()
+    prefix = Path(repo_path).resolve().relative_to(root).as_posix()
+    if prefix == ".":
+        return targets
+
+    def rebase(path: str | None) -> str | None:
+        if path is not None and path.startswith(prefix + "/"):
+            return path[len(prefix) + 1 :]
+        return None
+
+    rebased = []
+    for target in targets:
+        new_path = rebase(target.path)
+        if new_path is None:
+            continue  # outside repo_path
+        target.path = new_path
+        target.old_path = rebase(target.old_path)
+        rebased.append(target)
+    return rebased
 
 
 def _diff_index_to_targets(diff_index) -> list[ReviewTarget]:
@@ -170,11 +212,14 @@ def _parse_raw_diff(raw_diff_text: str) -> list[ReviewTarget]:
             continue
         old_path, new_path = header
 
-        if "new file mode" in block:
+        # Only the extended header (before the first hunk) says what happened to the
+        # file -- the same words can appear in the file's own content further down.
+        header_text = re.split(r"^@@", block, maxsplit=1, flags=re.MULTILINE)[0]
+        if re.search(r"^new file mode", header_text, re.MULTILINE):
             status = "added"
-        elif "deleted file mode" in block:
+        elif re.search(r"^deleted file mode", header_text, re.MULTILINE):
             status = "deleted"
-        elif "rename from" in block:
+        elif re.search(r"^rename from", header_text, re.MULTILINE):
             status = "renamed"
         else:
             status = "modified"

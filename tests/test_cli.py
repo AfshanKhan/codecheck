@@ -1305,3 +1305,56 @@ def test_audit_exits_2_when_no_tier_ran(sandbox_repo: Path, tmp_path: Path):
     )
     assert result.exit_code == 2
     assert "no check ran" in result.stdout
+
+
+def test_missing_config_file_exits_2_with_a_clean_error(tmp_path: Path):
+    result = runner.invoke(app, ["audit", "--config", str(tmp_path / "typo.yaml"), "--output-dir", str(tmp_path / "out")])
+    assert result.exit_code == 2
+    assert "invalid config" in result.output
+
+
+def test_invalid_fail_on_severity_exits_2_before_scanning_not_1_after(tmp_path: Path):
+    # used to crash with a ValueError traceback after the scan -- exit 1, which CI reads as "findings"
+    config = tmp_path / "c.yaml"
+    config.write_text("thresholds:\n  fail_on_severity: urgent\n")
+    result = runner.invoke(app, ["audit", "--config", str(config), "--output-dir", str(tmp_path / "out")])
+    assert result.exit_code == 2
+    assert not (tmp_path / "out").exists()
+
+
+def test_render_of_non_utf8_report_exits_2(tmp_path: Path):
+    report = tmp_path / "r.json"
+    report.write_bytes(b"\xff\xfe not utf-8")
+    result = runner.invoke(app, ["render", str(report), "--output-dir", str(tmp_path / "out")])
+    assert result.exit_code == 2
+
+
+def test_non_utf8_config_exits_2_with_a_clean_error(tmp_path: Path):
+    config = tmp_path / "c.yaml"
+    config.write_bytes(b"\xff\xfe not utf-8")
+    result = runner.invoke(app, ["audit", "--config", str(config), "--output-dir", str(tmp_path / "out")])
+    assert result.exit_code == 2
+    assert "invalid config" in result.output
+
+
+def test_unreadable_config_exits_2_with_a_clean_error(tmp_path: Path, monkeypatch):
+    # Typer's readable-path check usually rejects such a file first, and chmod 000 does nothing
+    # when the tests run with enough privileges -- so make the read itself fail, deterministically
+    config = tmp_path / "c.yaml"
+    config.write_text("thresholds: {}\n")
+
+    def _deny(_path):
+        raise PermissionError("denied")
+
+    monkeypatch.setattr("codecheck.cli.load_config", _deny)
+    result = runner.invoke(app, ["audit", "--config", str(config), "--output-dir", str(tmp_path / "out")])
+    assert result.exit_code == 2
+    assert "invalid config" in result.output
+
+
+def test_audit_of_a_non_git_directory_exits_2_not_a_traceback(tmp_path: Path):
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    result = runner.invoke(app, ["audit", "--repo-path", str(plain), "--output-dir", str(tmp_path / "out")])
+    assert result.exit_code == 2
+    assert "not a readable git repository" in result.output

@@ -157,3 +157,8 @@ def test_compliance_percentage_caps_per_file_penalty_at_full_credit():
 def test_compliance_percentage_included_in_to_dict():
     report = make_report()
     assert report.to_dict()["compliance_percentage"] == report.compliance_percentage()
+
+
+def test_severity_parse_non_string_falls_back_to_medium():
+    assert Severity.parse(3) == Severity.MEDIUM
+    assert Severity.parse(["high"]) == Severity.MEDIUM

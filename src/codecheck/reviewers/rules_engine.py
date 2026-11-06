@@ -14,7 +14,7 @@ from codecheck.checks.frappe_db_field_check import FrappeDbFieldCheckRunner
 from codecheck.checks.registry import ALL_CHECKS, load_extra_checks
 from codecheck.checks.secrets_in_repo import SecretsInRepoRunner
 from codecheck.config import RulesConfig
-from codecheck.diff import read_file_content
+from codecheck.diff import count_added_lines, read_file_content
 from codecheck.frappe_db import FrappeDbConnection
 from codecheck.models import Finding, ReviewTarget, Severity
 from codecheck.reviewers.base import Reviewer
@@ -68,14 +68,18 @@ class RuffRunner(SubRunner):
             capture_output=True,
             text=True,
         )
-        # ruff exits 1 when it finds lint errors — that's expected, not a failure.
+        # ruff exits 1 when it finds lint errors — that's expected, not a failure. Anything
+        # else (e.g. 2: invalid config) means it never linted: raise rather than report a
+        # clean scan, same as SemgrepRunner.
         if result.returncode not in (0, 1):
-            return []
+            raise RuntimeError(f"ruff exited {result.returncode}: {result.stderr.strip() or result.stdout.strip()}")
 
         try:
             raw_findings = json.loads(result.stdout or "[]")
-        except json.JSONDecodeError:
-            return []
+        except json.JSONDecodeError as e:
+            raise RuntimeError(f"ruff produced unparseable output: {e}") from e
+        if not isinstance(raw_findings, list):
+            raise RuntimeError("ruff produced unexpected output (expected a JSON list)")
 
         findings = []
         for item in raw_findings:
@@ -163,10 +167,16 @@ class EslintRunner(SubRunner):
             capture_output=True,
             text=True,
         )
+        # eslint exits 1 when it finds lint errors; 2 is a config/fatal error, in which
+        # case it never linted -- raise rather than report a clean scan.
+        if result.returncode not in (0, 1):
+            raise RuntimeError(f"eslint exited {result.returncode}: {result.stderr.strip() or result.stdout.strip()}")
         try:
             raw_results = json.loads(result.stdout or "[]")
-        except json.JSONDecodeError:
-            return []
+        except json.JSONDecodeError as e:
+            raise RuntimeError(f"eslint produced unparseable output: {e}") from e
+        if not isinstance(raw_results, list):
+            raise RuntimeError("eslint produced unexpected output (expected a JSON list)")
 
         findings = []
         for file_result in raw_results:
@@ -248,8 +258,10 @@ class SemgrepRunner(SubRunner):
             )
         try:
             payload = json.loads(result.stdout or "{}")
-        except json.JSONDecodeError:
-            return []
+        except json.JSONDecodeError as e:
+            raise RuntimeError(f"semgrep produced unparseable output: {e}") from e
+        if not isinstance(payload, dict):
+            raise RuntimeError("semgrep produced unexpected output (expected a JSON object)")
 
         findings = []
         for item in payload.get("results", []):
@@ -302,7 +314,9 @@ class HouseRulesRunner(SubRunner):
 
 
 _APP_EXTENSIONS = (".py", ".js", ".jsx", ".ts", ".tsx")
-_TEST_MARKERS = ("def test_", "test(", "it(", "describe(")
+# Word-boundary anchored, so "latest(" / "split(" / "submit(" don't count as a test declaration.
+_TEST_MARKER_RE = re.compile(r"\bdef test_|\b(?:test|it|describe|fit|fdescribe)\(")
+_PASS_STATEMENT_RE = re.compile(r"\bpass\b")
 
 # Matches test-file conventions, not just a "test" substring (which would
 # also match contest.tsx, latest.ts, ...).
@@ -323,19 +337,17 @@ def _is_test_path(path: str) -> bool:
 
 
 def _added_line_count(diff_text: str) -> int:
-    return sum(
-        1 for line in diff_text.splitlines() if line.startswith("+") and not line.startswith("+++")
-    )
+    return count_added_lines(diff_text)
 
 
 def _looks_like_real_test(target: ReviewTarget) -> bool:
     """A test file counts if its diff has a test declaration; otherwise a
     large enough added-line count, or (falling back) any modification with
     at least one added line -- but not a bare boilerplate stub."""
-    if any(marker in target.diff_text for marker in _TEST_MARKERS):
+    if _TEST_MARKER_RE.search(target.diff_text):
         return True
     additions = _added_line_count(target.diff_text)
-    if "pass" in target.diff_text and additions < 15:
+    if _PASS_STATEMENT_RE.search(target.diff_text) and additions < 15:
         return False  # boilerplate stub, not a real test
     if additions > 15:
         return True

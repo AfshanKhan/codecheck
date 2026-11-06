@@ -5,7 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
+
+from codecheck.models import Severity
 
 
 class RulesConfig(BaseModel):
@@ -65,6 +67,16 @@ class LocalConfig(BaseModel):
 class ThresholdsConfig(BaseModel):
     fail_on_severity: str = "high"
 
+    @field_validator("fail_on_severity")
+    @classmethod
+    def _valid_severity(cls, value: str) -> str:
+        # Fail at load time, not after a full scan when Severity(...) finally runs.
+        normalized = value.strip().lower()
+        if normalized not in {s.value for s in Severity}:
+            allowed = ", ".join(s.value for s in Severity)
+            raise ValueError(f"must be one of {allowed}, got {value!r}")
+        return normalized
+
 
 class Config(BaseModel):
     rules: RulesConfig = RulesConfig()
@@ -75,8 +87,11 @@ class Config(BaseModel):
 
 
 def load_config(config_path: Path | None) -> Config:
-    if config_path is None or not config_path.is_file():
+    if config_path is None:
         return Config()
-    with config_path.open() as f:
+    if not config_path.is_file():
+        # An explicit --config that doesn't exist is a typo, not "use the defaults".
+        raise FileNotFoundError(f"config file not found: {config_path}")
+    with config_path.open(encoding="utf-8") as f:
         raw = yaml.safe_load(f) or {}
     return Config.model_validate(raw)

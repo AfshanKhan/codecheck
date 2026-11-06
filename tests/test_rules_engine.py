@@ -246,3 +246,65 @@ def test_runner_failures_stays_empty_for_an_ordinary_unavailable_skip(monkeypatc
 
     assert "ruff" in dict(reviewer.skipped_runners)
     assert reviewer.runner_failures == []
+
+
+def test_ruff_tool_failure_is_a_runner_failure_not_a_clean_scan(tmp_path: Path):
+    # an invalid ruff config makes ruff exit 2 without linting anything
+    (tmp_path / "pyproject.toml").write_text('[tool.ruff]\nline-length = "bad"\n')
+    (tmp_path / "a.py").write_text("import os\n")
+    target = ReviewTarget(path="a.py", status="scanned", changed_lines=None)
+    reviewer = RulesEngineReviewer(RulesConfig(ruff=True, eslint=False, semgrep=False, house_rules=False))
+
+    findings = reviewer.review([target], tmp_path)
+
+    assert findings == []
+    assert reviewer.runner_failures == ["ruff"]
+    assert "ruff exited 2" in dict(reviewer.skipped_runners)["ruff"]
+
+
+def test_eslint_fatal_exit_is_a_runner_failure_not_a_clean_scan(tmp_path: Path, monkeypatch):
+    (tmp_path / "eslint.config.js").write_text("module.exports = [];\n")
+    monkeypatch.setattr("codecheck.reviewers.rules_engine.shutil.which", lambda _n: "/usr/bin/eslint")
+    monkeypatch.setattr(
+        "codecheck.reviewers.rules_engine.subprocess.run",
+        lambda *a, **k: subprocess.CompletedProcess(a, 2, stdout="", stderr="Oops! Something went wrong"),
+    )
+    target = ReviewTarget(path="a.js", status="scanned", changed_lines=None)
+    reviewer = RulesEngineReviewer(RulesConfig(ruff=False, eslint=True, semgrep=False, house_rules=False))
+
+    reviewer.review([target], tmp_path)
+
+    assert reviewer.runner_failures == ["eslint"]
+
+
+def _fake_run(stdout: str, returncode: int = 0):
+    return lambda *a, **k: subprocess.CompletedProcess(a, returncode, stdout=stdout, stderr="")
+
+
+def test_semgrep_unparseable_output_is_a_runner_failure_not_a_clean_scan(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("codecheck.reviewers.rules_engine.shutil.which", lambda _n: "/usr/bin/semgrep")
+    monkeypatch.setattr("codecheck.reviewers.rules_engine.subprocess.run", _fake_run("Traceback (most recent call last)"))
+    reviewer = RulesEngineReviewer(RulesConfig(ruff=False, eslint=False, semgrep=True, house_rules=False))
+
+    reviewer.review([ReviewTarget(path="a.py", status="scanned", changed_lines=None)], tmp_path)
+
+    assert reviewer.runner_failures == ["semgrep"]
+    assert "unparseable" in dict(reviewer.skipped_runners)["semgrep"]
+
+
+@pytest.mark.parametrize("tool", ["ruff", "eslint", "semgrep"])
+def test_valid_json_of_the_wrong_shape_is_a_runner_failure(tmp_path: Path, monkeypatch, tool: str):
+    # a JSON object where a list is expected (or vice versa) used to blow up in the parsing loop
+    # with a confusing AttributeError; it must be reported as the tool producing unexpected output
+    (tmp_path / "eslint.config.js").write_text("module.exports = [];\n")
+    monkeypatch.setattr("codecheck.reviewers.rules_engine.shutil.which", lambda _n: f"/usr/bin/{tool}")
+    wrong_shape = "[]" if tool == "semgrep" else "{}"
+    monkeypatch.setattr("codecheck.reviewers.rules_engine.subprocess.run", _fake_run(wrong_shape))
+    target = ReviewTarget(path="a.js" if tool == "eslint" else "a.py", status="scanned", changed_lines=None)
+    config = RulesConfig(ruff=tool == "ruff", eslint=tool == "eslint", semgrep=tool == "semgrep", house_rules=False)
+    reviewer = RulesEngineReviewer(config)
+
+    reviewer.review([target], tmp_path)
+
+    assert reviewer.runner_failures == [tool]
+    assert "unexpected output" in dict(reviewer.skipped_runners)[tool]

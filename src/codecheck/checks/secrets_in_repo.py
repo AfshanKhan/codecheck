@@ -24,46 +24,57 @@ def _read_gitignore_patterns(gitignore_path: Path) -> list[str]:
         return []
 
 
+def _git_root(repo_path: Path) -> Path:
+    """Nearest ancestor of repo_path (itself included) holding a .git entry; repo_path
+    itself when there is none, so a scan outside a repo behaves as it always did."""
+    for candidate in (repo_path, *repo_path.parents):
+        if (candidate / ".git").exists():
+            return candidate
+    return repo_path
+
+
 def _is_ignored(repo_path: Path, env_path: Path) -> bool:
-    """Real gitignore semantics (wildcards, directory anchoring, negation --
-    '!path' un-ignoring a file another pattern covers) via `pathspec`'s
-    'gitignore' matcher, rather than a hand-rolled approximation.
+    """Whether git would ignore `env_path`, with real gitignore semantics (wildcards,
+    directory anchoring, `!` negation) via `pathspec`.
 
-    A prior hand-rolled version only handled a few fixed shapes by comparing
-    the pattern string itself against a short list of candidates -- it
-    couldn't recognize a negation pattern at all, so a `.gitignore` with a
-    broad `.env` ignore *and* a narrower `!committed/.env` un-ignore for one
-    deliberately-tracked file would still treat that file as covered and
-    silently miss it, the exact false negative this check exists to catch
-    (caught by Graphite AI review on the PR that introduced this check).
+    Every `.gitignore` from the git root down to `env_path`'s own directory is
+    consulted -- not just repo_path's, since `--repo-path` may select a subdirectory
+    of the repo whose ancestors' rules still apply -- and each is matched against
+    the path relative to its own directory, the frame git uses. They are applied
+    root first, so a deeper file's verdict overrides a shallower one's, as in git:
+    a root `.env*` ignore is lifted again by an `app/.gitignore` containing
+    `!.env.production`. A file no pattern mentions is not ignored.
 
-    Checks every directory from `repo_path` down to `env_path`'s own
-    directory for a `.gitignore`, not just the repo root -- a real Frappe
-    app commonly has its own `.gitignore` a few levels down from the repo
-    root that a root-only check would simply never see (caught by CodeRabbit
-    review on the same PR). Each `.gitignore` found is matched against the
-    `.env` path *relative to that `.gitignore`'s own directory* -- the same
-    frame of reference git itself uses -- not the repo root, since a nested
-    `.gitignore`'s patterns are scoped to its own subtree. Any directory's
-    `.gitignore` matching is enough to call the file covered -- doesn't
-    implement git's full closest-.gitignore-wins precedence for a negation
-    pattern that disagrees *across* levels (e.g. a root `.gitignore`
-    ignoring `.env` and a *nested* one un-ignoring it back for one specific
-    file) -- deliberately out of scope: that specific cross-level override
-    is rare, and treating "any covering pattern, anywhere" as sufficient is
-    the safe direction for a check whose job is not missing a real secret.
+    Not modelled: an ignored *parent directory* (git then never looks inside it, so
+    a `!` cannot re-include the file). Treating that file as not ignored errs toward
+    reporting it, the safe direction for a check whose job is not missing a secret.
     """
-    current = env_path.parent
-    while True:
-        patterns = _read_gitignore_patterns(current / ".gitignore")
-        if patterns:
-            rel_to_here = env_path.relative_to(current).as_posix()
-            if pathspec.PathSpec.from_lines("gitignore", patterns).match_file(rel_to_here):
-                return True
-        if current == repo_path:
-            break
-        current = current.parent
-    return False
+    root = _git_root(repo_path)
+    directories = [env_path.parent]
+    while directories[-1] != root and directories[-1] != directories[-1].parent:
+        directories.append(directories[-1].parent)
+
+    ignored = False
+    for directory in reversed(directories):  # git root first, env_path's directory last
+        patterns = _read_gitignore_patterns(directory / ".gitignore")
+        if not patterns:
+            continue
+        rel_to_here = env_path.relative_to(directory).as_posix()
+        verdict = pathspec.PathSpec.from_lines("gitignore", patterns).check_file(rel_to_here).include
+        if verdict is not None:
+            ignored = verdict
+    return ignored
+
+
+# .env.example and friends are meant to be committed -- they hold placeholders, not secrets.
+_TEMPLATE_SUFFIXES = frozenset({"example", "sample", "template", "dist", "defaults"})
+
+
+def _is_env_file_name(name: str) -> bool:
+    """`.env` itself, or a variant such as `.env.local` / `.env.production`."""
+    if name == ".env":
+        return True
+    return name.startswith(".env.") and name.rsplit(".", 1)[-1] not in _TEMPLATE_SUFFIXES
 
 
 class SecretsInRepoRunner:
@@ -79,8 +90,8 @@ class SecretsInRepoRunner:
         if not repo_path.is_dir():
             return []
         findings = []
-        for env_path in sorted(repo_path.rglob(".env")):
-            if not env_path.is_file():
+        for env_path in sorted(repo_path.rglob(".env*")):
+            if not _is_env_file_name(env_path.name) or not env_path.is_file():
                 continue
             if _is_ignored(repo_path, env_path):
                 continue

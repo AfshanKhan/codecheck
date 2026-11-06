@@ -205,3 +205,89 @@ def test_read_file_content_refuses_path_that_escapes_repo(tmp_path: Path, sandbo
     target = ReviewTarget(path="../secret.txt", status="modified", diff_text="")
     content = read_file_content(sandbox_repo, target)
     assert content is None
+
+
+# --- regressions: content lines that merely look like file headers --------------------
+
+def test_parse_changed_lines_removed_dashes_line_is_not_a_file_header():
+    # a removed markdown "---" rule (or SQL "-- comment") is the diff line "----" / "--- ..."
+    diff_text = "@@ -1,3 +1,3 @@\n ctx\n----\n+added\n ctx2\n"
+    assert _parse_changed_lines(diff_text) == {2}
+
+
+def test_parse_changed_lines_added_plusplus_line_is_content():
+    diff_text = "@@ -1,2 +1,3 @@\n ctx\n+++i;\n+real\n"
+    assert _parse_changed_lines(diff_text) == {2, 3}
+
+
+def test_parse_changed_lines_ignores_no_newline_marker():
+    diff_text = "@@ -1,2 +1,2 @@\n ctx\n-old\n\\ No newline at end of file\n+new\n\\ No newline at end of file\n"
+    assert _parse_changed_lines(diff_text) == {2}
+
+
+def test_count_added_lines_skips_file_header_but_counts_plusplus_content():
+    from codecheck.diff import count_added_lines
+
+    diff_text = "--- a/x.py\n+++ b/x.py\n@@ -1 +1,2 @@\n+++i;\n+b\n"
+    assert count_added_lines(diff_text) == 2
+
+
+def test_raw_diff_status_comes_from_header_not_file_content():
+    from codecheck.diff import _parse_raw_diff
+
+    block = (
+        "diff --git a/x.py b/x.py\nindex 1..2 100644\n--- a/x.py\n+++ b/x.py\n"
+        "@@ -1 +1 @@\n-a\n+print('new file mode / deleted file mode / rename from')\n"
+    )
+    [target] = _parse_raw_diff(block)
+    assert (target.status, target.old_path) == ("modified", None)
+
+
+def test_raw_diff_status_still_detects_a_real_new_file():
+    from codecheck.diff import _parse_raw_diff
+
+    block = (
+        "diff --git a/n.py b/n.py\nnew file mode 100644\nindex 0..1\n--- /dev/null\n+++ b/n.py\n"
+        "@@ -0,0 +1 @@\n+x\n"
+    )
+    assert [t.status for t in _parse_raw_diff(block)] == ["added"]
+
+
+def _commit_all(repo: Path, message: str) -> None:
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-q", "-m", message], cwd=repo, check=True, capture_output=True)
+
+
+@pytest.fixture
+def subdir_repo(tmp_path: Path) -> Path:
+    repo = tmp_path / "mono"
+    (repo / "app").mkdir(parents=True)
+    for args in (["init", "-q", "-b", "main"], ["config", "user.email", "t@example.com"], ["config", "user.name", "T"]):
+        subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
+    (repo / "app" / "a.py").write_text("x = 1\n")
+    (repo / "top.py").write_text("y = 1\n")
+    _commit_all(repo, "initial")
+    subprocess.run(["git", "checkout", "-q", "-b", "feature"], cwd=repo, check=True, capture_output=True)
+    return repo
+
+
+def test_base_ref_diff_on_a_subdirectory_is_scoped_and_relative_to_it(subdir_repo: Path):
+    (subdir_repo / "app" / "a.py").write_text("x = 2\n")
+    (subdir_repo / "top.py").write_text("y = 2\n")  # outside repo_path
+    _commit_all(subdir_repo, "change both")
+
+    targets = get_diff(subdir_repo / "app", base_ref="main", staged=False)
+
+    assert [t.path for t in targets] == ["a.py"]
+    assert read_file_content(subdir_repo / "app", targets[0]) == "x = 2\n"
+
+
+def test_staged_diff_on_a_subdirectory_is_scoped_and_relative_to_it(subdir_repo: Path):
+    (subdir_repo / "app" / "a.py").write_text("x = 2\n")
+    (subdir_repo / "top.py").write_text("y = 2\n")
+    subprocess.run(["git", "add", "-A"], cwd=subdir_repo, check=True, capture_output=True)
+
+    targets = get_diff(subdir_repo / "app", base_ref=None, staged=True)
+
+    assert [t.path for t in targets] == ["a.py"]
+

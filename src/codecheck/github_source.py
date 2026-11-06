@@ -50,7 +50,7 @@ _AUTH_ERROR_MARKERS = (
     "permission denied (publickey)",
     "not found",  # GitHub/GitLab return this for both missing and private repos.
     "invalid username or password",
-    "403",
+    "error: 403",  # git's "The requested URL returned error: 403"; a bare "403" matched PR numbers
 )
 
 
@@ -174,7 +174,9 @@ def _fetch_with_credential_retry(repo: git.Repo, refspec: str, repo_url_for_prom
                     repo.git.fetch("--", "origin", refspec)
             return True, ""
         except git.GitCommandError as e:
-            return False, str(e)
+            # stderr only: str(e) also embeds the command line, so a PR number or branch
+            # name containing e.g. "403" would be mistaken for an auth failure.
+            return False, str(e.stderr or e)
 
     _try_with_credential_retry(_attempt, repo_url_for_prompt)
 
@@ -192,14 +194,17 @@ def pr_worktree(
     base_local_ref = f"refs/codecheck/base-{pr_number}"
     origin_url = _origin_url_for_prompt(repo)
 
+    # Leading "+" forces the update: a ref left behind by an interrupted run, or a PR
+    # that was force-pushed since, is a non-fast-forward and would otherwise be rejected.
     try:
-        _fetch_with_credential_retry(repo, f"pull/{pr_number}/head:{pr_ref}", origin_url)
+        _fetch_with_credential_retry(repo, f"+pull/{pr_number}/head:{pr_ref}", origin_url)
     except ValueError as e:
         raise ValueError(f"Could not fetch PR #{pr_number} from origin: {e}") from e
 
     try:
-        _fetch_with_credential_retry(repo, f"{base_ref_name}:{base_local_ref}", origin_url)
+        _fetch_with_credential_retry(repo, f"+{base_ref_name}:{base_local_ref}", origin_url)
     except ValueError as e:
+        _delete_ref(repo, pr_ref)  # don't leave the PR ref behind
         raise ValueError(f"Could not fetch base ref {base_ref_name!r} from origin: {e}") from e
 
     worktree_dir = Path(tempfile.mkdtemp(prefix=f"codecheck-pr-{pr_number}-"))

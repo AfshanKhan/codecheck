@@ -13,7 +13,9 @@ rules:
                          # zero-findings pass -- see "Exit codes" in CLI-Reference.md.
   house_rules: true
   test_coverage: true   # RULE-017: diff changes app code but touches no test file (diff mode only)
-  secrets_scan: true    # RULE-035: an .env file present anywhere in the repo and not covered by .gitignore
+  secrets_scan: true    # RULE-035: an .env file (or .env.<name> variant such as .env.production;
+                         # .env.example/.sample/.template/.dist/.defaults are exempt) present anywhere
+                         # in the repo and not covered by .gitignore
   disabled_checks: []   # e.g. ["RULE-009", "RUFF-F401"] -- drop specific check IDs from the report
                          # regardless of which sub-runner produced them, without disabling that
                          # whole sub-runner
@@ -41,7 +43,8 @@ local:
   request_timeout_seconds: 300   # CPU inference can take minutes per file; raise for slower hardware
 
 thresholds:
-  fail_on_severity: "high"   # one of: info, low, medium, high, critical -- or use --gate on the CLI
+  fail_on_severity: "high"   # one of: info, low, medium, high, critical (case-insensitive; anything else
+                              # is rejected at startup with exit code 2) -- or use --gate on the CLI
                               # for a named profile (strict/standard/relaxed) instead of a raw value
 
 suggestions:                 # only used when --suggest-fixes is passed (see CLI Reference)
@@ -50,7 +53,7 @@ suggestions:                 # only used when --suggest-fixes is passed (see CLI
 ```
 
 **Important gap to know about:** `load_config()` ([config.py](../src/codecheck/config.py))
-only reads a config file if you pass `--config` explicitly. If you omit the flag,
+only reads a config file if you pass `--config` explicitly (and exits 2 if that path doesn't exist). If you omit the flag,
 it silently falls back to all-defaults — it does **not** look for `./config.yaml`
 in the repo or cwd automatically. If you have a `config.yaml` sitting next to
 where you run the command, you still need `--config config.yaml` or it's ignored.

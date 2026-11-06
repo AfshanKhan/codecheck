@@ -343,3 +343,45 @@ def test_cloned_repo_retries_with_credentials_on_auth_failure(fake_origin_and_cl
     assert len(call_log) == 2
     assert call_log[0] is None
     assert call_log[1] is not None and call_log[1]["CODECHECK_GIT_USERNAME"] == "afshan"
+
+
+def test_pr_worktree_recovers_from_a_stale_pr_ref_after_force_push(fake_origin_and_clone):
+    # a refs/codecheck/pr-5 left over from an interrupted run, then the PR is force-pushed:
+    # the fetch is a non-fast-forward and used to be rejected for good
+    bare, clone = fake_origin_and_clone
+    old_sha = _git(bare, "rev-parse", "refs/pull/5/head").stdout.strip()
+    _git(clone, "fetch", "-q", "origin", "+refs/pull/5/head:refs/codecheck/pr-5")
+
+    _git(clone, "checkout", "-q", "-b", "rewritten", "main")
+    (clone / "a.py").write_text("x = 3\n")
+    _git(clone, "commit", "-q", "-am", "force-pushed PR change")
+    new_sha = _git(clone, "rev-parse", "HEAD").stdout.strip()
+    _git(clone, "push", "-q", "origin", f"{new_sha}:refs/heads/rewritten")
+    _git(bare, "update-ref", "refs/pull/5/head", new_sha)
+    assert new_sha != old_sha
+
+    with pr_worktree(clone, 5, base_ref_override="main") as (worktree_path, _base_ref):
+        assert (worktree_path / "a.py").read_text() == "x = 3\n"
+
+
+def test_pr_worktree_removes_pr_ref_when_the_base_fetch_fails(fake_origin_and_clone):
+    _bare, clone = fake_origin_and_clone
+
+    with pytest.raises(ValueError, match="Could not fetch base ref"):
+        with pr_worktree(clone, 5, base_ref_override="no-such-branch"):
+            pass
+
+    result = subprocess.run(["git", "show-ref", "--verify", "--quiet", "refs/codecheck/pr-5"], cwd=clone)
+    assert result.returncode != 0
+
+
+def test_pr_number_containing_403_is_not_mistaken_for_an_auth_failure(fake_origin_and_clone):
+    # str(GitCommandError) embeds the command line ("pull/4031/head"); only stderr should be classified
+    _bare, clone = fake_origin_and_clone
+
+    with pytest.raises(ValueError) as excinfo:
+        with pr_worktree(clone, 4031, base_ref_override="main"):
+            pass
+
+    assert "Not prompting for credentials" not in str(excinfo.value)
+

@@ -480,7 +480,8 @@ mariadb` only, the Frappe default.
 - `1` — at least one finding at or above `thresholds.fail_on_severity` (default
   `high`, or `--gate`'s override). This is what you'd wire into CI.
 - `2` — a usage/safety error (bad `base_ref`, no merge base, an invalid
-  `--gate` value, or the audit cloud cap blocked the run) -- no report is
+  `--gate` value, a `--config` file that doesn't exist or fails validation (e.g. an
+  unknown `fail_on_severity`), or the audit cloud cap blocked the run) -- no report is
   written in this case. Also used when a configured rules sub-runner (e.g.
   semgrep with an invalid `semgrep_config`) crashed mid-run instead of
   completing, or when an LLM tier (local or cloud) failed on *every* file
