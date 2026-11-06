@@ -10,7 +10,7 @@ dependencies = [
     "rich>=13.7",
     "httpx>=0.27",
     "gitpython>=3.2.1",
-    "pydantic>=2.14.1",
+    "pydantic>=2.14.2",
     "pyyaml>=6.0",
     "python-docx>=1.1",
     "pathspec>=1.0",
@@ -29,8 +29,8 @@ dependencies = [
 # one, so there's no way to declare it as a Python dependency. Install it
 # separately (e.g. `npm install -g eslint`) if you want that sub-runner.
 rules = [
-    "ruff>=0.17.2",
-    "semgrep>=1.182.1",
+    "ruff>=0.17.3",
+    "semgrep>=1.183.0",
 ]
 
 # Only needed for --frappe-db-config -- a niche, opt-in feature most installs
@@ -53,8 +53,8 @@ packages = ["src/codecheck"]
 
 [dependency-groups]
 dev = [
-    "pytest>=8.0",
-    "ruff>=0.17.2",
+    "pytest>=9.2.0",
+    "ruff>=0.17.3",
 ]
 
 [tool.ruff]
