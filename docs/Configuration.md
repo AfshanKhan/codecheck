@@ -25,13 +25,18 @@ rules:
 
 cloud:
   enabled: false          # can also be turned on with --cloud
-  provider: anthropic     # anthropic | groq | mistral | cerebras | openrouter | openai_compatible
+  provider: anthropic     # anthropic | groq | mistral | cerebras | openrouter | google | openai_compatible
   model: "claude-sonnet-4-6"
   api_key_env: "ANTHROPIC_API_KEY"   # name of the env var holding the key; omit to use the provider's default
   base_url: null           # only used by provider: openai_compatible (custom endpoint, e.g. LM Studio)
   max_file_lines: 800     # files larger than this are skipped by the cloud tier
   audit_file_cap: 50      # cloud tier (audit OR diff) refuses to run over this many files without --force-cloud
   request_timeout_seconds: 120   # per-request HTTP timeout (seconds); hosted APIs are fast
+  skip_noise: false       # true = don't send tests, bundled/minified/generated files, empty files or boilerplate
+                           # to the LLM (see "Files kept away from the LLM" below)
+  extensions: null        # e.g. [".py", ".js", ".html"] -- send only these file types; null = every file
+  time_budget_seconds: null   # stop starting new files after this long; the rest are listed as skipped
+                               # and the report is still written. null = no limit
 
 local:
   enabled: false          # can also be turned on with --local
@@ -41,6 +46,8 @@ local:
   api_key_env: null       # set only if your local server requires auth (most don't)
   max_file_lines: 2000    # higher than the cloud default — local inference is free
   request_timeout_seconds: 300   # CPU inference can take minutes per file; raise for slower hardware
+  skip_noise: false       # same as cloud.skip_noise
+  extensions: null        # same as cloud.extensions
 
 thresholds:
   fail_on_severity: "high"   # one of: info, low, medium, high, critical (case-insensitive; anything else
@@ -52,6 +59,27 @@ suggestions:                 # only used when --suggest-fixes is passed (see CLI
   exclude_checks: []          # e.g. ["RULE-009"] -- check IDs never sent to the LLM for a suggestion
 ```
 
+### Files kept away from the LLM
+
+These apply to the cloud and local tiers. The rules tier (ruff, semgrep, house rules) still checks every file.
+
+- **Always:** GitHub workflow and action files (anything under `.github/workflows/` or `.github/actions/`, at any
+  depth) are never sent to an LLM.
+- **`extensions`:** when set, only files with those extensions are sent. The cloud file cap counts only those files.
+- **`skip_noise: true`:** also leaves out
+  - *tests*: `test_*.py`, `*_test.py`, `tests.py`, `conftest.py`, `*.test.*`, `*.spec.*`, `*.cy.*`, and anything under
+    a `test`, `tests`, `__tests__`, `spec`, `e2e` or `cypress` folder;
+  - *bundled or minified files*: `*.min.js`, `*.chunk.js`, `*.umd.js`, `*.map`, anything under `dist`, `node_modules`
+    or `vendor`, and any file with extremely long lines. `*.bundle.js` counts only when its content has build markers
+    (webpack and similar), because in Frappe it is hand-written source;
+  - *generated files*: a leading comment saying auto-generated or do-not-edit, and `*_pb2.py`;
+  - *empty files*: blank, or comments only (most `__init__.py` files);
+  - *boilerplate*: Python files with only imports, docstrings, `pass`, dunder assignments such as `__version__`, and
+    classes that are just `pass` (including Frappe's scaffolded DocType controllers); JS files that only re-export;
+    an empty `frappe.ui.form.on(...)` script.
+
+  The report's "Skipped" list gets one summary line ("N file(s) not sent to the AI (...)") instead of one per file.
+
 **Important gap to know about:** `load_config()` ([config.py](../src/codecheck/config.py))
 only reads a config file if you pass `--config` explicitly (and exits 2 if that path doesn't exist). If you omit the flag,
 it silently falls back to all-defaults — it does **not** look for `./config.yaml`
@@ -60,7 +88,7 @@ where you run the command, you still need `--config config.yaml` or it's ignored
 
 ### Setting up cloud AI review (free providers)
 
-`cloud.provider` isn't Anthropic-only. Groq, Mistral, Cerebras, and OpenRouter all
+`cloud.provider` isn't Anthropic-only. Google (Gemini), Groq, Mistral, Cerebras, and OpenRouter all
 issue genuinely free API keys — no credit card, no prepaid balance — on the same
 OpenAI-compatible chat-completions protocol (function-calling included), so
 `codecheck` talks to all of them through one implementation,
@@ -81,13 +109,14 @@ cloud:
 | `groq` | `api.groq.com/openai/v1/chat/completions` | `GROQ_API_KEY` |
 | `mistral` | `api.mistral.ai/v1/chat/completions` | `MISTRAL_API_KEY` |
 | `cerebras` | `api.cerebras.ai/v1/chat/completions` | `CEREBRAS_API_KEY` |
+| `google` | `generativelanguage.googleapis.com/v1beta/openai/chat/completions` | `GEMINI_API_KEY` |
 | `openrouter` | `openrouter.ai/api/v1/chat/completions` | `OPENROUTER_API_KEY` |
 | `openai_compatible` | **required**, set `cloud.base_url` yourself | none by default — set `cloud.api_key_env` if the endpoint needs auth |
 
 `provider: openai_compatible` + `cloud.base_url` also covers a local LM Studio
 server (or anything else speaking the same protocol) — set `api_key_env: ""` if
 the endpoint doesn't require auth at all. All the usual safety behavior
-(`max_file_lines`, `audit_file_cap`, per-file skip-not-crash on errors) applies
+(`max_file_lines`, `audit_file_cap`, `skip_noise`, `extensions`, per-file skip-not-crash on errors) applies
 identically regardless of provider — `_BaseCloudReviewer` in `cloud_llm.py` owns
 that loop, and both backends plug into it.
 
@@ -99,7 +128,7 @@ vs. `OpenAICompatibleCloudReviewer` based on `cloud.provider` — this is what
 GPU infrastructure) works the same way, and needs no dedicated preset — verified
 directly: `provider` is just a free-form label for presets/error messages, and
 an explicit `cloud.base_url` always wins over any preset lookup regardless of
-what the provider string is set to. Unlike Groq/Mistral/Cerebras/OpenRouter,
+what the provider string is set to. Unlike Google/Groq/Mistral/Cerebras/OpenRouter,
 which each have exactly one fixed public API URL, a self-hosted vLLM deployment
 has no canonical address — it's wherever you deployed it — so there's
 deliberately no preset with a fabricated default `base_url` for it:

@@ -524,7 +524,7 @@ implementations:
 
 - `AnthropicCloudReviewer` — Anthropic's Messages API, its own small per-file
   loop since the request/response shape doesn't match OpenAI's.
-- `OpenAICompatibleCloudReviewer` — Groq, Mistral, Cerebras, OpenRouter, or a
+- `OpenAICompatibleCloudReviewer` — Google (Gemini), Groq, Mistral, Cerebras, OpenRouter, or a
   custom `openai_compatible` endpoint (see [Configuration](Configuration.md)).
   Built on
   [`reviewers/openai_protocol.py`](../src/codecheck/reviewers/openai_protocol.py)'s
@@ -564,6 +564,17 @@ message carries the file path, status, and full current file content, plus
 either the unified diff hunk (`diff` mode) or a note that this is a full-file
 audit with no diff (`audit` mode).
 
+**Which files reach the LLM at all.** Before a tier's `review()` runs, `cli.py` narrows the targets:
+- GitHub workflow and action files (`.github/workflows/`, `.github/actions/`) are always dropped
+  (`is_ci_path()` / `cloud_targets()` in `cloud_llm.py`, applied to the cloud and local tiers).
+- `extensions` (cloud or local) keeps only files with those suffixes; the audit cap counts only the survivors.
+- `skip_noise: true` runs [`noise.py`](../src/codecheck/noise.py): `by_path()` drops tests and bundle/build
+  folders and names, then `by_content()` reads the file and drops empty, minified, generated and boilerplate
+  ones (Python via `ast`: only imports, docstrings, `pass`, dunder assignments, `pass`-only classes and
+  `if TYPE_CHECKING:` blocks; JS: re-export-only barrels and empty Frappe form scripts). The files left out
+  are summarised in one `skipped` line ("N file(s) not sent to the AI (...)") rather than listed one by one.
+- Rules (Tier 1) are unaffected and see every file.
+
 **Per-file skip conditions** (recorded in the reviewer's `skipped_files` and
 surfaced in the final report's "Skipped" section, not silently dropped):
 - File status is `deleted` → skipped outright, never sent.
@@ -578,12 +589,22 @@ surfaced in the final report's "Skipped" section, not silently dropped):
   against a real 400 from Groq where the bare exception message alone gave no
   indication of the cause.
 - A response comes back without the expected tool call block (`tool_use` for
-  Anthropic, `tool_calls` for OpenAI-compatible) → treated as a skip, not a crash.
+  Anthropic, `tool_calls` for OpenAI-compatible) → retried once (models do this
+  intermittently), then treated as a skip, not a crash. The skip reason says
+  whether the reply was empty or plain text and gives the `finish_reason`. When it
+  was `length` (a thinking model — seen with Gemini — spent its whole 4096-token
+  output budget reasoning), the retry allows 16384 tokens.
+- A `cloud.time_budget_seconds` that has run out → the files not yet started are skipped
+  with `"time budget reached, not reviewed"` and the report is still written.
 - A response's JSON is malformed, isn't an object, or a `findings` array contains
   a non-object element → skipped with a specific reason rather than raising —
   confirmed necessary against real malformed/edge-case responses from both
   backends; see `post_with_retry()`'s callers in `openai_protocol.py` and
   `cloud_llm.py` for the exact guard clauses.
+
+**A per-day quota 429 stops the tier.** A 429 whose body mentions a per-day limit (Google's
+`...PerDay...` quota ids) is not retried, since waiting won't help until tomorrow; the
+files after it are skipped with `"daily request quota for this API key is used up"`.
 
 **429 (rate limited) is handled differently from other HTTP errors** — it
 doesn't fall straight to a skip. `post_with_retry()` in `openai_protocol.py`
@@ -898,6 +919,7 @@ src/codecheck/
 ├── models.py                # Finding, Severity, ReviewTarget, ReviewReport (+ from_dict()/to_dict() on the last two)
 ├── diff.py                  # git diff extraction -> ReviewTarget (staged / base-ref merge-base)
 ├── repo_scan.py              # whole-repo file walk -> ReviewTarget (audit mode)
+├── noise.py                  # files not worth sending to an LLM: tests, bundles, generated, empty, boilerplate (cloud/local `skip_noise`)
 ├── github_source.py           # --pr (isolated git worktree fetch) and --repo-url (clone) support
 ├── lm_link.py                  # resolves which device (local vs LM Link remote) serves local.model
 ├── aggregator.py              # cross-tier merge + dedupe
@@ -909,7 +931,7 @@ src/codecheck/
 │   ├── rules_engine.py        # Tier 1: SubRunner ABC + Ruff/Eslint/Semgrep/HouseRules/TestCoverage runners
 │   ├── openai_protocol.py     # shared OpenAI chat-completions request/parsing/loop, used by Tiers 2 and 3 (and reused by suggest.py)
 │   ├── local_llm.py           # Tier 2: local OpenAI-compatible server (LM Studio, Ollama, ...), no cost
-│   └── cloud_llm.py           # Tier 3: Anthropic + OpenAI-compatible (Groq/Mistral/Cerebras/OpenRouter/custom) backends, sync httpx, tool-forced JSON, audit cap
+│   └── cloud_llm.py           # Tier 3: Anthropic + OpenAI-compatible (Google/Groq/Mistral/Cerebras/OpenRouter/custom) backends, sync httpx, tool-forced JSON, audit cap
 ├── checks/
 │   ├── base.py                 # HouseCheck ABC
 │   ├── no_bare_except.py       # RULE-001

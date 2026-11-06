@@ -42,6 +42,11 @@ _TRANSIENT_SERVER_STATUSES = frozenset({502, 503, 504, 529})
 _MAX_TRANSIENT_SERVER_RETRIES = 2
 
 
+def daily_quota_hit(text: str) -> bool:
+    """A 429 about a per-day quota (Google: "...PerDay..."), not a per-minute rate limit."""
+    return "perday" in text.lower().replace(" ", "").replace("_", "")
+
+
 def post_with_retry(
     client: httpx.Client, url: str, json_payload: dict, max_retries: int = DEFAULT_MAX_RETRIES
 ) -> httpx.Response:
@@ -54,7 +59,9 @@ def post_with_retry(
     while True:
         response = client.post(url, json=json_payload)
         status = response.status_code
-        if status == 429:
+        if status == 429 and daily_quota_hit(response.text):
+            retry_limit = 0  # waiting will not help until tomorrow
+        elif status == 429:
             retry_limit = max_retries
         elif status in _TRANSIENT_SERVER_STATUSES:
             retry_limit = _MAX_TRANSIENT_SERVER_RETRIES
@@ -179,6 +186,11 @@ def within_diff_scope(target: ReviewTarget, finding: Finding) -> bool:
     )
 
 
+_NO_TOOL_CALL = "no report_findings tool call in response"
+_MAX_TOKENS = 4096
+_RETRY_MAX_TOKENS = 16384
+
+
 def _extract_findings_from_content(content: str | None) -> list[dict] | None:
     """Strict json.loads fallback for a tool call serialized into `content`.
     Returns None if it doesn't parse to exactly the expected shape."""
@@ -256,6 +268,18 @@ class OpenAIProtocolReviewer(Reviewer):
     def _review_file(
         self, client: httpx.Client, target: ReviewTarget, content: str
     ) -> tuple[list[dict], str | None]:
+        """One retry when the model answers without calling the tool: models do this
+        intermittently (seen with Gemini), and a second try usually works."""
+        findings, error = self._review_file_once(client, target, content)
+        if error and error.startswith(_NO_TOOL_CALL):
+            # finish_reason=length with an empty reply: a thinking model spent the whole token
+            # budget reasoning (Gemini does this), so the retry gets a bigger one.
+            findings, error = self._review_file_once(client, target, content, _RETRY_MAX_TOKENS if "finish_reason=length" in error else _MAX_TOKENS)
+        return findings, error
+
+    def _review_file_once(
+        self, client: httpx.Client, target: ReviewTarget, content: str, max_tokens: int = _MAX_TOKENS
+    ) -> tuple[list[dict], str | None]:
         payload = {
             "model": self.config.model,
             "messages": [
@@ -264,7 +288,7 @@ class OpenAIProtocolReviewer(Reviewer):
             ],
             "tools": [{"type": "function", "function": OPENAI_FINDINGS_FUNCTION}],
             "tool_choice": "required",
-            "max_tokens": 4096,
+            "max_tokens": max_tokens,
         }
 
         try:
@@ -314,7 +338,9 @@ class OpenAIProtocolReviewer(Reviewer):
         if findings is not None:
             return findings, None
 
-        return [], "no report_findings tool call in response"
+        reply = message.get("content")
+        finish = data["choices"][0].get("finish_reason")
+        return [], f"{_NO_TOOL_CALL} ({'plain-text reply' if reply else 'empty reply'}, finish_reason={finish})"
 
     def _finding_from_raw(self, raw: dict, file_path: str, index: int) -> Finding:
         severity = Severity.parse(raw.get("severity"))
@@ -347,8 +373,17 @@ class OpenAIProtocolReviewer(Reviewer):
         findings: list[Finding] = []
         finding_counter = 0
 
+        deadline = time.monotonic() + self.config.time_budget_seconds if getattr(self.config, "time_budget_seconds", None) else None
+        stop_reason = None
         for target in targets:
             if target.status == "deleted":
+                continue
+            if not stop_reason and deadline and time.monotonic() > deadline:
+                stop_reason = "time budget reached, not reviewed"
+            if stop_reason:
+                self.skipped_files.append((target.path, stop_reason))
+                if on_progress:
+                    on_progress(target.path, f"skipped: {stop_reason}")
                 continue
             content = read_file_content(repo_path, target)
             if content is None:
@@ -368,6 +403,8 @@ class OpenAIProtocolReviewer(Reviewer):
             if error:
                 self.skipped_files.append((target.path, error))
                 self.failed_files.append((target.path, error))
+                if daily_quota_hit(error):
+                    stop_reason = "daily request quota for this API key is used up, not reviewed"
                 if on_progress:
                     on_progress(target.path, f"skipped: {error}")
                 continue

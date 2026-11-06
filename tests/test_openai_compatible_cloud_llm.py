@@ -2,6 +2,8 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import httpx
+
 from codecheck.config import CloudConfig
 from codecheck.models import ReviewTarget
 from codecheck.reviewers.cloud_llm import (
@@ -17,7 +19,7 @@ def test_build_cloud_reviewer_picks_anthropic_for_anthropic_provider():
 
 
 def test_build_cloud_reviewer_picks_openai_compatible_for_free_providers():
-    for provider in ("groq", "mistral", "cerebras", "openrouter", "openai_compatible"):
+    for provider in ("groq", "mistral", "cerebras", "openrouter", "google", "openai_compatible"):
         reviewer = build_cloud_reviewer(CloudConfig(provider=provider))
         assert isinstance(reviewer, OpenAICompatibleCloudReviewer)
 
@@ -178,7 +180,9 @@ def test_review_handles_missing_tool_call_as_skip(tmp_path: Path, monkeypatch):
     findings = reviewer.review([target], tmp_path)
 
     assert findings == []
-    assert reviewer.skipped_files == [("a.py", "no report_findings tool call in response")]
+    assert len(reviewer.skipped_files) == 1 and reviewer.skipped_files[0][0] == "a.py"
+    assert reviewer.skipped_files[0][1].startswith("no report_findings tool call in response (empty reply")
+    assert mock_client.post.call_count == 2                              # retried once
 
 
 def test_review_handles_non_json_response_body_as_skip_not_crash(tmp_path: Path, monkeypatch):
@@ -242,7 +246,9 @@ def test_review_handles_malformed_tool_call_shapes_as_skip_not_crash(tmp_path: P
     findings = reviewer.review([target], tmp_path)
 
     assert findings == []
-    assert reviewer.skipped_files == [("a.py", "no report_findings tool call in response")]
+    assert len(reviewer.skipped_files) == 1 and reviewer.skipped_files[0][0] == "a.py"
+    assert reviewer.skipped_files[0][1].startswith("no report_findings tool call in response (empty reply")
+    assert mock_client.post.call_count == 2                              # retried once
 
 
 def test_review_handles_non_object_finding_element_as_skip_not_crash(tmp_path: Path, monkeypatch):
@@ -288,3 +294,65 @@ def test_get_client_sends_bearer_auth_header(tmp_path: Path, monkeypatch):
     reviewer = OpenAICompatibleCloudReviewer(CloudConfig(enabled=True, provider="groq"))
     client = reviewer._get_client()
     assert client.headers["authorization"] == "Bearer gsk-secret"
+
+
+def test_empty_reply_cut_off_by_length_is_retried_with_a_bigger_token_budget(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "k")
+    (tmp_path / "a.py").write_text("x = 1\n")
+    target = ReviewTarget(path="a.py", status="modified", diff_text="", changed_lines={1})
+    cut = MagicMock()
+    cut.json.return_value = {"choices": [{"finish_reason": "length", "message": {"content": ""}}]}
+    ok = MagicMock()
+    ok.json.return_value = {"choices": [{"message": {"tool_calls": [{"function": {"name": "report_findings", "arguments": '{"findings": []}'}}]}}]}
+    mock_client = MagicMock()
+    mock_client.post.side_effect = [cut, ok]
+    reviewer = OpenAICompatibleCloudReviewer(CloudConfig(enabled=True, provider="google"), client=mock_client)
+    assert reviewer.review([target], tmp_path) == []
+    assert reviewer.skipped_files == []
+    sent = [c.kwargs["json"]["max_tokens"] for c in mock_client.post.call_args_list]
+    assert sent == [4096, 16384]
+
+
+def test_daily_quota_429_is_not_retried_and_stops_the_remaining_files(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "k")
+    for n in ("a.py", "b.py", "c.py"):
+        (tmp_path / n).write_text("x = 1\n")
+    targets = [ReviewTarget(path=n, status="modified", diff_text="", changed_lines={1}) for n in ("a.py", "b.py", "c.py")]
+    resp = httpx.Response(429, text="Quota exceeded: GenerateRequestsPerDayPerProjectPerModel-FreeTier", request=httpx.Request("POST", "http://x"))
+    mock_client = MagicMock()
+    mock_client.post.return_value = resp
+    reviewer = OpenAICompatibleCloudReviewer(CloudConfig(enabled=True, provider="google"), client=mock_client)
+    reviewer.review(targets, tmp_path)
+    assert mock_client.post.call_count == 1                              # no retries, no calls for b.py and c.py
+    assert [p for p, _ in reviewer.skipped_files] == ["a.py", "b.py", "c.py"]
+    assert "daily request quota" in reviewer.skipped_files[1][1]
+
+
+def test_time_budget_skips_files_not_started_in_time(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "k")
+    (tmp_path / "a.py").write_text("x = 1\n")
+    target = ReviewTarget(path="a.py", status="modified", diff_text="", changed_lines={1})
+    mock_client = MagicMock()
+    reviewer = OpenAICompatibleCloudReviewer(CloudConfig(enabled=True, provider="google", time_budget_seconds=-1), client=mock_client)
+    assert reviewer.review([target], tmp_path) == []
+    assert reviewer.skipped_files == [("a.py", "time budget reached, not reviewed")]
+    mock_client.post.assert_not_called()
+
+
+def test_cloud_targets_filters_by_extension_and_the_cap_counts_only_those():
+    from codecheck.reviewers.cloud_llm import cloud_targets, exceeds_audit_cap
+    ts = [ReviewTarget(path=p, status="scanned", diff_text="", changed_lines=None) for p in ("a.py", "B.JS", "x.json", "y.lock", "z.md")]
+    cfg = CloudConfig(extensions=[".py", ".js"], audit_file_cap=1)
+    assert [t.path for t in cloud_targets(ts, cfg)] == ["a.py", "B.JS"]
+    assert exceeds_audit_cap(ts, cfg, force=False) == 2
+    assert len(cloud_targets(ts, CloudConfig())) == 5
+
+
+def test_github_workflow_and_action_files_are_never_sent_to_an_llm():
+    from codecheck.reviewers.cloud_llm import cloud_targets, exceeds_audit_cap, is_ci_path
+    paths = [".github/workflows/ci.yml", "app/.github/workflows/deploy.yaml", ".github/actions/setup/action.yml", "src/app.py", "docs/github/workflows/x.py"]
+    ts = [ReviewTarget(path=p, status="scanned", diff_text="", changed_lines=None) for p in paths]
+    assert [is_ci_path(p) for p in paths] == [True, True, True, False, False]
+    assert [t.path for t in cloud_targets(ts, CloudConfig())] == ["src/app.py", "docs/github/workflows/x.py"]      # even with no extension filter
+    assert [t.path for t in cloud_targets(ts, CloudConfig(extensions=[".py", ".yml"]))] == ["src/app.py", "docs/github/workflows/x.py"]
+    assert exceeds_audit_cap(ts, CloudConfig(audit_file_cap=1), force=False) == 2

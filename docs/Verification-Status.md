@@ -32,6 +32,7 @@ instance and produced a real result, not just passed a mocked unit test.
 | Tier 3 — Anthropic | ⚠️ Untested | Mocked-client tests only — never a real API call. |
 | Tier 3 — Mistral | ⚠️ Untested | Never tried at all. |
 | Tier 3 — Cerebras | ⚠️ Untested | Never tried at all. |
+| Tier 3 — Google (Gemini) | ✅ Verified | Real API keys (free and paid tier), `gemini-3.6-flash` and `gemini-3.5-flash-lite` through the OpenAI-compatible endpoint; found and fixed 1 real bug (a thinking model spent the whole output budget reasoning, so the reply came back empty — now retried with a larger budget). The smaller Flash Lite model reviewed the same file and reported nothing where 3.6 Flash found a critical issue, so model choice matters. |
 | Tier 3 — OpenRouter | ⚠️ Untested, extra caution | Never tried, and it proxies to many underlying models — some free ones are already known to not reliably support forced tool-calling (see Tier 3 in [Architecture](Architecture.md)). |
 | Tier 3 — `openai_compatible` (custom cloud endpoint) | ⚠️ Untested | Same code path as Groq, but no other real endpoint was tried. |
 | Tier 3 — self-hosted vLLM | ⚠️ Config verified, no real vLLM instance tested | Confirmed by direct code inspection (not a live vLLM server) that an arbitrary `provider` name + explicit `base_url`/`api_key_env` resolves and gates correctly with zero code changes — vLLM has no fixed public URL, so it was never going to get a dedicated preset the way Groq et al. did. No actual vLLM deployment (this needs an NVIDIA GPU, not available here) was reached. |

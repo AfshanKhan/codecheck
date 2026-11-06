@@ -29,6 +29,7 @@ from codecheck.frappe_scripts import FrappeScriptFetchError, fetch_via_api, writ
 from codecheck.github_source import cloned_repo, parse_pr_url, pr_worktree
 from codecheck.lm_link import resolve_model_location, set_preferred_device
 from codecheck.models import ReviewReport, ReviewTarget, Severity
+from codecheck.noise import partition, summary
 from codecheck.redact import redact_report
 from codecheck.repo_scan import get_repo_files
 from codecheck.report_diff import diff_reports
@@ -43,7 +44,11 @@ from codecheck.resume import (
     load_prior_report,
     prior_findings_for_paths,
 )
-from codecheck.reviewers.cloud_llm import build_cloud_reviewer, exceeds_audit_cap
+from codecheck.reviewers.cloud_llm import (
+    build_cloud_reviewer,
+    cloud_targets,
+    exceeds_audit_cap,
+)
 from codecheck.reviewers.local_llm import LocalLLMReviewer
 from codecheck.reviewers.openai_protocol import OpenAIProtocolReviewer
 from codecheck.reviewers.rules_engine import RulesEngineReviewer
@@ -209,6 +214,10 @@ def _run_llm_tier(
         )
 
     remaining_targets = [t for t in targets if t.path not in already_done]
+    left_out_note = None
+    if getattr(getattr(reviewer, "config", None), "skip_noise", False):
+        remaining_targets, left_out = partition(remaining_targets, repo_path)
+        left_out_note = summary(left_out) if left_out else None
     total = len(remaining_targets)
     completed = 0
 
@@ -224,6 +233,8 @@ def _run_llm_tier(
         prior_findings_for_paths(prior_report, tier, already_done) if already_done else []
     )
     skip_entries = [f"{tier}: {path}: {reason}" for path, reason in reviewer.skipped_files]
+    if left_out_note:
+        skip_entries.insert(0, f"{tier}: {left_out_note}")
     return reused_findings + new_findings, skip_entries, len(already_done)
 
 
@@ -286,7 +297,7 @@ def _run_tiers(
     available, reason = local_reviewer.is_available(repo_path)
     if available and _confirm_local_execution(cfg, force_local, device, skipped):
         findings, skip_entries, resumed = _run_llm_tier(
-            "local_llm", local_reviewer, targets, repo_path, prior_report, mode,
+            "local_llm", local_reviewer, cloud_targets(targets, cfg.local), repo_path, prior_report, mode,
             current_file_hashes, "Running local LLM review...",
         )
         results["local_llm"] = findings
@@ -304,7 +315,7 @@ def _run_tiers(
     available, reason = cloud_reviewer.is_available(repo_path)
     if available:
         findings, skip_entries, resumed = _run_llm_tier(
-            "cloud_llm", cloud_reviewer, targets, repo_path, prior_report, mode,
+            "cloud_llm", cloud_reviewer, cloud_targets(targets, cfg.cloud), repo_path, prior_report, mode,
             current_file_hashes, "Running cloud LLM review...",
         )
         results["cloud_llm"] = findings

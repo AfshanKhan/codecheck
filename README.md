@@ -11,7 +11,7 @@ It works in three layers ("tiers"), and you choose which ones run:
 |---|---|---|---|
 | **Tier 1 — Rules** | Fast, mechanical checks (a spell-checker for code) | Free, always | ✅ Yes |
 | **Tier 2 — Local AI** | An AI model running on your own machine or a machine you control | Free (your own compute) | ❌ No — opt in with `--local` |
-| **Tier 3 — Cloud AI** | An AI model hosted by a provider (Anthropic, Groq, etc.) | May cost money, depending on provider | ❌ No — opt in with `--cloud` |
+| **Tier 3 — Cloud AI** | An AI model hosted by a provider (Anthropic, Google, Groq, etc.) | May cost money, depending on provider | ❌ No — opt in with `--cloud` |
 
 Tier 1 always runs and never needs an internet connection or an account.
 Tiers 2 and 3 are entirely optional, and `codecheck` never contacts a cloud AI
@@ -256,6 +256,12 @@ Frappe/ERPNext-specific mistakes — and explicitly ignore style/formatting,
 since Tier 1 already covers that. The difference between Tier 2 and Tier 3 is
 only *where* the AI model runs (your machine vs. a cloud provider), not what
 it looks for.
+
+Files that aren't worth an AI's time can be kept out of both tiers: GitHub
+workflow files are never sent, and `cloud.skip_noise` / `cloud.extensions` (and
+the same keys under `local:`) also leave out tests, bundled or generated files,
+empty files, and boilerplate such as a blank `__init__.py`. Tier 1 still checks
+every file. See [Configuration](docs/Configuration.md#files-kept-away-from-the-llm).
 
 ### 6. Beyond the basics
 
