@@ -567,6 +567,12 @@ diff or repo):
   `choices[0].message.tool_calls[].function.arguments` (a JSON string, parsed
   with `json.loads`).
 
+`cloud.effort` (`low`/`medium`/`high`, default unset) is sent only when set: Anthropic as
+`output_config.effort`, OpenRouter as `reasoning.effort`, the other OpenAI-compatible providers as
+`reasoning_effort`. Pick it only for models that accept it; a model that rejects the field fails the request.
+Newer Anthropic models answer HTTP 400 to a pinned `tool_choice`; the Anthropic reviewer then retries that file once with
+`tool_choice: auto` and a system-prompt line telling the model to report through `report_findings`.
+
 Either way, the model is forced to call the findings tool — never scraped from
 prose — using the same JSON schema for
 `severity/title/explanation/line_start/line_end/suggestion`, and the same fixed

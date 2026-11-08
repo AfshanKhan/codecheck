@@ -493,7 +493,7 @@ mariadb` only, the Frappe default.
   missing API key), since nothing was checked. A
   tier that fails on only some files stays a normal run: those files are
   listed under "Skipped" and the exit code follows the findings. Transient
-  API errors (HTTP 429, and 502/503/504/529 for up to 2 retries) are
+  API errors (HTTP 429; 502/504 for up to 2 retries; 503/529 "overloaded" for up to 3 retries after 15s, 30s and 60s) are
   retried with backoff before a file counts as failed.
   A `base_ref` naming a ref that doesn't exist at all
   used to crash with a raw Python traceback instead — `git.GitCommandError`
