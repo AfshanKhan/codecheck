@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 import yaml
 from pydantic import BaseModel, field_validator
@@ -45,6 +46,8 @@ class CloudConfig(BaseModel):
     api_key_env: str | None = None
     # Required for provider="openai_compatible"; optional override for the named free providers.
     base_url: str | None = None
+    # Reasoning effort sent to the provider (low | medium | high); None = the provider's own default.
+    effort: Literal["low", "medium", "high"] | None = None
     max_file_lines: int = 800
     audit_file_cap: int = 50  # max files the cloud tier will review in one `audit` run without --force-cloud
     # Leave out tests, bundled/generated files, empty files and boilerplate (see codecheck.noise).

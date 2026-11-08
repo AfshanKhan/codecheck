@@ -300,6 +300,9 @@ class OpenAIProtocolReviewer(Reviewer):
             "tool_choice": "required",
             "max_tokens": max_tokens,
         }
+        if getattr(self.config, "effort", None):
+            effort = self.config.effort
+            payload.update({"reasoning": {"effort": effort}} if self.config.provider == "openrouter" else {"reasoning_effort": effort})
 
         try:
             response = post_with_retry(client, self._resolved_base_url(), payload)

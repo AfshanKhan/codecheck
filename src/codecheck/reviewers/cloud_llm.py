@@ -226,9 +226,19 @@ class AnthropicCloudReviewer(Reviewer):
             "tool_choice": {"type": "tool", "name": "report_findings"},
             "messages": [{"role": "user", "content": build_user_message(target, content)}],
         }
+        if self.config.effort:
+            payload["output_config"] = {"effort": self.config.effort}
 
         try:
-            response = post_with_retry(client, _ANTHROPIC_API_URL, payload)
+            try:
+                response = post_with_retry(client, _ANTHROPIC_API_URL, payload)
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code != 400 or "tool_choice" not in e.response.text:
+                    raise
+                # Newer Claude models reject a forced tool call: let the model choose, and tell it to use the tool.
+                payload["tool_choice"] = {"type": "auto"}
+                payload["system"] += "\n\nAlways report your result by calling the report_findings tool, even when there are no findings."
+                response = post_with_retry(client, _ANTHROPIC_API_URL, payload)
         except httpx.HTTPError as e:
             return [], f"API request failed: {format_http_error(e)}"
 

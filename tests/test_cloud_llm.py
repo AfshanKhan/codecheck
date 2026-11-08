@@ -305,3 +305,80 @@ def test_review_tracks_api_failures_separately_from_benign_skips(tmp_path: Path)
     assert {path for path, _ in reviewer.skipped_files} == {"big.py", "a.py"}
     assert [path for path, _ in reviewer.failed_files] == ["a.py"]
     assert reviewer.reviewed_count == 0
+
+
+def _capture(provider: str, effort, monkeypatch):
+    import httpx
+
+    from codecheck.reviewers import cloud_llm, openai_protocol
+    from codecheck.reviewers.cloud_llm import build_cloud_reviewer
+
+    seen: list[dict] = []
+
+    def fake_post(client, url, payload, *a, **k):
+        seen.append(payload)
+        raise httpx.ConnectError("stop here")  # the payload is all these tests need
+
+    monkeypatch.setattr(cloud_llm, "post_with_retry", fake_post)
+    monkeypatch.setattr(openai_protocol, "post_with_retry", fake_post)
+    reviewer = build_cloud_reviewer(CloudConfig(enabled=True, provider=provider, model="m", effort=effort))
+    reviewer._review_file(httpx.Client(), ReviewTarget(path="a.py", status="scanned"), "x = 1")
+    return {k: v for k, v in seen[-1].items() if k in ("output_config", "reasoning_effort", "reasoning")}
+
+
+def test_effort_is_sent_in_each_providers_own_shape(monkeypatch):
+    assert _capture("anthropic", "medium", monkeypatch) == {"output_config": {"effort": "medium"}}
+    assert _capture("google", "high", monkeypatch) == {"reasoning_effort": "high"}
+    assert _capture("groq", "low", monkeypatch) == {"reasoning_effort": "low"}
+    assert _capture("openrouter", "low", monkeypatch) == {"reasoning": {"effort": "low"}}
+
+
+def test_no_effort_sends_nothing(monkeypatch):
+    assert _capture("anthropic", None, monkeypatch) == {}
+    assert _capture("google", None, monkeypatch) == {}
+
+
+def test_effort_must_be_low_medium_or_high():
+    import pytest
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        CloudConfig(effort="turbo")
+
+
+def test_anthropic_retries_with_auto_tool_choice_when_a_pinned_tool_is_rejected():
+    import httpx
+
+    from codecheck.reviewers.cloud_llm import build_cloud_reviewer
+
+    calls: list[str] = []
+    systems: list[str] = []
+
+    def handler(request):
+        body = json.loads(request.content)
+        calls.append(body["tool_choice"]["type"])
+        systems.append(body["system"])
+        if body["tool_choice"]["type"] == "tool":
+            return httpx.Response(400, json={"error": {"message": 'tool_choice: type "tool" and "any" are not supported for this model.'}})
+        return httpx.Response(200, json={"content": [{"type": "tool_use", "name": "report_findings", "input": {"findings": []}}]})
+
+    reviewer = build_cloud_reviewer(CloudConfig(enabled=True, provider="anthropic", model="claude-sonnet-5-5"))
+    result = reviewer._review_file(httpx.Client(transport=httpx.MockTransport(handler)), ReviewTarget(path="a.py", status="scanned"), "x = 1")
+    assert result == ([], None) and calls == ["tool", "auto"]
+    assert "report_findings" in systems[1].split("\n\n")[-1] and systems[0] != systems[1]
+
+
+def test_other_400_errors_are_not_retried():
+    import httpx
+
+    from codecheck.reviewers.cloud_llm import build_cloud_reviewer
+
+    calls: list[int] = []
+
+    def handler(request):
+        calls.append(1)
+        return httpx.Response(400, json={"error": {"message": "max_tokens too large"}})
+
+    reviewer = build_cloud_reviewer(CloudConfig(enabled=True, provider="anthropic", model="m"))
+    findings, error = reviewer._review_file(httpx.Client(transport=httpx.MockTransport(handler)), ReviewTarget(path="a.py", status="scanned"), "x = 1")
+    assert findings == [] and "400" in error and len(calls) == 1
