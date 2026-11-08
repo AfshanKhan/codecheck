@@ -11,6 +11,7 @@ from codecheck.checks.blocking_call_in_doc_event import (
 )
 from codecheck.checks.boolean_flag_param import BooleanFlagParamCheck
 from codecheck.checks.commented_code import CommentedOutJsCodeCheck, CommentedOutPythonCodeCheck
+from codecheck.checks.custom_field_prefix import CustomFieldPrefixCheck
 from codecheck.checks.doctype_schema import DoctypeJsonBlobFieldCheck, DoctypeJsonSyntaxCheck
 from codecheck.checks.hardcoded_credential import HardcodedCredentialCheck
 from codecheck.checks.hooks_structure import DoctypeClassOverrideCheck, HooksPyDeclarativeCheck
@@ -69,6 +70,7 @@ ALL_CHECKS: list[HouseCheck] = [
     MagicNumberCheck(),
     MissingDocstringCheck(),
     BooleanFlagParamCheck(),
+    CustomFieldPrefixCheck(),
 ]
 
 

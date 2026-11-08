@@ -62,7 +62,7 @@ repo's entire pre-existing lint debt instead of just what changed.
 
 ### House rules (`checks/`)
 
-32 checks registered in [`checks/registry.py`](../src/codecheck/checks/registry.py),
+33 checks registered in [`checks/registry.py`](../src/codecheck/checks/registry.py),
 all accepting `changed_lines: set[int] | None` with the same
 None-means-everything semantics. `HouseRulesRunner` (`reviewers/rules_engine.py`)
 passes `.py`, `.js`, and `.json` targets — each check filters to its own
@@ -211,6 +211,19 @@ false positive against a live PR. `RULE-003` here matches both.
   present in whatever this was inspired by, added here deliberately.
 - **`RULE-034`** — a function parameter with a boolean default value
   (`checks/boolean_flag_param.py`), severity `INFO`.
+- **`RULE-036`** — a Custom Field whose `fieldname` does not start with `custom_`
+  (`checks/custom_field_prefix.py`), severity `MEDIUM`. Frappe adds that prefix to every custom
+  field created in the UI so it cannot clash with a standard field a later Frappe or ERPNext
+  release adds; an unprefixed name can silently collide on upgrade. Looks at three places:
+  `fixtures/*.json` records with `"doctype": "Custom Field"`; the `custom_fields` list of an
+  exported customization (`<module>/custom/<doctype>.json`); and Python dicts passed to
+  `create_custom_field(s)` (a module-level constant is followed one step) or carrying
+  `"doctype": "Custom Field"`. A field with no `fieldname` is skipped (Frappe derives
+  `custom_<label>`), and so is a JSON field that names its own `module` (such as "GST India"):
+  exported customizations also carry fields other installed apps created, and their naming is
+  not the reviewed app's to fix. Fields from another app that export with no `module` (for
+  example HRMS's custom fields on Department) are still flagged. Finding lines point at the
+  field's own `"fieldname"` line, so diff mode only reports a field that was touched.
 
 Adding a new **built-in** house rule: subclass `HouseCheck` in `checks/base.py`,
 implement `check_file(file_path, content, changed_lines) -> list[Finding]`
@@ -954,6 +967,7 @@ src/codecheck/
 │   ├── hooks_structure.py, doctype_schema.py, blocking_call_in_doc_event.py,
 │   │   save_in_loop.py, commented_code.py (Python half), magic_number.py,
 │   │   missing_docstring.py, boolean_flag_param.py                    # RULE-020..026, 030, 032..034
+│   ├── custom_field_prefix.py                                           # RULE-036
 │   ├── js_async_await_suggestion.py, js_direct_dom.py,
 │   │   js_client_script_length.py, commented_code.py (JS half)        # RULE-027..029, 031
 │   ├── frappe_db_field_check.py                        # RULE-019 (opt-in, needs --frappe-db-config)
