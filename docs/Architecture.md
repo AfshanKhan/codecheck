@@ -570,7 +570,7 @@ diff or repo):
 `cloud.effort` (`low`/`medium`/`high`, default unset) is sent only when set: Anthropic as
 `output_config.effort`, OpenRouter as `reasoning.effort`, the other OpenAI-compatible providers as
 `reasoning_effort`. Pick it only for models that accept it; a model that rejects the field fails the request.
-Newer Claude models answer HTTP 400 to a pinned `tool_choice`; the Anthropic reviewer then retries that file once with
+Newer Anthropic models answer HTTP 400 to a pinned `tool_choice`; the Anthropic reviewer then retries that file once with
 `tool_choice: auto` and a system-prompt line telling the model to report through `report_findings`.
 
 Either way, the model is forced to call the findings tool — never scraped from
