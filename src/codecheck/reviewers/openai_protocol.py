@@ -40,6 +40,10 @@ def _parse_retry_after(response: httpx.Response) -> float | None:
 # whole audit for minutes per file.
 _TRANSIENT_SERVER_STATUSES = frozenset({502, 503, 504, 529})
 _MAX_TRANSIENT_SERVER_RETRIES = 2
+# 503/529 mean "overloaded" (Gemini: "high demand"): the spike usually clears within a minute or two, so these
+# wait longer than a gateway blip before the file is given up on (Retry-After still wins, capped at the maximum).
+_OVERLOAD_STATUSES = frozenset({503, 529})
+_OVERLOAD_WAITS = (15.0, 30.0, 60.0)
 
 
 def daily_quota_hit(text: str) -> bool:
@@ -67,6 +71,8 @@ def post_with_retry(
             retry_limit = 0  # waiting will not help until tomorrow
         elif status == 429:
             retry_limit = max_retries
+        elif status in _OVERLOAD_STATUSES:
+            retry_limit = len(_OVERLOAD_WAITS)
         elif status in _TRANSIENT_SERVER_STATUSES:
             retry_limit = _MAX_TRANSIENT_SERVER_RETRIES
         else:
@@ -79,7 +85,8 @@ def post_with_retry(
                     raise DailyQuotaExceeded(str(e), request=e.request, response=e.response) from e
                 raise
             return response
-        wait = min(_parse_retry_after(response) or delay, _MAX_RETRY_DELAY_SECONDS)
+        base = _OVERLOAD_WAITS[attempt] if status in _OVERLOAD_STATUSES else delay
+        wait = min(_parse_retry_after(response) or base, _MAX_RETRY_DELAY_SECONDS)
         time.sleep(wait)
         delay = min(delay * 2, _MAX_RETRY_DELAY_SECONDS)
         attempt += 1
