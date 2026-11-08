@@ -84,18 +84,16 @@ class CustomFieldPrefixCheck(HouseCheck):
             fields += [d for d in data if isinstance(d, dict) and d.get("doctype") == "Custom Field"]
         if customization and isinstance(data, dict) and isinstance(data.get("custom_fields"), list):
             fields += [d for d in data["custom_fields"] if isinstance(d, dict)]
+        reviewed = {id(d) for d in fields}
         seen: dict[str, int] = {}
         hits = []
-        for d in fields:
-            name = d.get("fieldname")
-            if not isinstance(name, str):
-                continue
-            if d.get("module"):                              # shipped by another app's module, not this app's field
-                continue
-            n = seen[name] = seen.get(name, 0) + 1          # the n-th field with this name -> its n-th occurrence
-            if _bad(name):
-                dt = d.get("dt") or (data.get("doctype") if isinstance(data, dict) else None)
-                hits.append((name, dt if isinstance(dt, str) else None, _nth_line(content, name, n)))
+        for d in _named_dicts(data):                          # every `"fieldname"` in the file, in document order
+            name = d["fieldname"]
+            n = seen[name] = seen.get(name, 0) + 1            # so the n-th one here is the n-th one in the text
+            if id(d) not in reviewed or d.get("module") or not _bad(name):
+                continue                                      # (a field naming another app's module is not this app's)
+            dt = d.get("dt") or (data.get("doctype") if isinstance(data, dict) else None)
+            hits.append((name, dt if isinstance(dt, str) else None, _nth_line(content, name, n)))
         return hits
 
     # --- Python: create_custom_fields(...) and {"doctype": "Custom Field", ...} ---------------------
@@ -122,11 +120,19 @@ class CustomFieldPrefixCheck(HouseCheck):
         for node in ast.walk(tree):
             if isinstance(node, ast.Dict) and _str_value(node, "doctype") == "Custom Field":
                 add(node, None)
-            elif isinstance(node, ast.Call) and _callee(node) in _CREATE_FUNCS:
-                for arg in [*node.args, *(k.value for k in node.keywords)]:
-                    if isinstance(arg, ast.Name):            # CUSTOM_FIELDS = {...} defined at module level
-                        arg = module_values.get(arg.id, arg)
-                    self._walk_fields(arg, None, add)
+        try:
+            calls = _calls_with_bound_names(tree)
+        except RecursionError:                               # absurdly deep expression: leave it to the other checks
+            return sorted(found.values(), key=lambda h: h[2])
+        for node, bound in calls:
+            callee = _callee(node)
+            if callee not in _CREATE_FUNCS:
+                continue
+            dt = _doctype_arg(node) if callee == "create_custom_field" else None
+            for arg in [*node.args, *(k.value for k in node.keywords)]:
+                if isinstance(arg, ast.Name) and arg.id not in bound:   # CUSTOM_FIELDS = {...} at module level, unless
+                    arg = module_values.get(arg.id, arg)               # a parameter or local of the same name hides it
+                self._walk_fields(arg, dt, add)
         return sorted(found.values(), key=lambda h: h[2])
 
     def _walk_fields(self, node: ast.AST, dt: str | None, add) -> None:
@@ -136,11 +142,63 @@ class CustomFieldPrefixCheck(HouseCheck):
                 add(node, dt)
                 return
             for key, value in zip(node.keys, node.values):
-                label = key.value if isinstance(key, ast.Constant) and isinstance(key.value, str) else dt
-                self._walk_fields(value, label, add)
+                self._walk_fields(value, _doctype_label(key) or dt, add)
         elif isinstance(node, (ast.List, ast.Tuple)):
             for element in node.elts:
                 self._walk_fields(element, dt, add)
+
+
+def _doctype_label(node: ast.AST | None) -> str | None:
+    """"Employee", or ("Sales Order", "Quotation") as "Sales Order, Quotation"."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+        names = [e.value for e in node.elts if isinstance(e, ast.Constant) and isinstance(e.value, str)]
+        return ", ".join(names) or None
+    return None
+
+
+def _doctype_arg(call: ast.Call) -> str | None:
+    """The DocType of `create_custom_field("Employee", {...})`."""
+    if call.args:
+        return _doctype_label(call.args[0])
+    return next((_doctype_label(k.value) for k in call.keywords if k.arg in ("doctype", "dt")), None)
+
+
+def _bound_names(fn: ast.AST) -> set[str]:
+    a = fn.args
+    names = {x.arg for x in [*a.posonlyargs, *a.args, *a.kwonlyargs]}
+    names |= {x.arg for x in (a.vararg, a.kwarg) if x is not None}
+    if not isinstance(fn, ast.Lambda):
+        names |= {n.id for n in ast.walk(fn) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store)}
+    return names
+
+
+def _calls_with_bound_names(tree: ast.AST) -> list[tuple[ast.Call, frozenset[str]]]:
+    """Every call with the names its enclosing functions bind (parameters and assignments)."""
+    out: list[tuple[ast.Call, frozenset[str]]] = []
+
+    def visit(node: ast.AST, bound: frozenset[str]) -> None:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            bound = bound | _bound_names(node)
+        if isinstance(node, ast.Call):
+            out.append((node, bound))
+        for child in ast.iter_child_nodes(node):
+            visit(child, bound)
+    visit(tree, frozenset())
+    return out
+
+
+def _named_dicts(node: object):
+    """Every dict with a string `fieldname`, in the order they appear in the parsed JSON (= the text)."""
+    if isinstance(node, dict):
+        if isinstance(node.get("fieldname"), str):
+            yield node
+        for value in node.values():
+            yield from _named_dicts(value)
+    elif isinstance(node, list):
+        for item in node:
+            yield from _named_dicts(item)
 
 
 def _callee(call: ast.Call) -> str | None:

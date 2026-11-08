@@ -143,3 +143,48 @@ def test_only_changed_lines_are_reported_in_diff_mode():
     assert run("app/fixtures/custom_field.json", content, {f.line_start + 50}) == []
     py = 'create_custom_fields({"Employee": [{"fieldname": "badge_no"}]})\n'
     assert run("a.py", py, {1}) != [] and run("a.py", py, {2}) == []
+
+
+# --- review follow-ups --------------------------------------------------------------------------------
+
+def test_a_skipped_field_with_the_same_name_does_not_shift_the_line_of_the_reported_one():
+    data = {"doctype": "Item", "custom_fields": [
+        {"fieldname": "region", "module": "GST India", "dt": "Item"}, {"fieldname": "region", "dt": "Customer"}]}
+    content = json.dumps(data, indent=1)
+    (f,) = run("app/app/custom/item.json", content)
+    lines = content.splitlines()
+    assert "region" in lines[f.line_start - 1] and f.line_start == [i + 1 for i, x in enumerate(lines) if "region" in x][1]
+    assert "Customer" in f.explanation
+    assert run("app/app/custom/item.json", content, {f.line_start}) != []          # touching only the real field still warns
+    assert run("app/app/custom/item.json", content, {f.line_start - 7}) == []
+
+
+def test_other_records_with_a_fieldname_in_a_fixture_do_not_shift_the_line_either():
+    content = json.dumps([
+        {"doctype": "Property Setter", "fieldname": "region"},
+        {"doctype": "Custom Field", "dt": "Item", "fieldname": "region", "module": "GST India"},
+        {"doctype": "Custom Field", "dt": "Customer", "fieldname": "region"}], indent=1)
+    (f,) = run("app/fixtures/custom_field.json", content)
+    assert "Customer" in f.explanation
+    occurrences = [i + 1 for i, x in enumerate(content.splitlines()) if '"fieldname": "region"' in x]
+    assert f.line_start == occurrences[2]                                                                 # the third, not the first
+
+
+def test_a_parameter_or_local_with_the_constants_name_hides_the_module_constant():
+    base = 'FIELDS = {"Employee": [{"fieldname": "region"}]}\n\n'
+    assert len(run("a.py", base + "def run():\n    create_custom_fields(FIELDS)\n")) == 1                  # really the module's
+    assert run("a.py", base + "def run(FIELDS):\n    create_custom_fields(FIELDS)\n") == []                # the caller's own
+    assert run("a.py", base + 'def run():\n    FIELDS = {"Employee": [{"fieldname": "custom_a"}]}\n    create_custom_fields(FIELDS)\n') == []
+    assert run("a.py", base + "def run(*FIELDS):\n    create_custom_fields(FIELDS)\n") == []
+    assert len(run("a.py", base + "def other(FIELDS):\n    pass\n\ndef run():\n    create_custom_fields(FIELDS)\n")) == 1   # another function's parameter
+
+
+def test_the_doctype_is_named_for_the_singular_call_and_for_tuple_keys():
+    (f,) = run("a.py", 'create_custom_field("Employee", {"fieldname": "badge_no"})\n')
+    assert "on Employee" in f.explanation
+    (f,) = run("a.py", 'create_custom_field(doctype="Customer", df={"fieldname": "region"})\n')
+    assert "on Customer" in f.explanation
+    (f,) = run("a.py", 'create_custom_fields({("Sales Order", "Quotation"): [{"fieldname": "region"}]})\n')
+    assert "on Sales Order, Quotation" in f.explanation
+    (f,) = run("a.py", "create_custom_field(some_doctype, {\"fieldname\": \"region\"})\n")
+    assert "'region' should be named" in f.explanation                                                   # unknown stays unnamed
