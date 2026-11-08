@@ -165,13 +165,38 @@ def _doctype_arg(call: ast.Call) -> str | None:
     return next((_doctype_label(k.value) for k in call.keywords if k.arg in ("doctype", "dt")), None)
 
 
+_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
+_COMPREHENSIONS = (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
+
+
 def _bound_names(fn: ast.AST) -> set[str]:
+    """Names this function itself binds: parameters, assignments, imports, `except ... as`, nested def/class
+    names. Not what a nested function, class or comprehension binds (their own scope); a walrus inside a
+    comprehension does bind here. A name declared `global` is the module's."""
     a = fn.args
     names = {x.arg for x in [*a.posonlyargs, *a.args, *a.kwonlyargs]}
     names |= {x.arg for x in (a.vararg, a.kwarg) if x is not None}
-    if not isinstance(fn, ast.Lambda):
-        names |= {n.id for n in ast.walk(fn) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store)}
-    return names
+    declared_global: set[str] = set()
+    stack = [fn.body] if isinstance(fn, ast.Lambda) else list(fn.body)
+    while stack:
+        node = stack.pop()
+        if isinstance(node, _SCOPES):
+            if not isinstance(node, ast.Lambda):
+                names.add(node.name)
+            continue
+        if isinstance(node, _COMPREHENSIONS):
+            names |= {n.target.id for n in ast.walk(node) if isinstance(n, ast.NamedExpr) and isinstance(n.target, ast.Name)}
+            continue
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+            names.add(node.id)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            names |= {(alias.asname or alias.name.split(".")[0]) for alias in node.names}
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            names.add(node.name)
+        elif isinstance(node, ast.Global):
+            declared_global |= set(node.names)
+        stack.extend(ast.iter_child_nodes(node))
+    return names - declared_global
 
 
 def _calls_with_bound_names(tree: ast.AST) -> list[tuple[ast.Call, frozenset[str]]]:

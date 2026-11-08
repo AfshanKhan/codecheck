@@ -188,3 +188,23 @@ def test_the_doctype_is_named_for_the_singular_call_and_for_tuple_keys():
     assert "on Sales Order, Quotation" in f.explanation
     (f,) = run("a.py", "create_custom_field(some_doctype, {\"fieldname\": \"region\"})\n")
     assert "'region' should be named" in f.explanation                                                   # unknown stays unnamed
+
+
+def test_only_the_functions_own_bindings_hide_the_module_constant():
+    base = 'FIELDS = {"Employee": [{"fieldname": "region"}]}\n\n'
+
+    def flagged(body):
+        return len(run("a.py", base + body))
+    assert flagged("def run():\n    def helper():\n        FIELDS = 1\n    create_custom_fields(FIELDS)\n") == 1      # nested function's local
+    assert flagged("def run():\n    f = lambda FIELDS: FIELDS\n    create_custom_fields(FIELDS)\n") == 1             # lambda parameter
+    assert flagged("def run():\n    xs = [FIELDS for FIELDS in range(3)]\n    create_custom_fields(FIELDS)\n") == 1  # comprehension scope
+    assert flagged("def run():\n    class K:\n        FIELDS = 1\n    create_custom_fields(FIELDS)\n") == 1           # class body scope
+    assert flagged("def run():\n    global FIELDS\n    create_custom_fields(FIELDS)\n") == 1                           # declared global
+    # but the function's own bindings still hide it
+    assert flagged("def run():\n    xs = [(FIELDS := {}) for _ in range(1)]\n    create_custom_fields(FIELDS)\n") == 0   # walrus binds here
+    assert flagged("def run():\n    import json as FIELDS\n    create_custom_fields(FIELDS)\n") == 0
+    assert flagged("def run():\n    try:\n        pass\n    except Exception as FIELDS:\n        create_custom_fields(FIELDS)\n") == 0
+    assert flagged("def run():\n    def FIELDS():\n        pass\n    create_custom_fields(FIELDS)\n") == 0
+    assert flagged("def run():\n    for FIELDS in [{}]:\n        create_custom_fields(FIELDS)\n") == 0
+    assert flagged("def run():\n    with ctx() as FIELDS:\n        create_custom_fields(FIELDS)\n") == 0
+    assert flagged("def run(x):\n    def inner():\n        create_custom_fields(FIELDS)\n    FIELDS = x\n") == 0       # closure over the outer local
