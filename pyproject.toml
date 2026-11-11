@@ -30,7 +30,7 @@ dependencies = [
 # separately (e.g. `npm install -g eslint`) if you want that sub-runner.
 rules = [
     "ruff>=0.17.4",
-    "semgrep>=1.183.0",
+    "semgrep>=1.184.0",
 ]
 
 # Only needed for --frappe-db-config -- a niche, opt-in feature most installs
