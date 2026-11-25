@@ -386,3 +386,39 @@ def test_a_per_day_url_does_not_stop_the_review(tmp_path: Path, monkeypatch):
     reviewer, client = _review_three(tmp_path, monkeypatch, _resp(400, "bad request", url="https://api.example.com/PerDay/chat"))
     assert client.post.call_count == 3                                                   # every file was still tried
     assert not any("daily request quota" in reason for _, reason in reviewer.skipped_files)
+
+
+def test_repeated_overload_stops_the_remaining_files(tmp_path: Path, monkeypatch):
+    """Three files in a row failing with 503 means the provider is down: do not spend the retry waits on the rest."""
+    monkeypatch.setenv("GEMINI_API_KEY", "k")
+    monkeypatch.setattr("codecheck.reviewers.openai_protocol.time.sleep", lambda s: None)
+    names = [f"f{i}.py" for i in range(6)]
+    for n in names:
+        (tmp_path / n).write_text("x = 1\n")
+    targets = [ReviewTarget(path=n, status="modified", diff_text="", changed_lines={1}) for n in names]
+    mock_client = MagicMock()
+    mock_client.post.return_value = httpx.Response(503, text="high demand", request=httpx.Request("POST", "http://x"))
+    reviewer = OpenAICompatibleCloudReviewer(CloudConfig(enabled=True, provider="google"), client=mock_client)
+    reviewer.review(targets, tmp_path)
+    assert mock_client.post.call_count == 3 * 4                          # 3 files x (1 try + 3 overload retries)
+    assert [p for p, _ in reviewer.skipped_files] == names
+    assert "overloaded" in reviewer.skipped_files[5][1]
+
+
+def test_overload_streak_resets_after_a_success(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "k")
+    monkeypatch.setattr("codecheck.reviewers.openai_protocol.time.sleep", lambda s: None)
+    names = [f"f{i}.py" for i in range(5)]
+    for n in names:
+        (tmp_path / n).write_text("x = 1\n")
+    targets = [ReviewTarget(path=n, status="modified", diff_text="", changed_lines={1}) for n in names]
+    bad = httpx.Response(503, text="high demand", request=httpx.Request("POST", "http://x"))
+    ok = httpx.Response(200, json={"choices": [{"message": {"tool_calls": [
+        {"function": {"name": "report_findings", "arguments": '{"findings": []}'}}]}}]}, request=httpx.Request("POST", "http://x"))
+    # f0, f1 overloaded (4 posts each); f2 ok; f3, f4 overloaded again: never 3 in a row, so all 5 are tried
+    mock_client = MagicMock()
+    mock_client.post.side_effect = [bad] * 8 + [ok] + [bad] * 8
+    reviewer = OpenAICompatibleCloudReviewer(CloudConfig(enabled=True, provider="google"), client=mock_client)
+    reviewer.review(targets, tmp_path)
+    assert mock_client.post.call_count == 17
+    assert not any("provider overloaded" in r for _, r in reviewer.skipped_files)

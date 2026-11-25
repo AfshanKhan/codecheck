@@ -26,7 +26,7 @@ _CUSTOMIZATION_JSON_RE = re.compile(r"/custom/[^/]+\.json$")
 _CREATE_FUNCS = {"create_custom_field", "create_custom_fields"}
 
 
-def _bad(name: object) -> bool:
+def _is_unprefixed_custom_field(name: object) -> bool:
     return isinstance(name, str) and bool(name) and not name.startswith(PREFIX)
 
 
@@ -90,7 +90,7 @@ class CustomFieldPrefixCheck(HouseCheck):
         for d in _named_dicts(data):                          # every `"fieldname"` in the file, in document order
             name = d["fieldname"]
             n = seen[name] = seen.get(name, 0) + 1            # so the n-th one here is the n-th one in the text
-            if id(d) not in reviewed or d.get("module") or not _bad(name):
+            if id(d) not in reviewed or d.get("module") or not _is_unprefixed_custom_field(name):
                 continue                                      # (a field naming another app's module is not this app's)
             dt = d.get("dt") or (data.get("doctype") if isinstance(data, dict) else None)
             hits.append((name, dt if isinstance(dt, str) else None, _nth_line(content, name, n)))
@@ -114,7 +114,7 @@ class CustomFieldPrefixCheck(HouseCheck):
 
         def add(d: ast.Dict, dt: str | None) -> None:
             name = _const_value(d, "fieldname")
-            if name is not None and _bad(name.value):
+            if name is not None and _is_unprefixed_custom_field(name.value):
                 found.setdefault(id(d), (name.value, dt or _str_value(d, "dt"), name.lineno))
 
         for node in ast.walk(tree):

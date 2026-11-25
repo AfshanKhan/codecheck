@@ -941,7 +941,11 @@ reason to abort the rest of the run.
 
 ```
 src/codecheck/
-├── cli.py                  # typer entrypoint: `diff`/`audit`/`render`/`compare` subcommands, shared pipeline helper
+├── cli.py                  # typer entrypoint: `diff`/`audit`/`render`/`compare` subcommands, thin adapter to ReviewEngine
+├── engine.py               # ReviewEngine, ReviewRequest, ReviewExecutionResult -- central orchestration seam
+├── source.py               # ReviewSource seam (GitDiffSource, GitHubPrSource, RepoAuditSource, InMemorySource)
+├── web.py                  # Flask web UI adapter
+├── model_check.py          # LLM provider / API key validator and preflight check
 ├── config.py                # pydantic Config/RulesConfig/CloudConfig/LocalConfig/ThresholdsConfig/SuggestionsConfig + load_config()
 ├── models.py                # Finding, Severity, ReviewTarget, ReviewReport (+ from_dict()/to_dict() on the last two)
 ├── diff.py                  # git diff extraction -> ReviewTarget (staged / base-ref merge-base)
@@ -953,14 +957,23 @@ src/codecheck/
 ├── redact.py                   # redact_report() -- scrubs repo_path/absolute paths for --redact
 ├── report_diff.py              # diff_reports() -- added/resolved findings between two reports, for `compare`
 ├── suggest.py                   # generate_suggestions() -- the --suggest-fixes second pass
+├── reporters/
+│   ├── manager.py             # ReportManager, ReportBundle, Reporter ABC (atomic multi-format reporting)
+│   ├── console.py             # rich console output
+│   ├── json_report.py         # JSON serialization
+│   ├── markdown_report.py     # Markdown report generation
+│   ├── docx_report.py         # DOCX document generation
+│   └── xlsx_report.py         # Excel spreadsheet generation
 ├── reviewers/
 │   ├── base.py                # Reviewer ABC (is_available / review)
+│   ├── llm_base.py            # BaseLlmReviewer: shared review loop, circuit breaker, budget, line scoping
 │   ├── rules_engine.py        # Tier 1: SubRunner ABC + Ruff/Eslint/Semgrep/HouseRules/TestCoverage runners
 │   ├── openai_protocol.py     # shared OpenAI chat-completions request/parsing/loop, used by Tiers 2 and 3 (and reused by suggest.py)
 │   ├── local_llm.py           # Tier 2: local OpenAI-compatible server (LM Studio, Ollama, ...), no cost
 │   └── cloud_llm.py           # Tier 3: Anthropic + OpenAI-compatible (Google/Groq/Mistral/Cerebras/OpenRouter/custom) backends, sync httpx, tool-forced JSON, audit cap
 ├── checks/
 │   ├── base.py                 # HouseCheck ABC
+│   ├── engine.py               # AstCheckEngine + AstRule: consolidated single-pass AST visitor for RULE-001..008, 018
 │   ├── no_bare_except.py       # RULE-001
 │   ├── no_sql_string_format.py # RULE-002
 │   ├── whitelist_permission_check.py, n_plus_one_query.py, no_manual_commit.py,

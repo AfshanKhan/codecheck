@@ -41,8 +41,15 @@ frappe-db = [
     "pymysql>=1.2.4",
 ]
 
+# Trial web UI (codecheck-web). Flask is only needed there.
+web = [
+    "flask>=3.0",
+    "waitress>=3.0",
+]
+
 [project.scripts]
 codecheck = "codecheck.cli:app"
+codecheck-web = "codecheck.web:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -53,8 +60,11 @@ packages = ["src/codecheck"]
 
 [dependency-groups]
 dev = [
+    "flask>=3.0",
+    "waitress>=3.0",
     "pytest>=9.2.0",
     "ruff>=0.17.5",
+    "ty>=0.0.110",
 ]
 
 [tool.ruff]

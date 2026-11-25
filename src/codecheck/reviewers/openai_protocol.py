@@ -7,15 +7,29 @@ from __future__ import annotations
 import json
 import os
 import time
-from collections.abc import Callable
 from pathlib import Path
 from typing import ClassVar
 
 import httpx
 
-from codecheck.diff import read_file_content
 from codecheck.models import Finding, ReviewTarget, Severity
-from codecheck.reviewers.base import Reviewer
+from codecheck.reviewers.llm_base import (
+    OVERLOAD_STOP_AFTER,
+    OVERLOAD_STOP_REASON,
+    BaseLlmReviewer,
+    within_diff_scope,
+)
+
+__all__ = [
+    "OVERLOAD_STOP_AFTER",
+    "OVERLOAD_STOP_REASON",
+    "within_diff_scope",
+    "OpenAIProtocolReviewer",
+    "post_with_retry",
+    "is_overload",
+    "daily_quota_hit",
+    "DailyQuotaExceeded",
+]
 
 DEFAULT_MAX_RETRIES = 5
 _INITIAL_RETRY_DELAY_SECONDS = 2.0
@@ -44,6 +58,12 @@ _MAX_TRANSIENT_SERVER_RETRIES = 2
 # wait longer than a gateway blip before the file is given up on (Retry-After still wins, capped at the maximum).
 _OVERLOAD_STATUSES = frozenset({503, 529})
 _OVERLOAD_WAITS = (15.0, 30.0, 60.0)
+# After this many files in a row that fail with 503/529 even after those waits, the provider is down: stop
+# instead of spending ~1m45s of waiting on every remaining file (imported from llm_base).
+
+
+def is_overload(e: httpx.HTTPError) -> bool:
+    return isinstance(e, httpx.HTTPStatusError) and e.response.status_code in _OVERLOAD_STATUSES
 
 
 def daily_quota_hit(text: str) -> bool:
@@ -187,21 +207,6 @@ def format_http_error(e: httpx.HTTPError) -> str:
     return str(e)
 
 
-_DIFF_LINE_TOLERANCE = 2
-
-
-def within_diff_scope(target: ReviewTarget, finding: Finding) -> bool:
-    """In diff mode, only findings on (or near) an actually-changed line are
-    kept -- enforced programmatically, not just via the prompt."""
-    if target.changed_lines is None:
-        return True  # audit mode: every line is in scope
-    end = finding.line_end or finding.line_start
-    return any(
-        line in target.changed_lines
-        for line in range(finding.line_start - _DIFF_LINE_TOLERANCE, end + _DIFF_LINE_TOLERANCE + 1)
-    )
-
-
 _NO_TOOL_CALL = "no report_findings tool call in response"
 _MAX_TOKENS = 4096
 _RETRY_MAX_TOKENS = 16384
@@ -237,21 +242,13 @@ def _extract_findings_from_content(content: str | None) -> list[dict] | None:
     return None
 
 
-class OpenAIProtocolReviewer(Reviewer):
+class OpenAIProtocolReviewer(BaseLlmReviewer):
     check_id_prefix: ClassVar[str] = "LLM"
     _disabled_message: ClassVar[str] = "tier disabled"
-    _daily_quota = False   # set when the last failed request was a per-day quota 429
 
     def __init__(self, config, client: httpx.Client | None = None):
-        self.config = config
+        super().__init__(config)
         self._client = client
-        self.skipped_files: list[tuple[str, str]] = []
-        # The API/response-error subset of skipped_files (not benign skips
-        # like "file too large"), plus a count of files reviewed
-        # successfully -- together they let the CLI tell "every call
-        # failed" apart from "nothing needed review".
-        self.failed_files: list[tuple[str, str]] = []
-        self.reviewed_count = 0
 
     def _resolved_base_url(self) -> str | None:
         raise NotImplementedError
@@ -315,6 +312,7 @@ class OpenAIProtocolReviewer(Reviewer):
             response = post_with_retry(client, self._resolved_base_url(), payload)
         except httpx.HTTPError as e:
             self._daily_quota = isinstance(e, DailyQuotaExceeded)
+            self._overloaded = is_overload(e)
             return [], f"API request failed: {format_http_error(e)}"
 
         try:
@@ -378,69 +376,3 @@ class OpenAIProtocolReviewer(Reviewer):
             suggestion=raw.get("suggestion"),
             raw=raw,
         )
-
-    def review(
-        self,
-        targets: list[ReviewTarget],
-        repo_path: Path,
-        on_progress: Callable[[str, str], None] | None = None,
-    ) -> list[Finding]:
-        """on_progress, if given, is called as on_progress(file_path, outcome)
-        after each file is processed."""
-        self.skipped_files = []
-        self.failed_files = []
-        self.reviewed_count = 0
-        self._daily_quota = False
-        client = self._get_client()
-        findings: list[Finding] = []
-        finding_counter = 0
-
-        deadline = time.monotonic() + self.config.time_budget_seconds if getattr(self.config, "time_budget_seconds", None) else None
-        stop_reason = None
-        for target in targets:
-            if target.status == "deleted":
-                continue
-            if not stop_reason and deadline and time.monotonic() > deadline:
-                stop_reason = "time budget reached, not reviewed"
-            if stop_reason:
-                self.skipped_files.append((target.path, stop_reason))
-                if on_progress:
-                    on_progress(target.path, f"skipped: {stop_reason}")
-                continue
-            content = read_file_content(repo_path, target)
-            if content is None:
-                self.skipped_files.append((target.path, "could not read file content"))
-                if on_progress:
-                    on_progress(target.path, "skipped: could not read file content")
-                continue
-            line_count = content.count("\n") + 1
-            if line_count > self.config.max_file_lines:
-                reason = f"file too large ({line_count} lines > {self.config.max_file_lines})"
-                self.skipped_files.append((target.path, reason))
-                if on_progress:
-                    on_progress(target.path, f"skipped: {reason}")
-                continue
-
-            raw_findings, error = self._review_file(client, target, content)
-            if error:
-                self.skipped_files.append((target.path, error))
-                self.failed_files.append((target.path, error))
-                if self._daily_quota:
-                    stop_reason = "daily request quota for this API key is used up, not reviewed"
-                if on_progress:
-                    on_progress(target.path, f"skipped: {error}")
-                continue
-
-            self.reviewed_count += 1
-            file_finding_count = 0
-            for raw in raw_findings:
-                finding_counter += 1
-                finding = self._finding_from_raw(raw, target.path, finding_counter)
-                if within_diff_scope(target, finding):
-                    findings.append(finding)
-                    file_finding_count += 1
-            if on_progress:
-                noun = "finding" if file_finding_count == 1 else "findings"
-                on_progress(target.path, f"{file_finding_count} {noun}")
-
-        return findings

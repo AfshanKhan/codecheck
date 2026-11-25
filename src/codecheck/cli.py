@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import shutil
 import sys
 import tempfile
 import time
@@ -23,19 +22,31 @@ from rich.console import Console
 
 from codecheck.aggregator import aggregate
 from codecheck.config import Config, load_config
-from codecheck.diff import get_diff, read_file_content
+from codecheck.diff import read_file_content
+from codecheck.engine import (
+    AuditCapExceededError,
+    ReviewEngine,
+    ReviewRequest,
+)
 from codecheck.frappe_db import FrappeDbConnection, FrappeDbUnavailable
 from codecheck.frappe_scripts import FrappeScriptFetchError, fetch_via_api, write_scripts
-from codecheck.github_source import cloned_repo, parse_pr_url, pr_worktree
+from codecheck.github_source import parse_pr_url
 from codecheck.lm_link import resolve_model_location, set_preferred_device
 from codecheck.models import ReviewReport, ReviewTarget, Severity
 from codecheck.noise import partition, summary
 from codecheck.redact import redact_report
-from codecheck.repo_scan import get_repo_files
 from codecheck.report_diff import diff_reports
 from codecheck.reporters.console import print_report
 from codecheck.reporters.docx_report import write_docx_report
 from codecheck.reporters.json_report import write_json_report
+from codecheck.reporters.manager import (
+    DocxReporter,
+    JsonReporter,
+    MarkdownReporter,
+    ReportGenerationError,
+    ReportManager,
+    XlsxReporter,
+)
 from codecheck.reporters.markdown_report import write_markdown_report
 from codecheck.reporters.xlsx_report import write_xlsx_report
 from codecheck.resume import (
@@ -47,12 +58,17 @@ from codecheck.resume import (
 from codecheck.reviewers.cloud_llm import (
     build_cloud_reviewer,
     cloud_targets,
-    exceeds_audit_cap,
     without_ci_files,
 )
 from codecheck.reviewers.local_llm import LocalLLMReviewer
 from codecheck.reviewers.openai_protocol import OpenAIProtocolReviewer
 from codecheck.reviewers.rules_engine import RulesEngineReviewer
+from codecheck.source import (
+    GitDiffSource,
+    GitHubPrSource,
+    RepoAuditSource,
+    ReviewSource,
+)
 from codecheck.suggest import generate_suggestions
 
 app = typer.Typer(add_completion=False)
@@ -230,6 +246,8 @@ def _run_llm_tier(
         completed += 1
         console.print(f"[dim]  ({completed}/{total}) {path}: {outcome}[/dim]")
 
+    if not console.is_terminal:
+        console.print(f"AI review: {total} file(s)")
     with console.status(f"[bold]{status_message}"):
         new_findings = reviewer.review(remaining_targets, repo_path, on_progress=_on_progress)
 
@@ -290,6 +308,8 @@ def _run_tiers(
     rules_reviewer = RulesEngineReviewer(cfg.rules, frappe_db=frappe_db, ruff_extra_config=ruff_extra_config)
     available, reason = rules_reviewer.is_available(repo_path)
     if available:
+        if not console.is_terminal:  # no spinner when piped, so say what is happening
+            console.print("Running rules (ruff/semgrep/house rules)...")
         with console.status("[bold]Running rules engine (ruff/eslint/semgrep/house rules)..."):
             results["rules"] = rules_reviewer.review(targets, repo_path)
         tiers_run.append("rules")
@@ -413,24 +433,42 @@ def _write_reports(
 ) -> tuple[Path, Path, Path, Path]:
     """Claims a unique run directory and writes the .json/.md/.docx/.xlsx
     quartet for `report` into it. Shared by `_finish` and `render`."""
-    output_dir.mkdir(parents=True, exist_ok=True)
-    requested_basename = _report_basename(repo_label, pr_number, report.mode, report.generated_at)
-    run_dir = _claim_unique_run_dir(output_dir, requested_basename)
-    basename = run_dir.name
-    json_path = run_dir / f"{basename}.json"
-    md_path = run_dir / f"{basename}.md"
-    docx_path = run_dir / f"{basename}.docx"
-    xlsx_path = run_dir / f"{basename}.xlsx"
+    class CliJsonReporter(JsonReporter):
+        def write(self, r: ReviewReport, p: Path) -> Path:
+            write_json_report(r, p)
+            return p
+
+    class CliMarkdownReporter(MarkdownReporter):
+        def write(self, r: ReviewReport, p: Path) -> Path:
+            write_markdown_report(r, p)
+            return p
+
+    class CliDocxReporter(DocxReporter):
+        def write(self, r: ReviewReport, p: Path) -> Path:
+            write_docx_report(r, p)
+            return p
+
+    class CliXlsxReporter(XlsxReporter):
+        def write(self, r: ReviewReport, p: Path) -> Path:
+            write_xlsx_report(r, p)
+            return p
+
+    manager = ReportManager(
+        output_dir=output_dir,
+        reporters={
+            "json": CliJsonReporter(),
+            "markdown": CliMarkdownReporter(),
+            "docx": CliDocxReporter(),
+            "xlsx": CliXlsxReporter(),
+        },
+    )
     try:
-        write_json_report(report, json_path)
-        write_markdown_report(report, md_path)
-        write_docx_report(report, docx_path)
-        write_xlsx_report(report, xlsx_path)
-    except BaseException:
-        # Free the claimed basename back up rather than leaving a partial run.
-        shutil.rmtree(run_dir, ignore_errors=True)
-        raise
-    return json_path, md_path, docx_path, xlsx_path
+        bundle = manager.write_bundle(
+            report, repo_label=repo_label, pr_number=pr_number
+        )
+        return bundle["json"], bundle["markdown"], bundle["docx"], bundle["xlsx"]
+    except ReportGenerationError as e:
+        raise e.original_error from None
 
 
 def _finish(
@@ -569,6 +607,41 @@ def _connect_frappe_db(
         return None
 
 
+def _build_engine_callbacks() -> dict:
+    """Shared ReviewRequest progress/status callbacks for CLI commands."""
+    counts: dict[str, list[int]] = {}
+
+    def _on_tier_start(tier: str, message: str) -> None:
+        if tier in ("local_llm", "cloud_llm"):
+            m = re.search(r"AI review: (\d+) file", message)
+            if m:
+                counts[tier] = [0, int(m.group(1))]
+        if not console.is_terminal:
+            console.print(message)
+
+    def _on_file_progress(tier: str, path: str, outcome: str) -> None:
+        pair = counts.get(tier)
+        if pair:
+            pair[0] += 1
+            console.print(f"[dim]  ({pair[0]}/{pair[1]}) {path}: {outcome}[/dim]")
+        else:
+            console.print(f"[dim]  {path}: {outcome}[/dim]")
+
+    def _on_resumed(tier: str, count: int) -> None:
+        console.print(f"[dim]Resumed: {count} file(s) already reviewed by {tier}, not re-requested.[/dim]")
+
+    def _on_suggestions(count: int) -> None:
+        noun = "suggestion" if count == 1 else "suggestions"
+        console.print(f"[dim]Generated {count} fix {noun}.[/dim]")
+
+    return {
+        "on_tier_start": _on_tier_start,
+        "on_file_progress": _on_file_progress,
+        "on_resumed": _on_resumed,
+        "on_suggestions_generated": _on_suggestions,
+    }
+
+
 @app.command()
 def diff(
     repo_path: Path = typer.Option(Path("."), "--repo-path", help="Path to the git repo."),
@@ -641,6 +714,9 @@ def diff(
             "suggestions.exclude_checks to skip specific check IDs entirely."
         ),
     ),
+    skip_note: list[str] = typer.Option(
+        [], "--skip-note", hidden=True, help="Extra line for the report's 'Not checked' list (used by the web UI)."
+    ),
     frappe_db_config: Optional[Path] = typer.Option(
         None,
         "--frappe-db-config",
@@ -681,7 +757,6 @@ def diff(
                 )
                 raise typer.Exit(code=2)
 
-    start = time.monotonic()
     cfg = _load_config_or_exit(config)
     if cloud:
         cfg.cloud.enabled = True
@@ -698,75 +773,73 @@ def diff(
         if frappe_db is not None:
             stack.callback(frappe_db.close)
 
-        if repo_url:
-            try:
-                source_repo_path = stack.enter_context(cloned_repo(repo_url, branch=branch))
-            except ValueError as e:
-                console.print(f"[red]Error:[/red] {e}")
-                raise typer.Exit(code=2)
+        source: ReviewSource
+        if pr_number is not None:
+            source = GitHubPrSource(
+                pr=pr,
+                repo_path=repo_path if not repo_url else None,
+                repo_url=repo_url,
+                base_ref=base_ref,
+                repo_label=repo_label,
+            )
         else:
-            source_repo_path = repo_path.resolve()
+            source = GitDiffSource(
+                repo_path=repo_path if not repo_url else None,
+                base_ref=base_ref,
+                staged=staged,
+                repo_label=repo_label,
+                repo_url=repo_url,
+                branch=branch,
+            )
 
         try:
-            if pr_number is not None:
-                review_repo_path, resolved_base_ref = stack.enter_context(
-                    pr_worktree(source_repo_path, pr_number, base_ref)
-                )
-                targets = get_diff(review_repo_path, base_ref=resolved_base_ref, staged=False)
-                report_base_ref = resolved_base_ref
-                report_head_ref = f"pull/{pr_number}"
-            else:
-                review_repo_path = source_repo_path
-                report_base_ref = None if staged else (base_ref or "main")
-                targets = get_diff(
-                    review_repo_path, base_ref=None if staged else report_base_ref, staged=staged
-                )
-                report_head_ref = None if staged else "HEAD"
+            ws = stack.enter_context(source.acquire())
         except ValueError as e:
             console.print(f"[red]Error:[/red] {e}")
             raise typer.Exit(code=2)
 
-        if not targets:
+        if not ws.targets:
             console.print("[yellow]No changed files found.[/yellow]")
             raise typer.Exit(code=0)
 
-        if cfg.cloud.enabled:
-            # Apply the same per-run file cap as `audit`.
-            capped_count = exceeds_audit_cap(targets, cfg.cloud, force=force_cloud, repo_path=review_repo_path)
-            if capped_count is not None:
-                console.print(
-                    f"[red]Refusing to run the cloud tier over {capped_count} changed files[/red] "
-                    f"(cap is {cfg.cloud.audit_file_cap} — see cloud.audit_file_cap in config).\n"
-                    f"A large diff/PR would make up to {capped_count} API calls. Re-run with "
-                    f"--force-cloud to proceed anyway."
-                )
-                raise typer.Exit(code=2)
-
-        llm_sent: dict[str, list[str]] = {}
-        results, tiers_run, skipped, file_hashes, had_runner_error = _run_tiers(
-            targets, review_repo_path, cfg, "diff",
-            force_local=force_local, device=device, resume_from=resume_from, frappe_db=frappe_db,
-            sent_out=llm_sent,
+        engine = ReviewEngine()
+        request = ReviewRequest(
+            workspace=ws,
+            config=cfg,
+            resume_from=resume_from,
+            suggest_fixes=suggest_fixes,
+            force_local=force_local,
+            force_cloud=force_cloud,
+            device=device,
+            frappe_db=frappe_db,
+            skip_notes=skip_note + skipped_early,
+            confirm_local_execution=_confirm_local_execution,
+            **_build_engine_callbacks(),
         )
-        skipped = skipped_early + skipped
-        findings = aggregate(results)
-        _maybe_suggest_fixes(suggest_fixes, cfg, findings, targets, review_repo_path, skipped)
 
-        report = ReviewReport(
-            repo_path=_display_repo_url(repo_url) if repo_url else str(source_repo_path),
-            mode="diff",
-            base_ref=report_base_ref,
-            head_ref=report_head_ref,
-            generated_at=datetime.now(timezone.utc),
-            tiers_run=tiers_run,
-            findings=findings,
-            files_reviewed=[t.path for t in targets],
-            duration_seconds=time.monotonic() - start,
-            skipped=skipped,
-            file_hashes=file_hashes,
-            llm_sent=llm_sent,
+        try:
+            result = engine.review(request)
+        except AuditCapExceededError as e:
+            console.print(
+                f"[red]Refusing to run the cloud tier over {e.file_count} changed files[/red] "
+                f"(cap is {e.cap} — see cloud.audit_file_cap in config).\n"
+                f"A large diff/PR would make up to {e.file_count} API calls. Re-run with "
+                f"--force-cloud to proceed anyway."
+            )
+            raise typer.Exit(code=2)
+
+        if repo_url:
+            result.report.repo_path = _display_repo_url(repo_url)
+
+        _finish(
+            result.report,
+            output_dir,
+            cfg,
+            repo_label,
+            pr_number=pr_number,
+            redact=redact,
+            had_runner_error=result.had_runner_error,
         )
-        _finish(report, output_dir, cfg, repo_label, pr_number=pr_number, redact=redact, had_runner_error=had_runner_error)
 
 
 @app.command()
@@ -825,6 +898,9 @@ def audit(
             "suggestions.exclude_checks to skip specific check IDs entirely."
         ),
     ),
+    skip_note: list[str] = typer.Option(
+        [], "--skip-note", hidden=True, help="Extra line for the report's 'Not checked' list (used by the web UI)."
+    ),
     frappe_db_config: Optional[Path] = typer.Option(
         None,
         "--frappe-db-config",
@@ -839,7 +915,6 @@ def audit(
     """Audit the whole repo (every tracked file, plus untracked-but-not-ignored
     files) instead of just a diff."""
     resolved_gate = _resolve_gate(gate)
-    start = time.monotonic()
     cfg = _load_config_or_exit(config)
     if cloud:
         cfg.cloud.enabled = True
@@ -856,62 +931,62 @@ def audit(
         if frappe_db is not None:
             stack.callback(frappe_db.close)
 
-        if repo_url:
-            try:
-                effective_repo_path = stack.enter_context(cloned_repo(repo_url, branch=branch))
-            except ValueError as e:
-                console.print(f"[red]Error:[/red] {e}")
-                raise typer.Exit(code=2)
-        else:
-            effective_repo_path = repo_path.resolve()
+        source = RepoAuditSource(
+            repo_path=repo_path if not repo_url else None,
+            repo_url=repo_url,
+            branch=branch,
+            repo_label=repo_label,
+        )
 
         try:
-            targets = get_repo_files(effective_repo_path)
+            ws = stack.enter_context(source.acquire())
         except ValueError as e:
             console.print(f"[red]Error:[/red] {e}")
             raise typer.Exit(code=2)
-        if not targets:
+
+        if not ws.targets:
             console.print("[yellow]No files found to audit.[/yellow]")
             raise typer.Exit(code=0)
 
-        if cfg.cloud.enabled:
-            capped_count = exceeds_audit_cap(targets, cfg.cloud, force=force_cloud, repo_path=effective_repo_path)
-            if capped_count is not None:
-                console.print(
-                    f"[red]Refusing to run the cloud tier over {capped_count} files[/red] "
-                    f"(cap is {cfg.cloud.audit_file_cap} — see cloud.audit_file_cap in config).\n"
-                    f"This would make up to {capped_count} API calls. Re-run with --force-cloud "
-                    f"to proceed anyway, or lower the scope."
-                )
-                raise typer.Exit(code=2)
+        console.print(f"[dim]Auditing {len(ws.targets)} file(s) in {ws.repo_path}[/dim]")
 
-        console.print(f"[dim]Auditing {len(targets)} file(s) in {effective_repo_path}[/dim]")
-
-        llm_sent: dict[str, list[str]] = {}
-        results, tiers_run, skipped, file_hashes, had_runner_error = _run_tiers(
-            targets, effective_repo_path, cfg, "audit",
-            force_local=force_local, device=device, resume_from=resume_from, frappe_db=frappe_db,
-            sent_out=llm_sent,
+        engine = ReviewEngine()
+        request = ReviewRequest(
+            workspace=ws,
+            config=cfg,
+            resume_from=resume_from,
+            suggest_fixes=suggest_fixes,
+            force_local=force_local,
+            force_cloud=force_cloud,
+            device=device,
+            frappe_db=frappe_db,
+            skip_notes=skip_note + skipped_early,
+            confirm_local_execution=_confirm_local_execution,
+            **_build_engine_callbacks(),
         )
-        skipped = skipped_early + skipped
-        findings = aggregate(results)
-        _maybe_suggest_fixes(suggest_fixes, cfg, findings, targets, effective_repo_path, skipped)
 
-        report = ReviewReport(
-            repo_path=_display_repo_url(repo_url) if repo_url else str(effective_repo_path),
-            mode="audit",
-            base_ref=None,
-            head_ref=None,
-            generated_at=datetime.now(timezone.utc),
-            tiers_run=tiers_run,
-            findings=findings,
-            files_reviewed=[t.path for t in targets],
-            duration_seconds=time.monotonic() - start,
-            skipped=skipped,
-            file_hashes=file_hashes,
-            llm_sent=llm_sent,
+        try:
+            result = engine.review(request)
+        except AuditCapExceededError as e:
+            console.print(
+                f"[red]Refusing to run the cloud tier over {e.file_count} files[/red] "
+                f"(cap is {e.cap} — see cloud.audit_file_cap in config).\n"
+                f"This would make up to {e.file_count} API calls. Re-run with --force-cloud "
+                f"to proceed anyway, or lower the scope."
+            )
+            raise typer.Exit(code=2)
+
+        if repo_url:
+            result.report.repo_path = _display_repo_url(repo_url)
+
+        _finish(
+            result.report,
+            output_dir,
+            cfg,
+            repo_label,
+            redact=redact,
+            had_runner_error=result.had_runner_error,
         )
-        _finish(report, output_dir, cfg, repo_label, redact=redact, had_runner_error=had_runner_error)
 
 
 @app.command(name="audit-scripts")

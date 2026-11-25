@@ -11,25 +11,25 @@ from __future__ import annotations
 
 import json
 import os
-import time
-from collections.abc import Callable
 from pathlib import Path
 
 import httpx
 
 from codecheck.config import CloudConfig, LocalConfig
-from codecheck.diff import read_file_content
 from codecheck.models import Finding, ReviewTarget, Severity
 from codecheck.noise import partition
 from codecheck.reviewers.base import Reviewer
+from codecheck.reviewers.llm_base import (
+    BaseLlmReviewer,
+)
 from codecheck.reviewers.openai_protocol import (
     SYSTEM_PROMPT,
     OpenAIProtocolReviewer,
     build_user_message,
     format_http_error,
+    is_overload,
     post_with_retry,
     safe_int,
-    within_diff_scope,
 )
 
 _ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
@@ -121,16 +121,16 @@ def exceeds_audit_cap(targets: list[ReviewTarget], config: CloudConfig, force: b
     return None
 
 
-class AnthropicCloudReviewer(Reviewer):
+class AnthropicCloudReviewer(BaseLlmReviewer):
     tier = "cloud_llm"
     name = "cloud_llm"
 
     def __init__(self, config: CloudConfig, client: httpx.Client | None = None):
-        self.config = config
+        super().__init__(config)
         self._client = client
-        self.skipped_files: list[tuple[str, str]] = []
-        self.failed_files: list[tuple[str, str]] = []  # API/response-error subset of skipped_files
-        self.reviewed_count = 0
+
+    def _finding_from_raw(self, raw: dict, file_path: str, counter: int) -> Finding:
+        return _anthropic_finding_from_raw(raw, file_path, counter)
 
     def is_available(self, repo_path: Path) -> tuple[bool, str | None]:
         if not self.config.enabled:
@@ -154,67 +154,6 @@ class AnthropicCloudReviewer(Reviewer):
             timeout=getattr(self.config, "request_timeout_seconds", 120.0),
         )
 
-    def review(
-        self,
-        targets: list[ReviewTarget],
-        repo_path: Path,
-        on_progress: Callable[[str, str], None] | None = None,
-    ) -> list[Finding]:
-        """on_progress, if given, is called as on_progress(file_path, outcome)
-        after each file is processed."""
-        self.skipped_files = []
-        self.failed_files = []
-        self.reviewed_count = 0
-        client = self._get_client()
-        findings: list[Finding] = []
-        finding_counter = 0
-
-        deadline = time.monotonic() + self.config.time_budget_seconds if self.config.time_budget_seconds else None
-        for target in targets:
-            if target.status == "deleted":
-                continue
-            if deadline and time.monotonic() > deadline:
-                reason = "time budget reached, not reviewed"
-                self.skipped_files.append((target.path, reason))
-                if on_progress:
-                    on_progress(target.path, f"skipped: {reason}")
-                continue
-            content = read_file_content(repo_path, target)
-            if content is None:
-                self.skipped_files.append((target.path, "could not read file content"))
-                if on_progress:
-                    on_progress(target.path, "skipped: could not read file content")
-                continue
-            line_count = content.count("\n") + 1
-            if line_count > self.config.max_file_lines:
-                reason = f"file too large ({line_count} lines > {self.config.max_file_lines})"
-                self.skipped_files.append((target.path, reason))
-                if on_progress:
-                    on_progress(target.path, f"skipped: {reason}")
-                continue
-
-            raw_findings, error = self._review_file(client, target, content)
-            if error:
-                self.skipped_files.append((target.path, error))
-                self.failed_files.append((target.path, error))
-                if on_progress:
-                    on_progress(target.path, f"skipped: {error}")
-                continue
-
-            self.reviewed_count += 1
-            file_finding_count = 0
-            for raw in raw_findings:
-                finding_counter += 1
-                finding = _anthropic_finding_from_raw(raw, target.path, finding_counter)
-                if within_diff_scope(target, finding):
-                    findings.append(finding)
-                    file_finding_count += 1
-            if on_progress:
-                noun = "finding" if file_finding_count == 1 else "findings"
-                on_progress(target.path, f"{file_finding_count} {noun}")
-
-        return findings
-
     def _review_file(
         self, client: httpx.Client, target: ReviewTarget, content: str
     ) -> tuple[list[dict], str | None]:
@@ -230,16 +169,24 @@ class AnthropicCloudReviewer(Reviewer):
             payload["output_config"] = {"effort": self.config.effort}
 
         try:
-            try:
-                response = post_with_retry(client, _ANTHROPIC_API_URL, payload)
-            except httpx.HTTPStatusError as e:
-                if e.response.status_code != 400 or "tool_choice" not in e.response.text:
-                    raise
-                # Newer Anthropic models reject a forced tool call: let the model choose, and tell it to use the tool.
-                payload["tool_choice"] = {"type": "auto"}
-                payload["system"] += "\n\nAlways report your result by calling the report_findings tool, even when there are no findings."
-                response = post_with_retry(client, _ANTHROPIC_API_URL, payload)
+            while True:
+                try:
+                    response = post_with_retry(client, _ANTHROPIC_API_URL, payload)
+                    break
+                except httpx.HTTPStatusError as e:
+                    body = e.response.text
+                    if e.response.status_code != 400:
+                        raise
+                    if "tool_choice" in body and payload["tool_choice"]["type"] == "tool":
+                        # Newer Claude models reject a forced tool call: let the model choose, and tell it to use the tool.
+                        payload["tool_choice"] = {"type": "auto"}
+                        payload["system"] += "\n\nAlways report your result by calling the report_findings tool, even when there are no findings."
+                    elif "output_config" in payload and ("effort" in body or "output_config" in body):
+                        del payload["output_config"]   # this model takes no effort setting: retry without it
+                    else:
+                        raise
         except httpx.HTTPError as e:
+            self._overloaded = is_overload(e)
             return [], f"API request failed: {format_http_error(e)}"
 
         try:

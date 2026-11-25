@@ -40,5 +40,8 @@ jobs:
       - name: Lint
         run: uv run ruff check
 
+      - name: Type check (core modules)
+        run: uv run ty check src/codecheck/engine.py src/codecheck/source.py src/codecheck/reporters/manager.py src/codecheck/checks/engine.py src/codecheck/reviewers/llm_base.py
+
       - name: Tests
         run: uv run pytest

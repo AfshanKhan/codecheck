@@ -7,6 +7,7 @@ import json
 import re
 import shutil
 import subprocess
+import sys
 from abc import ABC, abstractmethod
 from pathlib import Path
 
@@ -22,6 +23,11 @@ from codecheck.reviewers.base import Reviewer
 
 def _line_in_scope(target: ReviewTarget, line: int) -> bool:
     return target.changed_lines is None or line in target.changed_lines
+
+
+def _find_tool(name: str) -> str | None:
+    """Locate a linter on PATH, else next to this Python (the venv bin), which a service PATH lacks."""
+    return shutil.which(name) or shutil.which(name, path=str(Path(sys.executable).parent))
 
 
 class SubRunner(ABC):
@@ -51,7 +57,7 @@ class RuffRunner(SubRunner):
         self.extra_config = extra_config or []
 
     def is_available(self, repo_path: Path) -> tuple[bool, str | None]:
-        if shutil.which("ruff") is None:
+        if _find_tool("ruff") is None:
             return False, "ruff not found on PATH"
         return True, None
 
@@ -63,7 +69,7 @@ class RuffRunner(SubRunner):
         target_by_path = {t.path: t for t in py_targets}
         config_args = [arg for value in self.extra_config for arg in ("--config", value)]
         result = subprocess.run(
-            ["ruff", "check", "--output-format=json", *config_args, "--", *target_by_path.keys()],
+            [_find_tool("ruff"), "check", "--output-format=json", *config_args, "--", *target_by_path.keys()],
             cwd=repo_path,
             capture_output=True,
             text=True,
@@ -145,7 +151,7 @@ class EslintRunner(SubRunner):
     def _binary(self, repo_path: Path) -> str | None:
         # PATH-only, never repo_path/node_modules/.bin/eslint -- avoids
         # running an untrusted repo's own binary.
-        return shutil.which("eslint")
+        return _find_tool("eslint")
 
     def is_available(self, repo_path: Path) -> tuple[bool, str | None]:
         if not any((repo_path / name).is_file() for name in _ESLINT_CONFIG_NAMES):
@@ -227,7 +233,7 @@ class SemgrepRunner(SubRunner):
         self.config_path = str(Path(config_path).expanduser().resolve()) if config_path else None
 
     def is_available(self, repo_path: Path) -> tuple[bool, str | None]:
-        if shutil.which("semgrep") is None:
+        if _find_tool("semgrep") is None:
             return False, "semgrep not found on PATH"
         return True, None
 
@@ -238,7 +244,7 @@ class SemgrepRunner(SubRunner):
 
         target_by_path = {t.path: t for t in live_targets}
         config_value = self.config_path or "auto"
-        command = ["semgrep", f"--config={config_value}"]
+        command = [_find_tool("semgrep"), f"--config={config_value}"]
         if config_value != "auto":
             # --metrics=off disables semgrep's default anonymous telemetry --
             # but semgrep refuses to run at all with --config=auto and
