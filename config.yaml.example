@@ -18,6 +18,8 @@ cloud:
   max_file_lines: 800      # files larger than this are skipped in the cloud tier
   audit_file_cap: 50       # `audit --cloud` refuses to run over this many files without --force-cloud
   request_timeout_seconds: 120   # hosted APIs are fast; rarely needs raising
+  # effort: medium             # low | medium | high, sent as the provider's reasoning setting. Only for models that support it
+  #                            # (e.g. Claude, Gemini 2.5+, gpt-oss); others, such as llama-3.3-70b-versatile, reject it with HTTP 400. Unset = provider default
   # skip_noise: true             # don't send tests, bundles, generated files, empty files or boilerplate to the LLM
   # extensions: [".py", ".js"]   # send only these file types (workflow files are never sent)
   # time_budget_seconds: 1500    # stop starting new files after this long; the report is still written

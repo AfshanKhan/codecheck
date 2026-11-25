@@ -1,16 +1,16 @@
 [project]
 name = "codecheck"
-version = "0.8.0"
+version = "0.9.0"
 description = "Local, tiered code review tool for a diff or a whole repo: deterministic linters + optional cloud LLM pass."
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.11"
 dependencies = [
-    "typer>=0.27.3",
+    "typer>=0.29.1",
     "rich>=13.7",
     "httpx>=0.27",
     "gitpython>=3.2.1",
-    "pydantic>=2.14.2",
+    "pydantic>=2.14.3",
     "pyyaml>=6.0",
     "python-docx>=1.1",
     "pathspec>=1.0",
@@ -29,8 +29,8 @@ dependencies = [
 # one, so there's no way to declare it as a Python dependency. Install it
 # separately (e.g. `npm install -g eslint`) if you want that sub-runner.
 rules = [
-    "ruff>=0.17.3",
-    "semgrep>=1.183.0",
+    "ruff>=0.17.5",
+    "semgrep>=1.185.0",
 ]
 
 # Only needed for --frappe-db-config -- a niche, opt-in feature most installs
@@ -38,7 +38,7 @@ rules = [
 # imported in frappe_db.py with a clear "pip install codecheck[frappe-db]"
 # error if it's missing and that feature is actually requested.
 frappe-db = [
-    "pymysql>=1.2.3",
+    "pymysql>=1.2.4",
 ]
 
 # Trial web UI (codecheck-web). Flask is only needed there.
@@ -63,7 +63,7 @@ dev = [
     "flask>=3.0",
     "waitress>=3.0",
     "pytest>=9.2.0",
-    "ruff>=0.17.3",
+    "ruff>=0.17.5",
     "ty>=0.0.110",
 ]
 
