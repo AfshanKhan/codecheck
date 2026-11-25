@@ -52,7 +52,7 @@ def _permission_signal(node: ast.AST) -> bool:
         name = target.attr if isinstance(target, ast.Attribute) else (
             target.id if isinstance(target, ast.Name) else ""
         )
-        if "has_permission" in name or "check_permission" in name:
+        if "has_permission" in name or "check_permission" in name or name == "only_for":  # only_for = role gate
             return True
     if isinstance(node, ast.Raise) and node.exc is not None:
         exc = node.exc

@@ -184,7 +184,7 @@ def test_review_records_enabled_but_skipped_runners(monkeypatch):
     # be recorded in skipped_runners (so the CLI can surface them), not silently
     # mistaken for "ran and found nothing."
     monkeypatch.setattr(
-        "codecheck.reviewers.rules_engine.shutil.which", lambda _name: None
+        "codecheck.reviewers.rules_engine.shutil.which", lambda _name, **_kw: None
     )
     reviewer = RulesEngineReviewer(
         RulesConfig(ruff=True, eslint=False, semgrep=True, house_rules=False)
@@ -217,7 +217,7 @@ def test_a_sub_runner_failure_is_recorded_as_skipped_not_raised(monkeypatch):
     # semgrep exiting non-0/1 on a bad semgrep_config) used to crash the
     # whole rules-tier review instead of being recorded like any other
     # unavailable/skipped runner.
-    monkeypatch.setattr("codecheck.reviewers.rules_engine.shutil.which", lambda _name: "/usr/bin/semgrep")
+    monkeypatch.setattr("codecheck.reviewers.rules_engine.shutil.which", lambda _name, **_kw: "/usr/bin/semgrep")
     monkeypatch.setattr(
         "codecheck.reviewers.rules_engine.SemgrepRunner.run",
         lambda self, targets, repo_path: (_ for _ in ()).throw(RuntimeError("semgrep exited 7")),
@@ -237,7 +237,7 @@ def test_a_sub_runner_failure_is_recorded_as_skipped_not_raised(monkeypatch):
 
 
 def test_runner_failures_stays_empty_for_an_ordinary_unavailable_skip(monkeypatch):
-    monkeypatch.setattr("codecheck.reviewers.rules_engine.shutil.which", lambda _name: None)
+    monkeypatch.setattr("codecheck.reviewers.rules_engine.shutil.which", lambda _name, **_kw: None)
     reviewer = RulesEngineReviewer(
         RulesConfig(ruff=True, eslint=False, semgrep=False, house_rules=False)
     )
@@ -264,7 +264,7 @@ def test_ruff_tool_failure_is_a_runner_failure_not_a_clean_scan(tmp_path: Path):
 
 def test_eslint_fatal_exit_is_a_runner_failure_not_a_clean_scan(tmp_path: Path, monkeypatch):
     (tmp_path / "eslint.config.js").write_text("module.exports = [];\n")
-    monkeypatch.setattr("codecheck.reviewers.rules_engine.shutil.which", lambda _n: "/usr/bin/eslint")
+    monkeypatch.setattr("codecheck.reviewers.rules_engine.shutil.which", lambda _n, **_kw: "/usr/bin/eslint")
     monkeypatch.setattr(
         "codecheck.reviewers.rules_engine.subprocess.run",
         lambda *a, **k: subprocess.CompletedProcess(a, 2, stdout="", stderr="Oops! Something went wrong"),
@@ -282,7 +282,7 @@ def _fake_run(stdout: str, returncode: int = 0):
 
 
 def test_semgrep_unparseable_output_is_a_runner_failure_not_a_clean_scan(tmp_path: Path, monkeypatch):
-    monkeypatch.setattr("codecheck.reviewers.rules_engine.shutil.which", lambda _n: "/usr/bin/semgrep")
+    monkeypatch.setattr("codecheck.reviewers.rules_engine.shutil.which", lambda _n, **_kw: "/usr/bin/semgrep")
     monkeypatch.setattr("codecheck.reviewers.rules_engine.subprocess.run", _fake_run("Traceback (most recent call last)"))
     reviewer = RulesEngineReviewer(RulesConfig(ruff=False, eslint=False, semgrep=True, house_rules=False))
 
@@ -297,7 +297,7 @@ def test_valid_json_of_the_wrong_shape_is_a_runner_failure(tmp_path: Path, monke
     # a JSON object where a list is expected (or vice versa) used to blow up in the parsing loop
     # with a confusing AttributeError; it must be reported as the tool producing unexpected output
     (tmp_path / "eslint.config.js").write_text("module.exports = [];\n")
-    monkeypatch.setattr("codecheck.reviewers.rules_engine.shutil.which", lambda _n: f"/usr/bin/{tool}")
+    monkeypatch.setattr("codecheck.reviewers.rules_engine.shutil.which", lambda _n, **_kw: f"/usr/bin/{tool}")
     wrong_shape = "[]" if tool == "semgrep" else "{}"
     monkeypatch.setattr("codecheck.reviewers.rules_engine.subprocess.run", _fake_run(wrong_shape))
     target = ReviewTarget(path="a.js" if tool == "eslint" else "a.py", status="scanned", changed_lines=None)

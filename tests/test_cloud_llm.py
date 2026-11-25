@@ -305,3 +305,19 @@ def test_review_tracks_api_failures_separately_from_benign_skips(tmp_path: Path)
     assert {path for path, _ in reviewer.skipped_files} == {"big.py", "a.py"}
     assert [path for path, _ in reviewer.failed_files] == ["a.py"]
     assert reviewer.reviewed_count == 0
+
+
+def test_anthropic_repeated_overload_stops_the_remaining_files(tmp_path: Path, monkeypatch):
+    import httpx
+    monkeypatch.setattr("codecheck.reviewers.openai_protocol.time.sleep", lambda s: None)
+    names = [f"f{i}.py" for i in range(5)]
+    for n in names:
+        (tmp_path / n).write_text("x = 1\n")
+    targets = [ReviewTarget(path=n, status="modified", diff_text="", changed_lines={1}) for n in names]
+    mock_client = MagicMock()
+    mock_client.post.return_value = httpx.Response(529, text="overloaded", request=httpx.Request("POST", "http://x"))
+    reviewer = AnthropicCloudReviewer(CloudConfig(enabled=True), client=mock_client)
+    reviewer.review(targets, tmp_path)
+    assert mock_client.post.call_count == 3 * 4
+    assert [p for p, _ in reviewer.skipped_files] == names
+    assert "overloaded" in reviewer.skipped_files[4][1]

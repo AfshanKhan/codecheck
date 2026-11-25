@@ -121,11 +121,35 @@ def test_post_with_retry_retries_transient_server_errors_then_succeeds(status):
     assert result.status_code == 200
 
 
-def test_post_with_retry_gives_up_on_a_persistent_503_after_two_retries():
-    # short fuse: a model that is down would otherwise stall every file in
-    # an audit for the full 429 retry budget (5 retries, up to ~60s each).
+def test_post_with_retry_waits_longer_on_overload_503_and_529():
+    # "high demand" spikes usually clear within a minute or two: 15s, 30s, 60s, then give up
+    for status in (503, 529):
+        client = MagicMock()
+        client.post.side_effect = [_response(status) for _ in range(10)]
+
+        with patch("codecheck.reviewers.openai_protocol.time.sleep") as mock_sleep:
+            with pytest.raises(httpx.HTTPStatusError):
+                post_with_retry(client, "https://example.test", {}, max_retries=5)
+
+        assert client.post.call_count == 4  # 1 initial attempt + 3 retries
+        assert [c.args[0] for c in mock_sleep.call_args_list] == [15.0, 30.0, 60.0]
+
+
+def test_post_with_retry_overload_wait_honors_retry_after():
     client = MagicMock()
-    client.post.side_effect = [_response(503) for _ in range(10)]
+    client.post.side_effect = [_response(503, headers={"retry-after": "5"}), _response(200)]
+
+    with patch("codecheck.reviewers.openai_protocol.time.sleep") as mock_sleep:
+        post_with_retry(client, "https://example.test", {})
+
+    mock_sleep.assert_called_once_with(5.0)
+
+
+@pytest.mark.parametrize("status", [502, 504])
+def test_post_with_retry_keeps_a_short_fuse_on_gateway_errors(status):
+    # a gateway blip or a dead model would otherwise stall every file in an audit
+    client = MagicMock()
+    client.post.side_effect = [_response(status) for _ in range(10)]
 
     with patch("codecheck.reviewers.openai_protocol.time.sleep"):
         with pytest.raises(httpx.HTTPStatusError):
