@@ -43,7 +43,7 @@ from flask import (
 from codecheck.model_check import check as check_model
 from codecheck.model_check import detect_model, list_models, local_root
 
-RUNS = Path(os.environ.get("CODECHECK_WEB_RUNS", Path.home() / "codecheck-web-runs"))
+RUNS = Path(os.environ.get("CODECHECK_WEB_RUNS", Path.home() / "codecheck-web-runs")).resolve()
 STALL = 60 * 60         # kill a run only if it prints nothing for this long (a hung process would block the queue)
 KEEP = 100              # newest runs kept on disk
 MAX_QUEUE = 5
@@ -130,7 +130,8 @@ def all_runs() -> list[dict]:
 
 
 def prune() -> None:
-    for r in all_runs()[KEEP:]:
+    terminal = [r for r in all_runs() if r.get("status") in ("done", "failed")]
+    for r in terminal[KEEP:]:
         shutil.rmtree(RUNS / r["id"], ignore_errors=True)
 
 
@@ -154,7 +155,7 @@ def pr_base_ref(target: str, token: str) -> str | None:
 
 def build(rid: str, spec: dict) -> tuple[list[str], dict]:
     """argv (never holds the key) and a clean environment for one run."""
-    d = RUNS / rid
+    d = (RUNS / rid).resolve()
     (d / "home").mkdir(exist_ok=True)
     cfg = {
         "rules": {"enabled": True, "ruff": True, "eslint": False, "semgrep": True, "house_rules": True},

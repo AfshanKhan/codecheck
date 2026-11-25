@@ -607,6 +607,41 @@ def _connect_frappe_db(
         return None
 
 
+def _build_engine_callbacks() -> dict:
+    """Shared ReviewRequest progress/status callbacks for CLI commands."""
+    counts: dict[str, list[int]] = {}
+
+    def _on_tier_start(tier: str, message: str) -> None:
+        if tier in ("local_llm", "cloud_llm"):
+            m = re.search(r"AI review: (\d+) file", message)
+            if m:
+                counts[tier] = [0, int(m.group(1))]
+        if not console.is_terminal:
+            console.print(message)
+
+    def _on_file_progress(tier: str, path: str, outcome: str) -> None:
+        pair = counts.get(tier)
+        if pair:
+            pair[0] += 1
+            console.print(f"[dim]  ({pair[0]}/{pair[1]}) {path}: {outcome}[/dim]")
+        else:
+            console.print(f"[dim]  {path}: {outcome}[/dim]")
+
+    def _on_resumed(tier: str, count: int) -> None:
+        console.print(f"[dim]Resumed: {count} file(s) already reviewed by {tier}, not re-requested.[/dim]")
+
+    def _on_suggestions(count: int) -> None:
+        noun = "suggestion" if count == 1 else "suggestions"
+        console.print(f"[dim]Generated {count} fix {noun}.[/dim]")
+
+    return {
+        "on_tier_start": _on_tier_start,
+        "on_file_progress": _on_file_progress,
+        "on_resumed": _on_resumed,
+        "on_suggestions_generated": _on_suggestions,
+    }
+
+
 @app.command()
 def diff(
     repo_path: Path = typer.Option(Path("."), "--repo-path", help="Path to the git repo."),
@@ -767,16 +802,6 @@ def diff(
             console.print("[yellow]No changed files found.[/yellow]")
             raise typer.Exit(code=0)
 
-        def _on_resumed(tier: str, count: int):
-            console.print(f"[dim]Resumed: {count} file(s) already reviewed by {tier}, not re-requested.[/dim]")
-
-        def _on_suggestions(count: int):
-            noun = "suggestion" if count == 1 else "suggestions"
-            console.print(f"[dim]Generated {count} fix {noun}.[/dim]")
-
-        def _on_progress(tier: str, path: str, outcome: str):
-            console.print(f"[dim]  {path}: {outcome}[/dim]")
-
         engine = ReviewEngine()
         request = ReviewRequest(
             workspace=ws,
@@ -788,10 +813,8 @@ def diff(
             device=device,
             frappe_db=frappe_db,
             skip_notes=skip_note + skipped_early,
-            on_resumed=_on_resumed,
-            on_suggestions_generated=_on_suggestions,
-            on_file_progress=_on_progress,
             confirm_local_execution=_confirm_local_execution,
+            **_build_engine_callbacks(),
         )
 
         try:
@@ -927,16 +950,6 @@ def audit(
 
         console.print(f"[dim]Auditing {len(ws.targets)} file(s) in {ws.repo_path}[/dim]")
 
-        def _on_resumed(tier: str, count: int):
-            console.print(f"[dim]Resumed: {count} file(s) already reviewed by {tier}, not re-requested.[/dim]")
-
-        def _on_suggestions(count: int):
-            noun = "suggestion" if count == 1 else "suggestions"
-            console.print(f"[dim]Generated {count} fix {noun}.[/dim]")
-
-        def _on_progress(tier: str, path: str, outcome: str):
-            console.print(f"[dim]  {path}: {outcome}[/dim]")
-
         engine = ReviewEngine()
         request = ReviewRequest(
             workspace=ws,
@@ -948,10 +961,8 @@ def audit(
             device=device,
             frappe_db=frappe_db,
             skip_notes=skip_note + skipped_early,
-            on_resumed=_on_resumed,
-            on_suggestions_generated=_on_suggestions,
-            on_file_progress=_on_progress,
             confirm_local_execution=_confirm_local_execution,
+            **_build_engine_callbacks(),
         )
 
         try:

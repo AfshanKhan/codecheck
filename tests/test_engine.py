@@ -54,3 +54,22 @@ def test_engine_audit_cap_exceeded(tmp_path: Path):
         except AuditCapExceededError as e:
             assert e.count == 15
             assert e.cap == 10
+
+
+def test_engine_all_tiers_disabled_fails_gate(tmp_path: Path):
+    py_file = tmp_path / "ok.py"
+    py_file.write_text("x = 1\n")
+
+    target = ReviewTarget(path="ok.py", status="modified", diff_text="", changed_lines={1})
+    source = InMemorySource(targets=[target], repo_path=tmp_path)
+
+    cfg = Config()
+    cfg.rules.enabled = False
+    cfg.local.enabled = False
+    cfg.cloud.enabled = False
+
+    engine = ReviewEngine()
+    with source.acquire() as ws:
+        result = engine.review(ReviewRequest(workspace=ws, config=cfg))
+        assert result.had_runner_error is True
+        assert result.gate_passed is False

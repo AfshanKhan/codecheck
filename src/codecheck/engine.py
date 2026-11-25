@@ -107,6 +107,7 @@ def run_llm_tier(
     mode: str,
     current_file_hashes: dict[str, str],
     on_progress: Callable[[str, str], None] | None = None,
+    on_start: Callable[[int], None] | None = None,
 ) -> tuple[list[Finding], list[str], int]:
     """Runs one LLM tier's review(), reusing prior_report results for targets it already succeeded on."""
     already_done: set[str] = set()
@@ -126,6 +127,9 @@ def run_llm_tier(
         sent_paths = sorted({t.path for t in remaining_targets} | already_done)
 
     reviewer.sent_paths = sent_paths
+
+    if on_start:
+        on_start(len(remaining_targets))
 
     new_findings = reviewer.review(remaining_targets, repo_path, on_progress=on_progress)
 
@@ -207,7 +211,7 @@ class ReviewEngine:
         )
 
         fail_threshold = Severity(cfg.thresholds.fail_on_severity)
-        gate_passed = not report.findings_at_or_above(fail_threshold)
+        gate_passed = not had_runner_error and not report.findings_at_or_above(fail_threshold)
 
         return ReviewExecutionResult(
             report=report,
@@ -264,13 +268,11 @@ class ReviewEngine:
             )
 
         if available and confirmed:
-            if request.on_tier_start:
-                request.on_tier_start("local_llm", "Running local LLM review...")
-
             def _on_local_progress(path: str, outcome: str):
                 if request.on_file_progress:
                     request.on_file_progress("local_llm", path, outcome)
 
+            local_tier_start = request.on_tier_start
             findings, skip_entries, resumed = run_llm_tier(
                 "local_llm",
                 local_reviewer,
@@ -280,6 +282,11 @@ class ReviewEngine:
                 ws.mode,
                 current_file_hashes,
                 on_progress=_on_local_progress,
+                on_start=(
+                    (lambda total: local_tier_start("local_llm", f"AI review: {total} file(s)"))
+                    if local_tier_start is not None
+                    else None
+                ),
             )
             results["local_llm"] = findings
             sent_out["local_llm"] = local_reviewer.sent_paths
@@ -299,13 +306,11 @@ class ReviewEngine:
         cloud_reviewer = build_cloud_reviewer(cfg.cloud)
         available, reason = cloud_reviewer.is_available(repo_path)
         if available:
-            if request.on_tier_start:
-                request.on_tier_start("cloud_llm", "Running cloud LLM review...")
-
             def _on_cloud_progress(path: str, outcome: str):
                 if request.on_file_progress:
                     request.on_file_progress("cloud_llm", path, outcome)
 
+            cloud_tier_start = request.on_tier_start
             findings, skip_entries, resumed = run_llm_tier(
                 "cloud_llm",
                 cloud_reviewer,
@@ -315,6 +320,11 @@ class ReviewEngine:
                 ws.mode,
                 current_file_hashes,
                 on_progress=_on_cloud_progress,
+                on_start=(
+                    (lambda total: cloud_tier_start("cloud_llm", f"AI review: {total} file(s)"))
+                    if cloud_tier_start is not None
+                    else None
+                ),
             )
             results["cloud_llm"] = findings
             sent_out["cloud_llm"] = getattr(cloud_reviewer, "sent_paths", [])

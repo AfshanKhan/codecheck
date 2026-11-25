@@ -154,3 +154,32 @@ def test_detect_model_tells_the_user_what_to_do_on_their_machine():
     def boom(req):
         raise httpx.ConnectError("down")
     assert "Could not reach your model server" in detect_model(root, client=httpx.Client(transport=httpx.MockTransport(boom)))[1]
+
+
+def test_malformed_model_response_shapes_do_not_raise_type_error():
+    from codecheck.model_check import check, detect_model, list_models
+
+    ids, err = list_models("google", "k", client({("GET", "/v1beta/openai/models"): (200, {"data": None})}))
+    assert ids == [] and err is not None
+
+    c = client({
+        ("GET", "/v1beta/openai/models"): (200, {"data": None}),
+        ("POST", "/v1beta/openai/chat/completions"): (200, {"choices": []}),
+    })
+    assert check("google", "gemini-3.6-flash", "k", c) is None
+
+    root = "https://abc.trycloudflare.com"
+    assert detect_model(root, client=client({("GET", "/v1/models"): (200, {"data": None})}))[1] is not None
+
+    bad_ps = {
+        ("GET", "/v1/models"): (200, {"data": [{"id": "a"}, {"id": "b"}]}),
+        ("GET", "/api/ps"): (200, {"models": [{"name": ["unhashable"]}]}),
+    }
+    assert "No model is loaded" in detect_model(root, client=client(bad_ps))[1]
+
+    bad_v0 = {
+        ("GET", "/v1/models"): (200, {"data": [{"id": "a"}, {"id": "b"}]}),
+        ("GET", "/api/ps"): (404, {}),
+        ("GET", "/api/v0/models"): (200, {"data": None}),
+    }
+    assert detect_model(root, client=client(bad_v0)) == (None, None, ["a", "b"])

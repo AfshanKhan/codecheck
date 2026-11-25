@@ -1,5 +1,6 @@
 import json
 import time
+from pathlib import Path
 
 import pytest
 
@@ -492,3 +493,38 @@ def test_list_models_keeps_text_models_only():
                        {"id": "d/unlabelled"}]}
     c = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200, json=router)))
     assert model_check.list_models("openrouter", "k", c)[0] == ["a/chat", "d/unlabelled"]
+
+
+def test_prune_preserves_queued_and_running_runs(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(web, "RUNS", tmp_path)
+    monkeypatch.setattr(web, "KEEP", 2)
+
+    for idx, status in enumerate(("running", "queued", "done", "failed", "done")):
+        rid = f"{idx:012x}"
+        (tmp_path / rid).mkdir()
+        web.save(rid, id=rid, created=100 + idx, status=status)
+
+    web.prune()
+
+    assert (tmp_path / f"{0:012x}").exists()
+    assert (tmp_path / f"{1:012x}").exists()
+    assert not (tmp_path / f"{2:012x}").exists()
+    assert (tmp_path / f"{3:012x}").exists()
+    assert (tmp_path / f"{4:012x}").exists()
+
+
+def test_build_uses_absolute_paths_when_runs_is_relative(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    rel_runs = Path("rel_runs")
+    (rel_runs / "0123456789ab").mkdir(parents=True)
+    monkeypatch.setattr(web, "RUNS", rel_runs)
+
+    argv, env = web.build(
+        "0123456789ab",
+        {"kind": "repo", "target": "https://github.com/org/repo", "cloud": False, "provider": "google", "model": "m"},
+    )
+    cfg_arg = argv[argv.index("--config") + 1]
+    out_arg = argv[argv.index("--output-dir") + 1]
+    assert Path(cfg_arg).is_absolute()
+    assert Path(out_arg).is_absolute()
+    assert Path(env["HOME"]).is_absolute()

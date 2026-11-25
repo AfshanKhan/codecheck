@@ -1358,3 +1358,23 @@ def test_audit_of_a_non_git_directory_exits_2_not_a_traceback(tmp_path: Path):
     result = runner.invoke(app, ["audit", "--repo-path", str(plain), "--output-dir", str(tmp_path / "out")])
     assert result.exit_code == 2
     assert "not a readable git repository" in result.output
+
+
+def test_audit_emits_progress_markers_for_web_ui(sandbox_repo: Path, tmp_path: Path, monkeypatch):
+    import httpx
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-fake")
+    response = httpx.Response(
+        200,
+        json={"content": [{"type": "tool_use", "name": "report_findings", "input": {"findings": []}}]},
+        request=httpx.Request("POST", "https://api.anthropic.com/v1/messages"),
+    )
+    monkeypatch.setattr("codecheck.reviewers.cloud_llm.post_with_retry", lambda *a, **k: response)
+
+    result = runner.invoke(
+        app,
+        ["audit", "--repo-path", str(sandbox_repo), "--cloud", "--output-dir", str(tmp_path / "out")],
+    )
+    assert "Running rules" in result.stdout
+    assert "AI review: 1 file(s)" in result.stdout
+    assert "(1/1)" in result.stdout

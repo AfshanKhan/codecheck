@@ -65,6 +65,20 @@ def _text_output(model: dict) -> bool:
     return not isinstance(out, list) or out == ["text"] or ("text" in out and len(out) == 1)
 
 
+def _data_rows(response: httpx.Response) -> list[dict]:
+    """Return validated model-entry dicts from a JSON `{"data": [...]}` response."""
+    try:
+        payload = response.json()
+    except ValueError:
+        return []
+    if not isinstance(payload, dict):
+        return []
+    data = payload.get("data")
+    if not isinstance(data, list):
+        return []
+    return [m for m in data if isinstance(m, dict) and isinstance(m.get("id"), str)]
+
+
 def list_models(provider: str, key: str, client: httpx.Client | None = None) -> tuple[list[str], str | None]:
     """(chat model IDs the key can see, error). The IDs come from the provider's own model list."""
     if provider != "anthropic" and provider not in _OPENAI_COMPATIBLE_PRESETS:
@@ -82,10 +96,7 @@ def list_models(provider: str, key: str, client: httpx.Client | None = None) -> 
         return [], f"{provider} rejected this API key (HTTP {r.status_code})."
     if r.status_code != 200:
         return [], f"{provider} answered HTTP {r.status_code} when listing models."
-    try:
-        rows = [m for m in r.json().get("data", []) if isinstance(m, dict) and isinstance(m.get("id"), str)]
-    except (ValueError, AttributeError):
-        rows = []
+    rows = _data_rows(r)
     only = _ONLY_THESE.get(provider)
     ids = sorted({
         _norm(m["id"]) for m in rows
@@ -111,10 +122,7 @@ def check(provider: str, model: str, key: str, client: httpx.Client | None = Non
         if _bad_key(r):
             return f"{provider} rejected this API key (HTTP {r.status_code}). Check it was copied in full and is still active."
         if r.status_code == 200:
-            try:
-                ids = [_norm(m["id"]) for m in r.json().get("data", []) if isinstance(m, dict) and "id" in m]
-            except (ValueError, AttributeError):
-                ids = []
+            ids = [_norm(m["id"]) for m in _data_rows(r)]
             if ids and _norm(model) not in ids:
                 close = difflib.get_close_matches(_norm(model), ids, n=4, cutoff=0.5) or sorted(ids)[:5]
                 return f'{provider} has no model called "{model}". Closest names: {", ".join(close)}.'
@@ -185,16 +193,31 @@ def _loaded(client: httpx.Client, root: str, ids: list[str]) -> list[str] | None
     """The models actually loaded, from Ollama's /api/ps or LM Studio's /api/v0/models; None if neither answers."""
     try:
         r = client.get(root + "/api/ps")
-        if r.status_code == 200 and isinstance(r.json().get("models"), list):
-            names = {m.get("model") or m.get("name") for m in r.json()["models"] if isinstance(m, dict)}
-            return [i for i in ids if i in names]
-    except (httpx.HTTPError, ValueError, AttributeError):
+        if r.status_code == 200:
+            payload = r.json()
+            models = payload.get("models") if isinstance(payload, dict) else None
+            if isinstance(models, list):
+                names = {
+                    name
+                    for m in models
+                    if isinstance(m, dict)
+                    for name in (m.get("model") or m.get("name"),)
+                    if isinstance(name, str)
+                }
+                return [i for i in ids if i in names]
+    except (httpx.HTTPError, ValueError):
         pass
     try:
         r = client.get(root + "/api/v0/models")
         if r.status_code == 200:
-            return [m["id"] for m in r.json().get("data", []) if m.get("state") == "loaded" and m.get("type", "llm") in ("llm", "vlm")]
-    except (httpx.HTTPError, ValueError, AttributeError, KeyError):
+            payload = r.json()
+            if isinstance(payload, dict) and isinstance(payload.get("data"), list):
+                return [
+                    m["id"]
+                    for m in _data_rows(r)
+                    if m.get("state") == "loaded" and m.get("type", "llm") in ("llm", "vlm")
+                ]
+    except (httpx.HTTPError, ValueError):
         pass
     return None
 
@@ -218,10 +241,7 @@ def detect_model(root: str, chosen: str | None = None, client: httpx.Client | No
             return None, f"The tunnel answered but nothing is answering behind it (HTTP {r.status_code}). Is Ollama or LM Studio running?", []
         if r.status_code != 200:
             return None, f"Your server answered HTTP {r.status_code} to the model list. Is this the address of an Ollama or LM Studio server?", []
-        try:
-            ids = [m["id"] for m in r.json().get("data", []) if isinstance(m, dict) and "id" in m]
-        except (ValueError, AttributeError):
-            ids = []
+        ids = [m["id"] for m in _data_rows(r)]
         if not ids:
             return None, "Your server has no models. Download one (Ollama: ollama pull qwen2.5-coder:7b, or in LM Studio), load it and try again.", []
         if chosen:
